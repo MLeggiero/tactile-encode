@@ -1,0 +1,628 @@
+<title>Kilohertz Tool Loop</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one narrow reading column; each figure sits in its own wide, horizontally scrollable band. */
+:root{
+  --bg:#f3f5f7; --fg:#1b2229; --muted:#5a6570; --line:#c7cfd7; --panel:#ffffff;
+  --accent:#0e6f66; --accent-soft:rgba(14,111,102,.12); --warn:#a35a0a;
+  --display:"IBM Plex Sans Condensed","Arial Narrow",Arial,sans-serif;
+  --body:"IBM Plex Sans",Helvetica,Arial,sans-serif;
+  --mono:"IBM Plex Mono",Menlo,Consolas,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#0e1317; --fg:#e4e9ee; --muted:#96a2ad; --line:#2a3541; --panel:#151c23;
+  --accent:#34d3bf; --accent-soft:rgba(52,211,191,.14); --warn:#f0a636; color-scheme:dark } }
+:root[data-theme="dark"]{
+  --bg:#0e1317; --fg:#e4e9ee; --muted:#96a2ad; --line:#2a3541; --panel:#151c23;
+  --accent:#34d3bf; --accent-soft:rgba(52,211,191,.14); --warn:#f0a636; color-scheme:dark }
+body{background:var(--bg);color:var(--fg);font-family:var(--body);font-size:15px;line-height:1.5;padding-block:32px 64px;padding-inline:16px}
+main{max-width:1160px;margin:0 auto;display:grid;gap:40px}
+header h1{font-family:var(--display);font-weight:600;font-size:clamp(28px,4vw,40px);line-height:1.1;margin:0 0 8px;text-wrap:balance;letter-spacing:-.01em}
+header p{max-width:66ch;margin:0;color:var(--muted)}
+.eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin:0 0 10px}
+h2{font-family:var(--display);font-weight:600;font-size:24px;margin:0 0 6px;text-wrap:balance}
+section>p{max-width:66ch;margin:0 0 16px}
+figure{margin:0;display:grid;gap:10px}
+.scroll{overflow-x:auto;border:1px solid var(--line);border-radius:6px;background:var(--panel)}
+.scroll svg{display:block;min-width:900px;width:100%;height:auto;font-family:var(--body)}
+figcaption{font-size:13.5px;color:var(--muted);max-width:80ch}
+.legend{display:flex;flex-wrap:wrap;gap:16px 24px;font-size:13px;color:var(--muted);align-items:center}
+.legend span{display:inline-flex;align-items:center;gap:8px}
+.legend i{display:inline-block;width:34px;height:0;border-top:2px solid currentColor}
+.legend i.dash{border-top-style:dashed}
+.legend i.acc{border-top-color:var(--accent);border-top-width:3px}
+.legend b{display:inline-block;width:14px;height:14px;transform:rotate(45deg);border:1.5px solid currentColor;border-radius:2px}
+table{border-collapse:collapse;width:100%;font-size:14px;font-variant-numeric:tabular-nums}
+th,td{text-align:left;vertical-align:top;padding:8px 10px;border-bottom:1px solid var(--line)}
+th{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);font-weight:500}
+td.t{font-family:var(--mono);white-space:nowrap}
+td.l{font-family:var(--mono);font-size:12.5px;color:var(--accent);white-space:nowrap}
+.tablewrap{overflow-x:auto}
+ul.rules{margin:0;padding-left:20px;display:grid;gap:6px;max-width:80ch}
+ul.rules code{font-family:var(--mono);font-size:13px;background:var(--accent-soft);padding:1px 5px;border-radius:3px}
+footer{color:var(--muted);font-size:13px;max-width:80ch}
+@media (prefers-reduced-motion: reduce){*{scroll-behavior:auto}}
+</style>
+
+<main>
+<header>
+  <p class="eyebrow">Control architecture · rev 0</p>
+  <h1>Kilohertz Tool Loop</h1>
+  <p>Three control tiers plus the plant, drawn with their real rates and the signals that cross each boundary. The slow planner never sits on the reactive path. Everything that must respond to a 3&nbsp;ms hammer pulse or a cam-out lives in the two lower tiers, and the learned reactive layer only ever hands the 1&nbsp;kHz controller a pose, a stiffness, a feedforward wrench, and a grasp force.</p>
+</header>
+
+<section id="dataflow">
+  <h2>1. Multi-rate dataflow</h2>
+  <p>Read top to bottom for commands and bottom to top for measurements. The teal bus on the left is the kilohertz sensor path; it feeds the reactive layer and the controller directly and reaches the planner only as compressed tokens.</p>
+  <figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1400 1020" role="img" aria-label="Four horizontal lanes: a 1 to 10 hertz planner, a 100 to 200 hertz reactive layer, a 1 kilohertz real-time controller, and the plant with its sensors. Commands flow downward as pose, stiffness, feedforward wrench and grasp force; kilohertz sensor signals flow upward on a bus that feeds the reactive layer and the controller directly and the planner only as tokens.">
+    <defs>
+      <marker id="arw" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+      <marker id="arwA" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--accent)"/></marker>
+    </defs>
+    <!-- lane bands -->
+    <rect x="0" y="20" width="1400" height="230" fill="currentColor" fill-opacity="0.035"/>
+    <rect x="0" y="270" width="1400" height="380" fill="currentColor" fill-opacity="0.06"/>
+    <rect x="0" y="670" width="1400" height="220" fill="currentColor" fill-opacity="0.035"/>
+    <rect x="0" y="910" width="1400" height="100" fill="currentColor" fill-opacity="0.06"/>
+    <!-- lane labels -->
+    <g font-size="12" fill="currentColor">
+      <text x="16" y="48" font-weight="600" font-size="13">L3 · PLANNER</text>
+      <text x="16" y="68">1–10 Hz</text><text x="16" y="86" fill-opacity=".7">100–250 ms latency</text>
+      <text x="16" y="298" font-weight="600" font-size="13">L2 · REACTIVE</text>
+      <text x="16" y="318">100–200 Hz</text><text x="16" y="336" fill-opacity=".7">&lt; 5 ms inference</text>
+      <text x="16" y="698" font-weight="600" font-size="13">L1 · REAL-TIME</text>
+      <text x="16" y="718">1 kHz arm</text><text x="16" y="736">200–500 Hz grip</text><text x="16" y="754" fill-opacity=".7">≈ 1 ms</text>
+      <text x="16" y="938" font-weight="600" font-size="13">PLANT</text>
+      <text x="16" y="958">robot · tool · target</text><text x="16" y="976" fill-opacity=".7">sim: MuJoCo + drill plant</text>
+    </g>
+    <!-- kHz sensor bus -->
+    <g style="stroke:var(--accent)" stroke-width="3" fill="none">
+      <line x1="162" y1="965" x2="162" y2="135"/>
+      <line x1="162" y1="135" x2="183" y2="135" marker-end="url(#arwA)"/>
+      <line x1="162" y1="460" x2="183" y2="460" marker-end="url(#arwA)"/>
+      <line x1="162" y1="785" x2="183" y2="785" marker-end="url(#arwA)"/>
+      <line x1="185" y1="965" x2="164" y2="965" marker-end="url(#arwA)"/>
+    </g>
+    <!-- LANE A boxes -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="185" y="60" width="220" height="150" rx="4"/>
+      <rect x="445" y="60" width="230" height="150" rx="4"/>
+      <rect x="715" y="60" width="260" height="150" rx="4"/>
+      <rect x="1015" y="60" width="365" height="150" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor">
+      <text x="197" y="80" font-size="13" font-weight="600">Observations</text>
+      <text x="197" y="100">RGB scene + wrist · 30 Hz</text>
+      <text x="197" y="116">language instruction</text>
+      <text x="197" y="132">proprio summary</text>
+      <text x="197" y="148">tactile / vibration tokens</text>
+      <text x="197" y="164" fill-opacity=".75">(2–3 s spectrogram, VQ force)</text>
+      <text x="197" y="180">L0 state · phase feedback</text>
+      <text x="457" y="80" font-size="13" font-weight="600">VLA policy (π0.5-class)</text>
+      <text x="457" y="100">flow-matching action expert</text>
+      <text x="457" y="116">latency-offset training</text>
+      <text x="457" y="132">force-history tokens, FACT fixes</text>
+      <text x="457" y="148">outputs a phase-tagged chunk</text>
+      <text x="457" y="164" fill-opacity=".75">never on the reactive path</text>
+      <text x="727" y="80" font-size="13" font-weight="600">Contact-signature predictor</text>
+      <text x="727" y="100">fires on phase change only</text>
+      <text x="727" y="116">expected pad-pressure map</text>
+      <text x="727" y="132">expected F/T + spectral template</text>
+      <text x="727" y="148">predicted contact time t_c</text>
+      <text x="727" y="164">predicted peak load</text>
+      <text x="727" y="180" fill-opacity=".75">(TouchWorld-style subgoal, not dynamics)</text>
+      <text x="1027" y="80" font-size="13" font-weight="600">Chunk buffer (async, real-time chunking)</text>
+      <text x="1027" y="100">phase ∈ {approach, align, pre-swing, swing, strike, recover, regrasp}</text>
+      <text x="1027" y="116">drill: {align, engage, drive, seat, retract}</text>
+      <text x="1027" y="132">target pose · approach vector · swing velocity</text>
+      <text x="1027" y="148">t_c · predicted load · expected signature</text>
+      <text x="1027" y="164">per-phase grip-force + stiffness schedule</text>
+      <text x="1027" y="180">regrasp flag</text>
+    </g>
+    <!-- LANE A arrows -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw)">
+      <line x1="405" y1="135" x2="443" y2="135"/>
+      <line x1="675" y1="135" x2="713" y2="135"/>
+      <line x1="975" y1="135" x2="1013" y2="135"/>
+    </g>
+    <g font-size="10.5" fill="currentColor" fill-opacity=".8" text-anchor="middle">
+      <text x="424" y="128">obs</text>
+      <text x="694" y="128">phase</text>
+      <text x="994" y="128">+ sig.</text>
+    </g>
+    <!-- LANE B boxes -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="185" y="300" width="220" height="320" rx="4" style="stroke:var(--accent)" stroke-width="2"/>
+      <rect x="445" y="300" width="230" height="64" rx="4"/>
+      <rect x="445" y="376" width="230" height="64" rx="4"/>
+      <rect x="445" y="452" width="230" height="64" rx="4"/>
+      <rect x="445" y="528" width="230" height="92" rx="4"/>
+      <rect x="715" y="300" width="260" height="120" rx="4"/>
+      <rect x="715" y="440" width="260" height="180" rx="4"/>
+      <rect x="1015" y="300" width="285" height="150" rx="4"/>
+      <rect x="1015" y="470" width="365" height="150" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor">
+      <text x="197" y="320" font-size="13" font-weight="600">Signal front-end</text>
+      <text x="197" y="342">wrist F/T 1–8 kHz → 27–64-sample window</text>
+      <text x="197" y="360">pad accelerometer 8 kHz → 16 ms log-mel</text>
+      <text x="197" y="378">pressure array ≥ 200 Hz → CoP, spread</text>
+      <text x="197" y="396">joint q, q̇ at 1 kHz</text>
+      <text x="197" y="414">external torque τ_ext ≥ 100 Hz</text>
+      <text x="197" y="430" fill-opacity=".75">(momentum observer or learned)</text>
+      <text x="197" y="452">impact flag from L1 (≤ 2 ms)</text>
+      <text x="197" y="476">motor current / clutch (drill, if wired)</text>
+      <text x="197" y="500" fill-opacity=".75">sim only: sensor models for</text>
+      <text x="197" y="516" fill-opacity=".75">bandwidth, noise, latency, saturation</text>
+      <text x="197" y="546" font-size="12" font-weight="600">features @ 100–200 Hz</text>
+      <text x="197" y="564">spectral bands · F/T stats</text>
+      <text x="197" y="580">τ_ext history · pressure moments</text>
+      <text x="197" y="596">phase-aligned windows</text>
+
+      <text x="457" y="320" font-size="12.5" font-weight="600">Contact-phase estimator</text>
+      <text x="457" y="338">free · pre-impact · impact</text>
+      <text x="457" y="354">ringing · sustained</text>
+      <text x="457" y="396" font-size="12.5" font-weight="600">Engagement estimator (drill)</text>
+      <text x="457" y="414">free-spin · engaged</text>
+      <text x="457" y="430">cam-out · seated</text>
+      <text x="457" y="472" font-size="12.5" font-weight="600">Slip detector (phase-gated)</text>
+      <text x="457" y="490">muted during impact + ringing</text>
+      <text x="457" y="506">magnitude + direction</text>
+      <text x="457" y="548" font-size="12.5" font-weight="600">Tool–target estimator (L0)</text>
+      <text x="457" y="566">nail depth left · penetration resistance</text>
+      <text x="457" y="582">seating progress · thread engagement</text>
+      <text x="457" y="598">tool pose drift in the grasp</text>
+
+      <text x="727" y="320" font-size="12.5" font-weight="600">Anomaly comparator</text>
+      <text x="727" y="340">predicted signature − observed → residual</text>
+      <text x="727" y="358">flags: cam-out · bit slip · glancing strike</text>
+      <text x="727" y="374">tool drift · missed nail</text>
+      <text x="727" y="396">drives phase transitions and reports</text>
+      <text x="727" y="410" fill-opacity=".75">predicted signature arrives from L3</text>
+
+      <text x="727" y="460" font-size="12.5" font-weight="600">Grip &amp; stiffness scheduler</text>
+      <text x="727" y="480">ramp begins at t_c − 150 ms</text>
+      <text x="727" y="496">F_pre = f(tool mass, swing velocity, μ̂)</text>
+      <text x="727" y="512">peak 50–70 ms after peak load</text>
+      <text x="727" y="528">hold under sustained vibration (drill)</text>
+      <text x="727" y="544">slip → margin ↑ for the next strike</text>
+      <text x="727" y="560">K high along strike axis, moderate ⊥</text>
+      <text x="727" y="576">axial push ↑ on cam-out</text>
+      <text x="727" y="600" fill-opacity=".75">learned by residual RL over L1</text>
+
+      <text x="1027" y="320" font-size="12.5" font-weight="600">Phase report to L3</text>
+      <text x="1027" y="340">strike: depth Δ · peak load · slip · hit/miss</text>
+      <text x="1027" y="356">drill: regime · torque plateau · cam-out count</text>
+      <text x="1027" y="372">tool pose drift → regrasp request</text>
+      <text x="1027" y="388">re-align request</text>
+      <text x="1027" y="410">compressed to tokens for the VLA</text>
+      <text x="1027" y="426" fill-opacity=".75">(spectrogram history, VQ force, L0 state)</text>
+
+      <text x="1027" y="490" font-size="12.5" font-weight="600">Reactive action head (≤ 100M params)</text>
+      <text x="1027" y="510">x_eq equilibrium pose</text>
+      <text x="1027" y="526">K directional stiffness</text>
+      <text x="1027" y="542">F_ff feedforward wrench</text>
+      <text x="1027" y="558">F_grip grasp-force setpoint</text>
+      <text x="1027" y="574">mode: ante-impact · post-impact · gate</text>
+      <text x="1027" y="596" fill-opacity=".75">residual over the chunk, only in the</text>
+      <text x="1027" y="610" fill-opacity=".75">contact-sensitive subspace (wrist pose, grip)</text>
+    </g>
+    <!-- LANE B arrows -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw)">
+      <line x1="405" y1="332" x2="443" y2="332"/>
+      <line x1="405" y1="408" x2="443" y2="408"/>
+      <line x1="405" y1="484" x2="443" y2="484"/>
+      <line x1="405" y1="574" x2="443" y2="574"/>
+      <line x1="675" y1="332" x2="713" y2="332"/>
+      <line x1="675" y1="408" x2="713" y2="408"/>
+      <line x1="675" y1="484" x2="713" y2="484"/>
+      <line x1="675" y1="574" x2="713" y2="574"/>
+      <line x1="845" y1="420" x2="845" y2="438"/>
+      <line x1="975" y1="355" x2="1013" y2="355"/>
+      <line x1="1015" y1="545" x2="977" y2="545"/>
+      <line x1="975" y1="595" x2="1013" y2="595"/>
+      <polyline points="1197,620 1197,660 510,660 510,698"/>
+      <line x1="1300" y1="620" x2="1300" y2="698"/>
+    </g>
+    <!-- cross-lane vertical arrows (A <-> B) -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw)">
+      <line x1="845" y1="210" x2="845" y2="298"/>
+      <line x1="1350" y1="210" x2="1350" y2="468"/>
+    </g>
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw)" stroke-dasharray="5 4">
+      <line x1="1150" y1="300" x2="1150" y2="212"/>
+    </g>
+    <g font-size="10.5" fill="currentColor" fill-opacity=".85">
+      <text x="837" y="262" text-anchor="end">expected signature</text>
+      <text x="1142" y="262" text-anchor="end">phase result · regrasp request</text>
+      <text x="1342" y="262" text-anchor="end">chunk @ 1–10 Hz</text>
+      <text x="995" y="538" text-anchor="middle">t_c · load · sched.</text>
+      <text x="995" y="612" text-anchor="middle">F_grip · K</text>
+      <text x="850" y="654" text-anchor="middle">x_eq · K · F_ff · F_grip · mode  @ 100–200 Hz</text>
+      <text x="1308" y="662">F_grip · trigger</text>
+      <text x="856" y="432">flags</text>
+      <text x="994" y="348" text-anchor="middle">flags</text>
+    </g>
+    <!-- LANE C boxes -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="185" y="700" width="200" height="170" rx="4" style="stroke:var(--accent)" stroke-width="2"/>
+      <rect x="415" y="700" width="190" height="170" rx="4"/>
+      <rect x="635" y="700" width="220" height="170" rx="4"/>
+      <rect x="885" y="700" width="250" height="170" rx="4"/>
+      <rect x="1165" y="700" width="215" height="170" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor">
+      <text x="197" y="720" font-size="12.5" font-weight="600">Impact detect + ringing gate</text>
+      <text x="197" y="740">momentum observer on q̇, τ</text>
+      <text x="197" y="756">flag within ≤ 2 ms of contact</text>
+      <text x="197" y="772">latch peak load</text>
+      <text x="197" y="794">gate: ignore q̇ feedback 50 ms</text>
+      <text x="197" y="810">state from F/T + accel meanwhile</text>
+      <text x="197" y="832" fill-opacity=".75">ringing is real; rigid sim has none</text>
+      <text x="197" y="848" fill-opacity=".75">→ add pad + joint compliance in sim</text>
+
+      <text x="427" y="720" font-size="12.5" font-weight="600">Reference limiter</text>
+      <text x="427" y="740">clip |x_eq − x| so tracking</text>
+      <text x="427" y="756">error cannot inject force</text>
+      <text x="427" y="778">rate-limit K̇ (passivity)</text>
+      <text x="427" y="794">saturate F_ff, F_grip</text>
+      <text x="427" y="816">stale-input fallback:</text>
+      <text x="427" y="832">hold pose, F_grip = F_hold</text>
+
+      <text x="647" y="720" font-size="12.5" font-weight="600">Reference spreading</text>
+      <text x="647" y="740">ante-impact reference before t_c</text>
+      <text x="647" y="756">post-impact reference after flag</text>
+      <text x="647" y="772">interim mode around t_c</text>
+      <text x="647" y="788" fill-opacity=".75">(partial contact, uncertain timing)</text>
+      <text x="647" y="810">switch on the impact flag,</text>
+      <text x="647" y="826">never on the clock</text>
+      <text x="647" y="848" fill-opacity=".75">I.AM. reference spreading at 1 kHz</text>
+
+      <text x="897" y="720" font-size="12.5" font-weight="600">Impedance / torque law · 1 kHz</text>
+      <text x="897" y="742" font-family="IBM Plex Mono, monospace" font-size="11.5">τ = K(x_eq − x) − D ẋ + F_ff + g(q)</text>
+      <text x="897" y="764">overdamped default gains</text>
+      <text x="897" y="780">null-space posture task</text>
+      <text x="897" y="796">torque + velocity saturation</text>
+      <text x="897" y="818">K high along strike axis during swing,</text>
+      <text x="897" y="834">compliant orthogonal to it</text>
+      <text x="897" y="856" fill-opacity=".75">hand-designed; no learning here</text>
+
+      <text x="1177" y="720" font-size="12.5" font-weight="600">Grip loop + safety supervisor</text>
+      <text x="1177" y="740">PI on F_grip + feedforward</text>
+      <text x="1177" y="756">200–500 Hz · compliant pads</text>
+      <text x="1177" y="778">drop: F_grip → 0 ∧ accel spike</text>
+      <text x="1177" y="794">kickback: |τ_react| &gt; limit</text>
+      <text x="1177" y="810">→ trigger off, back off on bit axis</text>
+      <text x="1177" y="832">joint limits · E-stop · tool relay</text>
+      <text x="1177" y="848" fill-opacity=".75">clutch-limited driver in early tests</text>
+    </g>
+    <!-- LANE C arrows -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw)">
+      <line x1="605" y1="785" x2="633" y2="785"/>
+      <line x1="855" y1="785" x2="883" y2="785"/>
+      <line x1="1010" y1="870" x2="1010" y2="933"/>
+      <line x1="1272" y1="870" x2="1272" y2="933"/>
+      <line x1="745" y1="965" x2="707" y2="965"/>
+    </g>
+    <g style="stroke:var(--accent)" stroke-width="1.8" fill="none" marker-end="url(#arwA)">
+      <polyline points="285,870 285,898 990,898 990,872"/>
+      <line x1="745" y1="898" x2="745" y2="872"/>
+    </g>
+    <g style="stroke:var(--accent)" stroke-width="1.8" fill="none" marker-end="url(#arwA)" stroke-dasharray="5 4">
+      <line x1="240" y1="700" x2="240" y2="622"/>
+    </g>
+    <g font-size="10.5" fill="currentColor" fill-opacity=".85">
+      <text x="300" y="893">impact flag (≤ 2 ms): switch to post-impact reference · gate q̇ for 50 ms</text>
+      <text x="248" y="664">impact flag</text>
+      <text x="1018" y="905">τ · 7 joints · 1 kHz</text>
+      <text x="1280" y="905">grip current · trigger</text>
+      <text x="726" y="958" text-anchor="middle">physics</text>
+    </g>
+    <!-- LANE D boxes -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="185" y="935" width="520" height="60" rx="4" style="stroke:var(--accent)" stroke-width="2"/>
+      <rect x="745" y="935" width="635" height="60" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor">
+      <text x="197" y="955" font-size="12.5" font-weight="600">Sensors</text>
+      <text x="197" y="972">joint enc + torque 1 kHz · wrist F/T 1–8 kHz · pad accel 8 kHz · pressure 200–1000 Hz</text>
+      <text x="197" y="988">cameras 30 Hz · drill current / clutch (optional) · timestamps on every sample</text>
+      <text x="757" y="955" font-size="12.5" font-weight="600">Robot · tool · target</text>
+      <text x="757" y="972">torque-controlled arm (FR3-class) · parallel gripper with compliant pads · hammer → nail → board · driver → screw</text>
+      <text x="757" y="988">sim: MuJoCo at 0.1–0.25 ms, soft pads, joint flexibility, drill-plant plugin (motor, clutch, percussion, engagement)</text>
+    </g>
+  </svg>
+  </div>
+  <div class="legend">
+    <span><i></i>command</span>
+    <span><i class="dash"></i>measurement or estimate</span>
+    <span><i class="acc"></i>kilohertz-class signal path</span>
+    <span>rate in each lane label; latency is per hop</span>
+  </div>
+  <figcaption>Figure 1. Commands narrow as they descend: the planner emits a phase-tagged chunk, the reactive layer turns it into pose, stiffness, feedforward wrench and grasp force, and the controller turns that into joint torques. Measurements widen as they ascend: kilohertz signals feed the two lower tiers directly and reach the planner only as spectrogram and force tokens plus the tool-target state.</figcaption>
+  </figure>
+</section>
+
+<section id="tick">
+  <h2>2. Reactive layer, one tick during a hammer strike</h2>
+  <p>This is what runs every 5–10 ms. The branch is chosen by the contact-phase estimate, not by the clock, because the strike arrives when the swing says it does, not when the plan said it would. Grip is set before the impact from the predicted load; feedback after the impact only fixes the next strike.</p>
+  <figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1130 700" role="img" aria-label="Flowchart of one reactive-layer tick: read features, branch on contact phase into free, pre-impact, impact and post-impact columns, then merge to emit pose, stiffness, feedforward wrench and grasp force to the controller, and loop to the next tick.">
+    <defs>
+      <marker id="arw2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+    </defs>
+    <!-- column bands -->
+    <rect x="35" y="284" width="230" height="290" fill="currentColor" fill-opacity="0.04" rx="4"/>
+    <rect x="305" y="284" width="230" height="290" fill="currentColor" fill-opacity="0.04" rx="4"/>
+    <rect x="585" y="284" width="230" height="290" fill="currentColor" fill-opacity="0.04" rx="4"/>
+    <rect x="865" y="284" width="230" height="290" fill="currentColor" fill-opacity="0.04" rx="4"/>
+    <!-- top -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="430" y="40" width="260" height="40" rx="20"/>
+      <rect x="350" y="110" width="420" height="44" rx="4"/>
+      <polygon points="560,160 650,205 560,250 470,205"/>
+    </g>
+    <g font-size="11.5" fill="currentColor" text-anchor="middle">
+      <text x="560" y="65" font-weight="600">tick · every 5–10 ms (100–200 Hz)</text>
+      <text x="560" y="128" font-weight="600">read features</text>
+      <text x="560" y="145">F/T window · log-mel · pressure · q, q̇ · τ_ext · impact flag from L1</text>
+      <text x="560" y="201" font-weight="600">contact phase?</text>
+      <text x="560" y="216" fill-opacity=".8">from estimator</text>
+    </g>
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw2)">
+      <line x1="560" y1="80" x2="560" y2="108"/>
+      <line x1="560" y1="154" x2="560" y2="158"/>
+    </g>
+    <!-- branch fan -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none">
+      <line x1="560" y1="250" x2="560" y2="272"/>
+      <line x1="150" y1="272" x2="980" y2="272"/>
+    </g>
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw2)">
+      <line x1="150" y1="272" x2="150" y2="298"/>
+      <line x1="420" y1="272" x2="420" y2="298"/>
+      <line x1="700" y1="272" x2="700" y2="298"/>
+      <line x1="980" y1="272" x2="980" y2="298"/>
+    </g>
+    <g font-size="11" fill="currentColor" text-anchor="middle" font-weight="600">
+      <text x="150" y="266">free / approach</text>
+      <text x="420" y="266">pre-impact</text>
+      <text x="700" y="266">impact</text>
+      <text x="980" y="266">ringing → post</text>
+    </g>
+    <!-- column 1: free -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="35" y="300" width="230" height="56" rx="4"/>
+      <rect x="35" y="372" width="230" height="56" rx="4"/>
+      <rect x="35" y="444" width="230" height="56" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor" text-anchor="middle">
+      <text x="150" y="322">track chunk pose x_eq</text>
+      <text x="150" y="338">K nominal · F_grip = F_hold</text>
+      <text x="150" y="394">slip detector ON</text>
+      <text x="150" y="410">L0 tracks tool pose drift</text>
+      <text x="150" y="466">drift &gt; ε → F_hold ↑</text>
+      <text x="150" y="482">set regrasp flag for L3</text>
+    </g>
+    <!-- column 2: pre-impact -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <polygon points="420,300 490,328 420,356 350,328"/>
+      <rect x="305" y="372" width="230" height="56" rx="4"/>
+      <rect x="305" y="444" width="230" height="56" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor" text-anchor="middle">
+      <text x="420" y="325" font-weight="600">t ≥ t_c − 150 ms?</text>
+      <text x="420" y="339" fill-opacity=".8">predicted contact</text>
+      <text x="420" y="394">ramp F_grip → F_pre(m_tool, v_swing, μ̂)</text>
+      <text x="420" y="410">K along strike axis ↑ · K ⊥ moderate</text>
+      <text x="420" y="466">t ≥ t_c − 20 ms: mute slip detector</text>
+      <text x="420" y="482">L1 → ante-impact reference</text>
+    </g>
+    <g font-size="10.5" fill="currentColor" fill-opacity=".85">
+      <text x="426" y="367">yes</text>
+      <text x="322" y="322">no</text>
+    </g>
+    <!-- column 3: impact -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="585" y="300" width="230" height="56" rx="4"/>
+      <rect x="585" y="372" width="230" height="56" rx="4"/>
+      <rect x="585" y="444" width="230" height="56" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor" text-anchor="middle">
+      <text x="700" y="322">latch F/T peak and impulse</text>
+      <text x="700" y="338">depth Δ from impulse (L0)</text>
+      <text x="700" y="394">F_grip follows peak profile</text>
+      <text x="700" y="410">peak at +50–70 ms after peak load</text>
+      <text x="700" y="466">ringing gate active: ignore q̇</text>
+      <text x="700" y="482">state from F/T + accel only</text>
+    </g>
+    <!-- column 4: post -->
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="865" y="300" width="230" height="56" rx="4"/>
+      <polygon points="980,372 1050,400 980,428 910,400"/>
+      <rect x="865" y="444" width="230" height="56" rx="4"/>
+      <rect x="865" y="516" width="230" height="44" rx="4"/>
+    </g>
+    <g font-size="11" fill="currentColor" text-anchor="middle">
+      <text x="980" y="322">ringing over (≥ 50 ms): slip ON</text>
+      <text x="980" y="338">L1 → post-impact reference</text>
+      <text x="980" y="397" font-weight="600">slip &gt; ε or drift?</text>
+      <text x="980" y="411" fill-opacity=".8">after the gate</text>
+      <text x="980" y="466">margin ↑ for the next strike</text>
+      <text x="980" y="482">regrasp flag if the tool moved</text>
+      <text x="980" y="534">report to L3: depth Δ · peak load</text>
+      <text x="980" y="550">slip · hit/miss · updated t_c model</text>
+    </g>
+    <g font-size="10.5" fill="currentColor" fill-opacity=".85">
+      <text x="986" y="439">yes</text>
+      <text x="882" y="394">no</text>
+    </g>
+    <!-- intra-column arrows -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw2)">
+      <line x1="150" y1="356" x2="150" y2="370"/>
+      <line x1="150" y1="428" x2="150" y2="442"/>
+      <line x1="420" y1="356" x2="420" y2="370"/>
+      <line x1="420" y1="428" x2="420" y2="442"/>
+      <line x1="700" y1="356" x2="700" y2="370"/>
+      <line x1="700" y1="428" x2="700" y2="442"/>
+      <line x1="980" y1="356" x2="980" y2="370"/>
+      <line x1="980" y1="428" x2="980" y2="442"/>
+      <line x1="980" y1="500" x2="980" y2="514"/>
+    </g>
+    <!-- no-bypasses and merge -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none">
+      <polyline points="350,328 290,328 290,585"/>
+      <polyline points="910,400 850,400 850,585"/>
+      <line x1="150" y1="500" x2="150" y2="585"/>
+      <line x1="420" y1="500" x2="420" y2="585"/>
+      <line x1="700" y1="500" x2="700" y2="585"/>
+      <line x1="980" y1="560" x2="980" y2="585"/>
+      <line x1="150" y1="585" x2="980" y2="585"/>
+    </g>
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw2)">
+      <line x1="560" y1="585" x2="560" y2="603"/>
+    </g>
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="360" y="605" width="400" height="44" rx="4"/>
+    </g>
+    <g font-size="11.5" fill="currentColor" text-anchor="middle">
+      <text x="560" y="623" font-weight="600">emit x_eq · K · F_ff · F_grip · mode → L1</text>
+      <text x="560" y="640">L1 applies limiter, spreading and impedance at 1 kHz</text>
+    </g>
+    <!-- next-tick loop -->
+    <g stroke="currentColor" stroke-width="1.2" fill="none" stroke-dasharray="5 4" marker-end="url(#arw2)">
+      <polyline points="760,627 1112,627 1112,60 692,60"/>
+    </g>
+    <text x="1104" y="350" font-size="10.5" fill="currentColor" fill-opacity=".85" text-anchor="middle" transform="rotate(-90 1104 350)">next tick</text>
+  </svg>
+  </div>
+  <figcaption>Figure 2. The pre-impact column is where the grasp is protected: the ramp starts 150 ms before the predicted contact, matching the human anticipatory lead, and the slip detector is muted 20 ms before contact so impact vibration cannot masquerade as slip. The post-impact column is where feedback is allowed to act, and it acts on the next strike.</figcaption>
+  </figure>
+</section>
+
+<section id="drill">
+  <h2>3. Drill regime state machine</h2>
+  <p>For the driver the fast loop is a supervisor over regimes rather than a strike schedule. Every transition is triggered by a signal signature the reactive layer can see within one revolution, and every state carries the action the controller applies while in it.</p>
+  <figure>
+  <div class="scroll">
+  <svg viewBox="0 0 1000 400" role="img" aria-label="State machine for power-driver screw driving: align, free-spin, engaged, seated and retract in a row, with cam-out above engaged and bind below it; transitions are labeled with the torque and vibration signatures that trigger them and the grip or axial-force action taken.">
+    <defs>
+      <marker id="arw3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker>
+    </defs>
+    <g stroke="currentColor" stroke-width="1.2" style="fill:var(--panel)">
+      <rect x="60" y="174" width="150" height="52" rx="26"/>
+      <rect x="280" y="174" width="150" height="52" rx="26"/>
+      <rect x="500" y="174" width="150" height="52" rx="26" style="stroke:var(--accent)" stroke-width="2"/>
+      <rect x="720" y="174" width="150" height="52" rx="26"/>
+      <rect x="500" y="40" width="150" height="52" rx="26" style="stroke:var(--warn)" stroke-width="2"/>
+      <rect x="500" y="308" width="150" height="52" rx="26" style="stroke:var(--warn)" stroke-width="2"/>
+      <rect x="720" y="308" width="150" height="52" rx="26"/>
+    </g>
+    <g font-size="12" fill="currentColor" text-anchor="middle" font-weight="600">
+      <text x="135" y="196">Align</text>
+      <text x="355" y="196">Free-spin</text>
+      <text x="575" y="196">Engaged</text>
+      <text x="795" y="196">Seated</text>
+      <text x="575" y="62">Cam-out</text>
+      <text x="575" y="330">Bind / kickback</text>
+      <text x="795" y="330">Retract</text>
+    </g>
+    <g font-size="10.5" fill="currentColor" fill-opacity=".85" text-anchor="middle">
+      <text x="135" y="213">L3 target pose · bit on screw head</text>
+      <text x="355" y="213">low axial push · watch τ_react</text>
+      <text x="575" y="213">hold axial ∝ τ · F_grip steady</text>
+      <text x="795" y="213">trigger off within 1 rev</text>
+      <text x="575" y="79">axial push ↑ · RPM ↓ · re-center</text>
+      <text x="575" y="347">trigger off · back off on bit axis · K ↑</text>
+      <text x="795" y="347">release axial · lift · report</text>
+    </g>
+    <!-- main row -->
+    <g stroke="currentColor" stroke-width="1.4" fill="none" marker-end="url(#arw3)">
+      <line x1="210" y1="200" x2="278" y2="200"/>
+      <line x1="430" y1="200" x2="498" y2="200"/>
+      <line x1="650" y1="200" x2="718" y2="200"/>
+      <line x1="795" y1="226" x2="795" y2="306"/>
+      <line x1="560" y1="174" x2="560" y2="94"/>
+      <line x1="590" y1="92" x2="590" y2="172"/>
+      <line x1="575" y1="226" x2="575" y2="306"/>
+      <polyline points="500,66 135,66 135,172"/>
+      <polyline points="500,334 135,334 135,228"/>
+      <polyline points="355,226 355,262 190,262 190,226"/>
+    </g>
+    <g font-size="10.5" fill="currentColor" fill-opacity=".9">
+      <text x="244" y="192" text-anchor="middle">trigger on</text>
+      <text x="464" y="186" text-anchor="middle">τ_react ramps ∧</text>
+      <text x="464" y="198" text-anchor="middle">vibration drops</text>
+      <text x="684" y="186" text-anchor="middle">τ plateau ≥ τ_seat</text>
+      <text x="684" y="198" text-anchor="middle">∨ clutch signature</text>
+      <text x="803" y="270">release · lift</text>
+      <text x="552" y="136" text-anchor="end">sharp τ drop ∧</text>
+      <text x="552" y="148" text-anchor="end">lateral accel spike</text>
+      <text x="598" y="142">τ ramps again</text>
+      <text x="583" y="270">τ spike &gt; τ_max ∧ ω → 0</text>
+      <text x="318" y="60" text-anchor="middle">≥ 3 cam-outs → back off, re-align (L3)</text>
+      <text x="318" y="328" text-anchor="middle">recover, then re-align</text>
+      <text x="272" y="276" text-anchor="middle">no engagement in 1 s</text>
+    </g>
+  </svg>
+  </div>
+  <figcaption>Figure 3. The two amber states are the failure regimes the classifier must catch: cam-out is a sharp torque drop with a lateral acceleration spike and is answered by more axial push, the same response humans use; bind is a torque spike with the bit stalling and is answered by cutting the trigger and backing off along the bit axis before reaction torque reaches the arm's limit.</figcaption>
+  </figure>
+</section>
+
+<section id="timeline">
+  <h2>4. Timing budget for one strike</h2>
+  <p>Times are relative to the actual contact instant. The budget shows why each responsibility sits where it does: nothing above the controller can act inside the pulse, and nothing below the planner can decide where the next strike goes.</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>t − t_c</th><th>Layer</th><th>Event</th></tr></thead>
+    <tbody>
+      <tr><td class="t">−1000 ms</td><td class="l">L3</td><td>Chunk arrives: swing target and vector, swing velocity, predicted contact time, predicted peak load, grip and stiffness schedule. Contact-signature predictor emits the expected pressure map and force template.</td></tr>
+      <tr><td class="t">−150 ms</td><td class="l">L2</td><td>Grip ramp begins toward the predicted-load setpoint. Stiffness rises along the strike axis, stays compliant orthogonal to it.</td></tr>
+      <tr><td class="t">−150 ms</td><td class="l">L1</td><td>Ante-impact reference active. Passivity filter limits how fast stiffness may change.</td></tr>
+      <tr><td class="t">−20 ms</td><td class="l">L2</td><td>Slip detector muted. Impact-blind window opens.</td></tr>
+      <tr><td class="t">0</td><td class="l">plant</td><td>Contact pulse of roughly 3 ms. Force/torque peak. Structure begins to ring.</td></tr>
+      <tr><td class="t">+1–2 ms</td><td class="l">L1</td><td>Momentum observer flags the impact. Switch to the post-impact reference. Joint-velocity feedback gated.</td></tr>
+      <tr><td class="t">+3 ms</td><td class="l">L2</td><td>Peak latched. Impulse converted to a depth increment by the tool-target estimator.</td></tr>
+      <tr><td class="t">+50–70 ms</td><td class="l">L2</td><td>Grip force peaks, following the human profile. Ringing gate ends. Slip detector back on.</td></tr>
+      <tr><td class="t">+100 ms</td><td class="l">L2</td><td>Slip and drift check. Margin for the next strike updated. Strike result reported upward.</td></tr>
+      <tr><td class="t">+150–300 ms</td><td class="l">L3</td><td>Next chunk: adjusted target and velocity, regrasp decision, or phase change to recover.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="regimes">
+  <h2>5. What each drill regime looks like in the signals</h2>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Regime</th><th>Reaction torque</th><th>Vibration and axial</th><th>Action</th><th>Must be detected within</th></tr></thead>
+    <tbody>
+      <tr><td>Free-spin</td><td>near zero, flat</td><td>spin fundamental only, no load harmonics; axial force at contact floor</td><td>increase axial push slowly, re-center on the recess</td><td>1 s, then re-align</td></tr>
+      <tr><td>Engaged</td><td>ramps with depth</td><td>load harmonics appear; axial force tracks torque</td><td>hold axial push proportional to torque, grip steady</td><td>one revolution</td></tr>
+      <tr><td>Cam-out</td><td>sharp drop</td><td>lateral acceleration spike, axial kick</td><td>axial push up, speed down, re-center</td><td>one revolution, target 10–20 ms</td></tr>
+      <tr><td>Seated</td><td>plateau, then clutch chatter</td><td>periodic clutch impulses</td><td>trigger off, release axial, retract</td><td>one revolution</td></tr>
+      <tr><td>Bind</td><td>spike above limit</td><td>bit speed collapses, reaction torque on the arm</td><td>trigger off, back off along bit axis, stiffen</td><td>before arm torque limit, about 20 ms</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section id="fallbacks">
+  <h2>6. Watchdogs and fallbacks</h2>
+  <ul class="rules">
+    <li><code>L3 stale &gt; 500 ms</code>: hold the last schedule, finish the current phase, start no new swing.</li>
+    <li><code>L2 stale &gt; 20 ms</code>: controller drops to conservative mode, holds pose, sets grip to the safe hold value, zeroes feedforward.</li>
+    <li><code>F/T or accelerometer dropout</code>: impact logic falls back to the momentum observer alone; slip detector disabled; planner told to stop swinging.</li>
+    <li><code>drop detected</code> (grip force collapses while the pad accelerometer spikes): freeze the arm, open nothing, report.</li>
+    <li><code>kickback</code> (reaction torque above limit): cut the tool trigger first, then back off along the bit axis.</li>
+    <li><code>tool drift beyond bound</code> between strikes: no further strikes until the planner issues a regrasp phase.</li>
+    <li>Joint torque and velocity saturation and the hardware E-stop sit below all of this and are never overridden by a learned layer.</li>
+  </ul>
+</section>
+
+<footer>Rates and latencies follow the research report in this repository: planner latency 100–250 ms, reactive inference under 5 ms, controller at 1 kHz, impact pulse about 3 ms, human anticipatory grip lead about 150 ms and grip peak 50–70 ms after peak load. Simulation targets are a 0.1–0.25 ms physics step and a phenomenological drill plant calibrated from the screwdriving and machining datasets in the catalogs.</footer>
+</main>
