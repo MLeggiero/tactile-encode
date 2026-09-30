@@ -47,7 +47,8 @@ def _frame_step(s: RateLimitedSensor):
     last = {"frame": None}
 
     def step(t):
-        if t >= s.next_t - 1e-9 or last["frame"] is None:
+        due = (s.k % s.every == 0) if s.every is not None else (t >= s.next_t - 1e-9)
+        if due or last["frame"] is None:
             last["frame"] = base_read()
         s.read_fn = lambda: last["frame"]
         return RateLimitedSensor.step(s, t)

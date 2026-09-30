@@ -58,6 +58,9 @@ class RateLimitedSensor:
         self.rng = rng or np.random.default_rng()
         self.keep_history = keep_history
         self.period = 1.0 / spec.rate_hz
+        n = self.period / physics_dt
+        # integer decimation counts physics steps (exact); otherwise fall back to a time accumulator
+        self.every = int(round(n)) if abs(n - round(n)) < 1e-6 * n and round(n) >= 1 else None
         f_nyq = 0.5 / physics_dt
         self.sos = None
         if spec.bandwidth_hz is not None:
@@ -81,6 +84,7 @@ class RateLimitedSensor:
         self.zi = None
         self.block: list[np.ndarray] = []
         self.next_t = t0  # first sample at t0
+        self.k = 0  # physics steps since reset
         self.pending: deque[tuple[float, np.ndarray]] = deque()
         self.seq = 0
         self._latest = SensorSample(t0, t0, np.zeros(d), -1)
@@ -103,15 +107,18 @@ class RateLimitedSensor:
         """Call once per physics step, after mj_step, with the current sim time."""
         self.block.append(np.array(self.read_fn(), dtype=float).reshape(self.spec.dim))
         emitted = None
-        if t >= self.next_t - 1e-9:
+        due = (self.k % self.every == 0) if self.every is not None else (t >= self.next_t - 1e-9)
+        self.k += 1
+        if due:
             blk = self._filter(np.stack(self.block))
             clean = blk.mean(axis=0) if self.spec.decimation == "mean" else blk[-1]
             self.block = []
             self.pending.append((t, clean))
-            self.next_t += self.period
-            while self.next_t <= t + 1e-9:  # physics slower than the sensor: skip missed slots
+            if self.every is None:
                 self.next_t += self.period
-        while self.pending and self.pending[0][0] + self.spec.latency_s <= t + 1e-9:
+                while self.next_t <= t + 1e-9:  # physics slower than the sensor: skip missed slots
+                    self.next_t += self.period
+        while self.pending and self.pending[0][0] + self.spec.latency_s <= t + 0.5 * self.dt:
             ts, clean = self.pending.popleft()
             emitted = self._emit(ts, clean)
         return emitted

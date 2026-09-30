@@ -157,7 +157,7 @@ class ControllerCfg:
     stale_timeout: float = 0.020
     observer_gain: float = 400.0
     impact_force_thresh: float = 30.0
-    impact_slope_thresh: float = 8.0e3  # N/s on the wrist F/T strike axis
+    impact_ft_thresh: float = 35.0  # N departure of the strike-axis wrist force from its 10 ms baseline
     impact_accel_thresh: float = 60.0  # m/s^2 pad-accelerometer deviation from its 5 ms baseline
     impact_refractory: float = 0.100
     grip_kp: float = 0.2
@@ -173,7 +173,7 @@ class SwingCfg:
     approach_time: float = 0.6
     windup_height: float = 0.15
     windup_time: float = 0.45
-    v_strike: float = 2.0
+    v_strike: float = 2.2  # m/s; drives 20 mm in 9 strikes at the default nail resistance
     overshoot: float = 0.03
     strike_k: tuple[float, float, float] = (3000.0, 3000.0, 4000.0)  # (across, across, along) the strike axis
     recover_time: float = 0.4

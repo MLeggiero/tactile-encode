@@ -99,7 +99,8 @@ def test_mean_decimation_is_antialiasing():
     sig = lambda t: np.cos(2 * np.pi * f * t)  # noqa: E731
     run(zoh, sig, 0.1)
     run(mean, sig, 0.1)
-    assert np.mean(np.abs(zoh.history()["value"])) > 0.9
+    z = zoh.history()["value"][:, 0]
+    assert abs(z.mean()) > 0.5 and z.std() < 1e-6  # aliased to a constant (DC) by point sampling
     assert np.mean(np.abs(mean.history()["value"])) < 0.05
 
 

@@ -47,7 +47,7 @@ class L1Controller:
         self.observer = MomentumObserver(7, c.observer_gain, self.dt)
         self.friction_scale = 1.0  # observer's friction model relative to the truth
         self.axis = strike_axis()
-        self.detector = ImpactDetector(self.axis, c.impact_force_thresh, c.impact_slope_thresh, c.impact_refractory,
+        self.detector = ImpactDetector(self.axis, c.impact_force_thresh, c.impact_ft_thresh, c.impact_refractory,
                                        accel_thresh=c.impact_accel_thresh)
         self.supervisor = Supervisor(c)
         self.payload_mass, self.payload_com = world.hammer_payload()
@@ -111,10 +111,11 @@ class L1Controller:
             self.tau_ext_holder.value = r.copy()
         ft = self._sensor("ft")
         f_ft_world = None if ft is None else w.data.site_xmat[w.site["ft_site"]].reshape(3, 3) @ ft[:3]
+        t_ft = self.sensors["ft"].latest().t_sample if ft is not None else None
         acc = None
         if self.sensors is not None and "pad_acc_L" in self.sensors:
             acc = self.sensors["pad_acc_L"].window(self.n_acc)
-        ev = self.detector.update(t, self.f_ext, f_ft_world, acc)
+        ev = self.detector.update(t, self.f_ext, f_ft_world, acc, t_ft)
         if ev is not None:
             self.last_event = ev
             self.gate_until = t + self.cfg.controller.gate_duration

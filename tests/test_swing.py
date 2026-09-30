@@ -73,11 +73,11 @@ def test_task_a_targets(episode):
 
 
 def test_strike_physics_is_plausible(episode):
-    _, res = episode
+    ep, res = episode
     for r in res.strikes:
         if not r.hit:
             continue
-        assert r.v_strike_actual == pytest.approx(2.0, abs=0.2)
+        assert r.v_strike_actual == pytest.approx(ep.cfg.swing.v_strike, abs=0.2)
         assert 0.001 <= r.pulse_width <= 0.008  # ~3-5 ms blow
         assert 200 <= r.peak_force_truth <= 2000
         assert abs(r.t_contact_truth - r.t_c_pred) < 0.010

@@ -60,21 +60,25 @@ class ImpactDetector:
     """Flags an impact from any of three channels and latches the peak load.
 
     - "observer": strike-axis component of the observer's external force exceeds `force_thresh`
-    - "ft": rate of change of the wrist F/T force along the strike axis exceeds `slope_thresh`
+    - "ft": the wrist F/T force along the strike axis departs from its running baseline (time constant
+      `ft_tau`, 10 ms) by more than `ft_thresh`. With compliant pads the tool rings in the grasp at ~65 Hz
+      during ordinary swings, so a slope test cannot separate swings from blows; a blow moves the force
+      60-80 N within ~2 ms, a swing or the ring well under 30 N.
     - "accel": any pad-accelerometer sample since the last tick deviates from a slow (~5 ms) baseline
       by more than `accel_thresh`; swing accelerations change slowly, impacts do not
     A refractory period keeps post-impact ringing from re-triggering. The detector only fires while
     armed (the swing layer arms it ahead of the predicted contact).
     """
 
-    def __init__(self, strike_axis: np.ndarray, force_thresh: float, slope_thresh: float, refractory: float,
+    def __init__(self, strike_axis: np.ndarray, force_thresh: float, ft_thresh: float, refractory: float,
                  accel_thresh: float = 60.0, sources: tuple[str, ...] = ("observer", "ft", "accel"),
-                 accel_alpha: float = 0.2):
+                 accel_alpha: float = 0.2, ft_tau: float = 0.010):
         self.axis = np.asarray(strike_axis, dtype=float)
         self.force_thresh = force_thresh
-        self.slope_thresh = slope_thresh
+        self.ft_thresh = ft_thresh
         self.accel_thresh = accel_thresh
         self.accel_alpha = accel_alpha
+        self.ft_tau = ft_tau
         self.refractory = refractory
         self.sources = sources
         self.reset()
@@ -83,8 +87,8 @@ class ImpactDetector:
         self.armed = False
         self.events: list[ImpactEvent] = []
         self.last_flag_t = -np.inf
-        self.f_prev: float | None = None
         self.t_prev: float | None = None
+        self.ft_base: float | None = None
         self.acc_base: np.ndarray | None = None
         self.current: ImpactEvent | None = None
 
@@ -92,7 +96,8 @@ class ImpactDetector:
         self.armed = armed
 
     def update(self, t: float, f_ext_obs: np.ndarray | None, f_ft_world: np.ndarray | None,
-               pad_acc: np.ndarray | None) -> ImpactEvent | None:
+               pad_acc: np.ndarray | None, t_ft: float | None = None) -> ImpactEvent | None:
+        """`t_ft` is the F/T sample's own timestamp; the slope uses sample times, not controller ticks."""
         fired: str | None = None
         load = 0.0
         if f_ext_obs is not None:
@@ -102,11 +107,16 @@ class ImpactDetector:
                 fired = "observer"
         if f_ft_world is not None:
             f_ax = float(f_ft_world @ self.axis)
-            if self.f_prev is not None and t > self.t_prev:
-                slope = abs(f_ax - self.f_prev) / (t - self.t_prev)
-                if fired is None and "ft" in self.sources and slope > self.slope_thresh:
+            ts = t if t_ft is None else t_ft
+            if self.t_prev is None or ts > self.t_prev:  # only on a new sample
+                if self.ft_base is None:
+                    self.ft_base = f_ax
+                dev = abs(f_ax - self.ft_base)
+                if fired is None and "ft" in self.sources and dev > self.ft_thresh:
                     fired = "ft"
-            self.f_prev, self.t_prev = f_ax, t
+                dt = ts - self.t_prev if self.t_prev is not None else 0.0
+                self.ft_base += (1.0 - np.exp(-dt / self.ft_tau)) * (f_ax - self.ft_base)
+                self.t_prev = ts
         if pad_acc is not None and len(pad_acc):
             win = np.atleast_2d(pad_acc)
             if self.acc_base is None:

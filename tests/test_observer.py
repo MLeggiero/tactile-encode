@@ -28,7 +28,7 @@ def test_observer_matches_applied_push():
 def _approach_strike(cfg, sources, v=1.0):
     tb = Testbed(cfg)
     c = cfg.controller
-    tb.l1.detector = ImpactDetector(tb.l1.axis, c.impact_force_thresh, c.impact_slope_thresh, c.impact_refractory,
+    tb.l1.detector = ImpactDetector(tb.l1.axis, c.impact_force_thresh, c.impact_ft_thresh, c.impact_refractory,
                                     accel_thresh=c.impact_accel_thresh, sources=sources)
     cmd = tb.l1.cmd
     cmd.K = np.array([1500.0, 2500, 1500, 60, 60, 60])
@@ -76,18 +76,33 @@ def test_joint_side_observer_lags_through_compliant_grasp():
     assert 0.001 < ev.t_flag - t_c < 0.008
 
 
-def test_detector_ignores_swing_accelerations():
+def _shake_events(sources, smooth):
     cfg = fast_config()
     tb = Testbed(cfg)
+    c = cfg.controller
+    tb.l1.detector = ImpactDetector(tb.l1.axis, c.impact_force_thresh, c.impact_ft_thresh, c.impact_refractory,
+                                    accel_thresh=c.impact_accel_thresh, sources=sources)
     tb.l1.detector.arm(True)
     cmd = tb.l1.cmd
     p0 = cmd.x_eq.copy()
+    w = 2 * np.pi * 5
 
-    def l2(t):  # 3 cm back-and-forth in 0.2 s, never reaching the nail
+    def l2(t):  # 3 cm back-and-forth at 5 Hz, never reaching the nail
         cmd.t = t
-        cmd.x_eq = p0 + np.array([0, -0.03 * np.sin(2 * np.pi * 5 * t), 0])
-        cmd.xd_eq = np.array([0, -0.03 * 2 * np.pi * 5 * np.cos(2 * np.pi * 5 * t), 0, 0, 0, 0])
+        a = min(1.0, t / 0.1) if smooth else 1.0  # smooth: amplitude ramps in over 100 ms
+        cmd.x_eq = p0 + np.array([0, -0.03 * a * np.sin(w * t), 0])
+        cmd.xd_eq = np.array([0, -0.03 * a * w * np.cos(w * t), 0, 0, 0, 0])
 
     tb.l2_callbacks.append(l2)
     tb.run_for(0.4)
-    assert tb.l1.detector.events == []
+    return tb.l1.detector.events
+
+
+def test_detector_ignores_swing_accelerations():
+    assert _shake_events(("observer", "ft", "accel"), smooth=True) == []
+
+
+def test_accel_and_observer_ignore_an_abrupt_start():
+    """A velocity step rattles the tool in the pads; the F/T slope can read that as a small blow, which is
+    why the detector is only armed just before the predicted contact. The other channels stay quiet."""
+    assert _shake_events(("observer", "accel"), smooth=False) == []
