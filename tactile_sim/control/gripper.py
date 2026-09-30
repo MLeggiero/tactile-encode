@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from tactile_sim.config import SimConfig
+from tactile_sim.sensors.pressure import grip_force
 
 
 @dataclass
@@ -32,6 +33,8 @@ class GripForceLoop:
         self.dropped = False
         self.t_drop = float("nan")
         self._low_since: float | None = None
+        self._last_setpoint = None
+        self._t_decrease = -np.inf
         self.measured = 0.0
         self.log = GripLog()
 
@@ -42,7 +45,8 @@ class GripForceLoop:
         l, r = self.sensors["pressure_L"].latest(), self.sensors["pressure_R"].latest()
         if l.seq < 0:
             return float(np.mean(self.world.pad_normal_forces()))
-        return 0.5 * float(np.sum(l.value) + np.sum(r.value))
+        floor = 3.0 * self.cfg.sensors.pressure_noise
+        return 0.5 * (grip_force(l.value, floor) + grip_force(r.value, floor))
 
     def tick(self, t: float, setpoint: float, l1=None) -> float:
         c = self.cfg.controller
@@ -52,9 +56,12 @@ class GripForceLoop:
         err = setpoint - f
         u_ff = setpoint
         u = u_ff + c.grip_kp * err + c.grip_ki * self.integral
-        if -g.grip_force_max < u < g.grip_force_max:  # anti-windup: integrate only when unsaturated
+        lo = 0.0 if setpoint > 0 else -g.grip_force_max
+        if lo < u < g.grip_force_max:  # anti-windup: integrate only when unsaturated
             self.integral += err * self.dt
-        u = float(np.clip(u, -g.grip_force_max, g.grip_force_max))
+        # while holding, the loop may relax the squeeze but never drive the fingers open
+        lo = 0.0 if setpoint > 0 else -g.grip_force_max
+        u = float(np.clip(u, lo, g.grip_force_max))
         self.world.set_grip_force(u)
         self._check_drop(t, setpoint, f, l1)
         if self.do_log:
@@ -67,7 +74,14 @@ class GripForceLoop:
 
     def _check_drop(self, t: float, setpoint: float, f: float, l1) -> None:
         c = self.cfg.controller
-        if self.dropped or setpoint <= 0:
+        if self._last_setpoint is None:  # first tick: compare with what the pads actually carry
+            self._last_setpoint = max(setpoint, f)
+        if setpoint < self._last_setpoint - 1e-9:
+            self._t_decrease = t
+        self._last_setpoint = setpoint
+        # a commanded release unloads the pads for a moment; that is not a drop
+        if self.dropped or setpoint <= 0 or t - self._t_decrease < 0.1:
+            self._low_since = None
             return
         acc = 0.0
         if self.sensors is not None and "pad_acc_L" in self.sensors:

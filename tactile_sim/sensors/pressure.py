@@ -23,8 +23,11 @@ def make_pressure(world, cfg, rng) -> list[RateLimitedSensor]:
     return out
 
 
-def grip_force(taxels: np.ndarray) -> float:
-    return float(np.sum(taxels))
+def grip_force(taxels: np.ndarray, floor: float = 0.0) -> float:
+    """Summed normal force. Taxels at or below `floor` are treated as unloaded: noise on an unloaded
+    taxel is clipped at zero, so summing it raw half-rectifies the noise into a positive offset."""
+    t = np.asarray(taxels, dtype=float)
+    return float(np.sum(t[t > floor]))
 
 
 def center_of_pressure(taxels: np.ndarray, pad_half: tuple[float, float, float]) -> np.ndarray:

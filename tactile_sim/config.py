@@ -160,8 +160,8 @@ class ControllerCfg:
     impact_slope_thresh: float = 8.0e3  # N/s on the wrist F/T strike axis
     impact_accel_thresh: float = 60.0  # m/s^2 pad-accelerometer deviation from its 5 ms baseline
     impact_refractory: float = 0.100
-    grip_kp: float = 0.8
-    grip_ki: float = 40.0
+    grip_kp: float = 0.2
+    grip_ki: float = 15.0
     grip_hold: float = 40.0
     drop_force_frac: float = 0.2
     drop_accel: float = 50.0
