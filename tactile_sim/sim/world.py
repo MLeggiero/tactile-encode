@@ -13,6 +13,15 @@ from tactile_sim.control.kinematics import site_jacobian, site_pose, solve_ik
 from tactile_sim.model.builder import build_scene, tcp_rotation
 
 
+def full_inertia(m: mujoco.MjModel, d: mujoco.MjData, out: np.ndarray) -> np.ndarray:
+    """Dense joint-space inertia. MuJoCo >= 3.3 takes (m, d, dst); older releases took (m, dst, qM)."""
+    if hasattr(d, "qM"):
+        mujoco.mj_fullM(m, out, d.qM)
+    else:
+        mujoco.mj_fullM(m, d, out)
+    return out
+
+
 @dataclass
 class ArmState:
     t: float
@@ -97,7 +106,7 @@ class World:
 
     def arm_state(self) -> ArmState:
         m, d = self.model, self.data
-        mujoco.mj_fullM(m, self._Mfull, d.qM)
+        full_inertia(m, d, self._Mfull)
         dofs = self.arm_dofs
         p, R = self.tcp_pose()
         J = site_jacobian(m, d, self.tcp_site, dofs)
@@ -150,6 +159,56 @@ class World:
                     mujoco.mj_contactForce(self.model, d, i, f6)
                     out[k] += f6[0]
         return out
+
+    def joint_friction(self) -> np.ndarray:
+        """Generalized dry-friction force MuJoCo applied on each arm dof in the last step (a constraint)."""
+        d = self.data
+        out = np.zeros(len(self.arm_dofs))
+        nefc = d.nefc
+        if nefc == 0:
+            return out
+        typ = d.efc_type[:nefc]
+        ids = d.efc_id[:nefc]
+        frc = d.efc_force[:nefc]
+        mask = typ == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+        for k, dof in enumerate(self.arm_dofs):
+            sel = mask & (ids == dof)
+            if np.any(sel):
+                out[k] = float(frc[sel].sum())
+        return out
+
+    def payload_torque(self, mass: float, com_tcp: np.ndarray) -> np.ndarray:
+        """Joint torques that hold a payload of `mass` whose CoM sits at `com_tcp` in the TCP frame."""
+        m, d = self.model, self.data
+        p, R = self.tcp_pose()
+        point = p + R @ com_tcp
+        jp = np.zeros((3, m.nv))
+        mujoco.mj_jac(m, d, jp, None, point, self.hand_body)
+        return jp[:, self.arm_dofs].T @ (-mass * m.opt.gravity)
+
+    def payload_mass_matrix(self, mass: float, com_tcp: np.ndarray, inertia_tcp: np.ndarray) -> np.ndarray:
+        """Joint-space inertia the payload adds to the arm (rigidly attached at the TCP)."""
+        m, d = self.model, self.data
+        p, R = self.tcp_pose()
+        jp = np.zeros((3, m.nv))
+        jr = np.zeros((3, m.nv))
+        mujoco.mj_jac(m, d, jp, jr, p + R @ com_tcp, self.hand_body)
+        Jp, Jr = jp[:, self.arm_dofs], jr[:, self.arm_dofs]
+        Iw = R @ inertia_tcp @ R.T
+        return mass * Jp.T @ Jp + Jr.T @ Iw @ Jr
+
+    def hammer_inertia_tcp(self) -> np.ndarray:
+        """Nominal tool inertia about its CoM, in the grasp (= TCP) frame."""
+        b = self.hammer_body
+        Rq = np.zeros(9)
+        mujoco.mju_quat2Mat(Rq, self.model.body_iquat[b])
+        Rq = Rq.reshape(3, 3)
+        return Rq @ np.diag(self.model.body_inertia[b]) @ Rq.T
+
+    def hammer_payload(self) -> tuple[float, np.ndarray]:
+        """Nominal tool mass and CoM in the grasp (= TCP) frame, from the model."""
+        b = self.hammer_body
+        return float(self.model.body_mass[b]), self.model.body_ipos[b].copy()
 
     # ------------------------------------------------------------------ stepping
     def step(self, n: int = 1) -> None:

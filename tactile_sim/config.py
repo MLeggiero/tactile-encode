@@ -157,7 +157,8 @@ class ControllerCfg:
     stale_timeout: float = 0.020
     observer_gain: float = 400.0
     impact_force_thresh: float = 30.0
-    impact_slope_thresh: float = 2.0e4  # N/s on the wrist F/T strike axis
+    impact_slope_thresh: float = 8.0e3  # N/s on the wrist F/T strike axis
+    impact_accel_thresh: float = 60.0  # m/s^2 pad-accelerometer deviation from its 5 ms baseline
     impact_refractory: float = 0.100
     grip_kp: float = 0.8
     grip_ki: float = 40.0
