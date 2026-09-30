@@ -119,9 +119,23 @@ class L1Controller:
             self.last_event = ev
             self.gate_until = t + self.cfg.controller.gate_duration
         cmd = self.supervisor.filter(self.cmd, t, s.tcp_pos, s.tcp_R)
+        if cmd.ref is not None and not self.supervisor.frozen:
+            t_flag = None
+            if self.last_event is not None and self.last_event.t_flag >= getattr(cmd.ref, "t_armed", -np.inf):
+                t_flag = self.last_event.t_flag
+            x, xd, xdd, mode = cmd.ref.evaluate(t, t_flag, s.tcp_pos)
+            cmd.x_eq, cmd.xd_eq, cmd.xdd_ff, cmd.mode = x, xd, xdd, mode
+            cmd.R_eq = getattr(cmd.ref, "R", cmd.R_eq)
         # while gated, joint-velocity feedback is not trusted: damp against the reference twist
         xd_used = cmd.xd_eq if self.gated else s.tcp_vel
-        out = self.impedance.compute(s, cmd, xd_used, payload)
+        if cmd.payload_ff and np.any(cmd.xdd_ff[:3]):
+            # the payload's inertia is not in the arm's task inertia: feed it forward explicitly
+            saved = cmd.F_ff
+            cmd.F_ff = saved + np.concatenate([self.payload_mass * cmd.xdd_ff[:3], np.zeros(3)])
+            out = self.impedance.compute(s, cmd, xd_used, payload)
+            cmd.F_ff = saved
+        else:
+            out = self.impedance.compute(s, cmd, xd_used, payload)
         tau = w.set_arm_torque(out.tau)
         self.last = out
         self.grip_setpoint = cmd.F_grip

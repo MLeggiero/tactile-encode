@@ -30,8 +30,12 @@ class L2Command:
     F_grip: float = 40.0  # grasp-force setpoint per pad (N)
     mode: Mode = Mode.FREE
     t_c_pred: float = float("nan")  # predicted contact time
+    # Optional reference the L1 evaluates at its own rate (a chunk, in VLA terms). It must provide
+    # evaluate(t, t_flag, x_now) -> (x, xd, xdd, mode); x_eq/xd_eq/xdd_ff/mode are overwritten from it.
+    ref: object | None = None
+    payload_ff: bool = True  # add payload inertia x reference acceleration to the feedforward
 
     def copy(self) -> L2Command:
         return L2Command(self.t, self.x_eq.copy(), self.R_eq.copy(), self.xd_eq.copy(), self.xdd_ff.copy(),
                          self.K.copy(), self.R_K.copy(), None if self.D is None else self.D.copy(),
-                         self.F_ff.copy(), self.F_grip, self.mode, self.t_c_pred)
+                         self.F_ff.copy(), self.F_grip, self.mode, self.t_c_pred, self.ref, self.payload_ff)

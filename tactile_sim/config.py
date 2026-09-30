@@ -57,7 +57,7 @@ class GripperCfg:
     pad_travel_n: float = 0.004
     pad_travel_t: float = 0.002
     pad_friction: float = 1.3
-    pad_torsion: float = 0.005
+    pad_torsion: float = 0.02  # m; torsional friction of the soft pad contact patch
     pad_solref: tuple[float, float] = (0.002, 1.0)
     pad_solimp: tuple[float, float, float] = (0.9, 0.95, 0.001)
     # soft-contact-only pads (pad_mode="soft_contact")
@@ -143,8 +143,8 @@ class SensorsCfg:
 class ControllerCfg:
     rate: float = 1000.0
     grip_rate: float = 500.0
-    k_trans: tuple[float, float, float] = (1500.0, 1500.0, 1500.0)
-    k_rot: tuple[float, float, float] = (60.0, 60.0, 60.0)
+    k_trans: tuple[float, float, float] = (3000.0, 3000.0, 3000.0)
+    k_rot: tuple[float, float, float] = (150.0, 150.0, 150.0)
     zeta: float = 1.0
     k_dot_max: float = 5.0e4  # N/m/s stiffness slew limit
     delta_max_pos: float = 0.05  # reference limiter
@@ -175,7 +175,7 @@ class SwingCfg:
     windup_time: float = 0.45
     v_strike: float = 2.0
     overshoot: float = 0.03
-    strike_k: tuple[float, float, float] = (1200.0, 1200.0, 2500.0)
+    strike_k: tuple[float, float, float] = (3000.0, 3000.0, 4000.0)  # (across, across, along) the strike axis
     recover_time: float = 0.4
     settle_time: float = 0.15
     grip_lead: float = 0.150

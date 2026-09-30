@@ -19,6 +19,7 @@ include = ["tactile_sim*"]
 
 [tool.setuptools.package-data]
 "tactile_sim.assets" = ["*.xml", "*.json"]
+"tactile_sim.viewer" = ["*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
