@@ -74,7 +74,7 @@ class HammerCfg:
     handle_len: float = 0.28
     handle_mass: float = 0.15
     grip_from_head: float = 0.16  # grasp centre to head axis, along the handle
-    face_solref: tuple[float, float] = (0.0015, 0.4)
+    face_solref: tuple[float, float] = (0.001, 0.4)
     face_solimp: tuple[float, float, float] = (0.95, 0.99, 0.001)
     board_solref: tuple[float, float] = (0.002, 0.8)
 

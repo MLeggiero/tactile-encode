@@ -5,8 +5,10 @@ friction on that joint (`frictionloss`), which MuJoCo solves as a constraint: th
 while the driving force exceeds the resistance, and no energy is stored (a spring would push the
 nail back out). Resistance grows linearly with depth; viscous damping models rate-dependent
 crushing of the wood. MuJoCo has no restitution coefficient, so velocity-dependent restitution is
-emulated by setting the hammer/nail pair's damping ratio from the approach speed just before
-contact and freezing it for the duration of the pulse.
+emulated by setting the hammer/nail pair's damping from the approach speed just before contact and
+freezing it for the duration of the pulse. MuJoCo's positive solref couples damping ratio and
+stiffness, so the pair is switched to the direct form solref = (-k, -b): k stays fixed at the value
+implied by the configured (timeconst, dampratio) and only b = 2 * zeta(v) * sqrt(k) changes.
 """
 
 from __future__ import annotations
@@ -52,9 +54,9 @@ class NailPlant(Plant):
             contact = sub(root, "contact")
         sub(contact, "pair", name=PAIR_FACE_NAIL, geom1=names.HAMMER_HEAD_GEOM, geom2=names.NAIL_HEAD_GEOM,
             condim=3, friction=(0.3, 0.3, 0.005, 0.0001, 0.0001), solref=h.face_solref, solimp=h.face_solimp,
-            margin=0.002, gap=0.002)
+            margin=0.0)
         sub(contact, "pair", name=PAIR_HEAD_BOARD, geom1=names.HAMMER_HEAD_GEOM, geom2=names.BOARD_GEOM,
-            condim=3, friction=(0.5, 0.5, 0.005, 0.0001, 0.0001), solref=h.board_solref, margin=0.002, gap=0.002)
+            condim=3, friction=(0.5, 0.5, 0.005, 0.0001, 0.0001), solref=h.board_solref, margin=0.0)
         self.axis = axis
 
     def bind(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -71,7 +73,14 @@ class NailPlant(Plant):
         self.resistance_0 = float(self.cfg.plant.resistance_0)
         self._vel = np.zeros(6)
         self._in_contact = False
-        self.last_zeta = float(model.pair_solref[self.pair_id, 1])
+        self._last_contact_t = -np.inf
+        tc, zeta = self.cfg.hammer.face_solref
+        dmax = float(model.pair_solimp[self.pair_id, 1])
+        self.k_face = 1.0 / (dmax**2 * tc**2 * zeta**2)
+        self.last_zeta = float(zeta)
+        self.contact_zeta = float("nan")  # damping ratio frozen at the last contact onset
+        if self.cfg.plant.vdr_enabled:
+            self.set_face_damping_ratio(self.cfg.plant.vdr_zeta0)
 
     # ---- state ----
     @property
@@ -99,11 +108,18 @@ class NailPlant(Plant):
                 return True
         return False
 
+    def set_face_damping_ratio(self, zeta: float) -> None:
+        """Direct-form contact: fixed stiffness, damping ratio `zeta`."""
+        self.m.pair_solref[self.pair_id, 0] = -self.k_face
+        self.m.pair_solref[self.pair_id, 1] = -2.0 * zeta * np.sqrt(self.k_face)
+        self.last_zeta = float(zeta)
+
     # ---- hooks ----
     def reset(self, rng=None) -> None:
         self.d.qpos[self.qadr] = 0.0
         self.d.qvel[self.dadr] = 0.0
         self._in_contact = False
+        self._last_contact_t = -np.inf
 
     def pre_step(self) -> None:
         m = self.m
@@ -114,9 +130,12 @@ class NailPlant(Plant):
         in_contact = self.contact_active()
         if not in_contact and self.gap() < 0.01:
             v_approach = max(0.0, float(self.face_velocity() @ self.axis))
-            zeta = min(p.vdr_zeta_max, p.vdr_zeta0 + p.vdr_zeta1 * v_approach)
-            m.pair_solref[self.pair_id, 1] = zeta
-            self.last_zeta = zeta
+            self.set_face_damping_ratio(min(p.vdr_zeta_max, p.vdr_zeta0 + p.vdr_zeta1 * v_approach))
+        t = float(self.d.time)
+        if in_contact:
+            if not self._in_contact and t - self._last_contact_t > 0.005:  # new blow, not chatter
+                self.contact_zeta = self.last_zeta
+            self._last_contact_t = t
         self._in_contact = in_contact
 
     def truth(self) -> dict[str, float]:
