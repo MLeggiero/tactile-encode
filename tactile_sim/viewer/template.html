@@ -100,6 +100,15 @@ tbody tr[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%
 .chart canvas { display: block; width: 100%; height: 150px; cursor: crosshair; }
 .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; font-family: var(--font-data); font-size: 11.5px; color: var(--ink); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
 .note { color: var(--ink-3); font-size: 12px; margin: 0; }
+.tactile .pads { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 12px; }
+.tactile figure { margin: 0; display: grid; gap: 4px; min-width: 0; }
+.tactile canvas { width: 100%; aspect-ratio: 1 / 1; display: block; border-radius: 4px; cursor: crosshair; }
+.tactile figcaption { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tactile figcaption b { color: var(--ink); font-weight: 600; }
+.ramp { padding: 10px 12px 0; }
+.ramp canvas { width: 100%; height: 10px; display: block; border-radius: 2px; }
+.ramp-ticks { display: flex; justify-content: space-between; font-family: var(--font-data); font-size: 11px; color: var(--ink-3); padding-top: 2px; }
+.tnote { padding: 6px 12px 12px; }
 .err { background: var(--panel); border: 1px solid var(--miss); color: var(--ink); border-radius: 8px; padding: 12px; }
 @media (max-width: 560px) {
   .transport { grid-template-columns: auto auto minmax(0, 1fr); }
@@ -146,6 +155,15 @@ tbody tr[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%
 
     <aside class="side">
       <div class="stats" id="stats"></div>
+      <div class="card tactile" id="tactile-card">
+        <h2>Pad pressure arrays</h2>
+        <div class="pads">
+          <figure><canvas id="pad-L" aria-label="Left pad pressure heatmap"></canvas><figcaption id="cap-L">Left pad</figcaption></figure>
+          <figure><canvas id="pad-R" aria-label="Right pad pressure heatmap"></canvas><figcaption id="cap-R">Right pad</figcaption></figure>
+        </div>
+        <div class="ramp"><canvas id="ramp" aria-hidden="true"></canvas><div class="ramp-ticks" id="ramp-ticks"></div></div>
+        <p class="note tnote" id="tnote"></p>
+      </div>
       <div class="card">
         <h2>Strike log</h2>
         <div class="tablewrap"><table id="log"></table></div>
@@ -260,11 +278,92 @@ function buildScene() {
 }
 buildScene();
 
+// ------------------------------------------------------------------ tactile heatmaps
+// single-hue sequential ramp (light: pale = near zero; dark: reversed so near zero recedes into the surface)
+const RAMP = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf",
+              "#1c5cab", "#184f95", "#104281", "#0d366b"].map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
+const isDark = () => { const t = document.documentElement.dataset.theme; return t === "dark" || (t !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches); };
+function rampColor(x) {
+  const r = isDark() ? RAMP.slice().reverse() : RAMP;
+  const f = Math.min(Math.max(x, 0), 1) * (r.length - 1), i = Math.min(Math.floor(f), r.length - 2), a = f - i;
+  const c = r[i].map((v, k) => Math.round(v + a * (r[i + 1][k] - v)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+const tactileCache = {};
+function tactile() {
+  const T = S.ep.tactile; if (!T) return null;
+  if (!tactileCache[S.ep.key]) tactileCache[S.ep.key] = b64bytes(T.data);
+  return T;
+}
+const tHover = { L: null, R: null };
+function tactileFrame(T, t) {
+  const i = bsearch(T.t, t), n = T.rows * T.cols, bytes = tactileCache[S.ep.key];
+  const scale = T.range / 255, row = bytes.subarray(i * 2 * n, (i + 1) * 2 * n);
+  const L = new Float32Array(n), R = new Float32Array(n);
+  for (let k = 0; k < n; k++) { L[k] = row[k] * scale; R[k] = row[n + k] * scale; }
+  return { L, R, t: T.t[i] };
+}
+function drawPad(side, vals, T) {
+  const cv = $(`pad-${side}`), W = cv.clientWidth; if (!W) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = W * dpr; cv.height = W * dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const nr = T.rows, nc = T.cols, cell = W / Math.max(nr, nc), gap = 1;
+  g.fillStyle = css("--panel"); g.fillRect(0, 0, W, W);
+  let tot = 0, cx = 0, cy = 0, peak = 0;
+  for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
+    const v = vals[r * nc + c];
+    // viewed from the handle: hammer head to the left, fingertip up; the right finger is mirrored
+    const col = side === "L" ? r : nr - 1 - r, rowPix = nc - 1 - c;
+    g.fillStyle = rampColor(v / T.range);
+    g.fillRect(col * cell + gap / 2, rowPix * cell + gap / 2, cell - gap, cell - gap);
+    tot += v; cx += v * (col + 0.5); cy += v * (rowPix + 0.5); peak = Math.max(peak, v);
+  }
+  if (tot > 0.5) {  // centre of pressure
+    g.beginPath(); g.arc((cx / tot) * cell, (cy / tot) * cell, cell * 0.32, 0, 2 * Math.PI);
+    g.lineWidth = 2; g.strokeStyle = css("--panel"); g.stroke();
+    g.lineWidth = 1.2; g.strokeStyle = css("--ink"); g.stroke();
+  }
+  const h = tHover[side];
+  if (h) {
+    g.strokeStyle = css("--accent"); g.lineWidth = 2; g.strokeRect(h.col * cell + 1, h.row * cell + 1, cell - 2, cell - 2);
+    const r = side === "L" ? h.col : nr - 1 - h.col, c = nc - 1 - h.row;
+    $(`cap-${side}`).innerHTML = `${side === "L" ? "Left" : "Right"} pad · taxel ${r + 1},${c + 1}: <b>${vals[r * nc + c].toFixed(2)} N</b>`;
+  } else {
+    $(`cap-${side}`).innerHTML = `${side === "L" ? "Left" : "Right"} pad · <b>${tot.toFixed(1)} N</b> total · peak ${peak.toFixed(1)} N`;
+  }
+}
+function drawTactile() {
+  const T = tactile(), card = $("tactile-card");
+  card.hidden = !T; if (!T) return;
+  const f = tactileFrame(T, S.t);
+  drawPad("L", f.L, T); drawPad("R", f.R, T);
+  const rc = $("ramp"), W = rc.clientWidth;
+  if (W) {
+    rc.width = W; rc.height = 10; const g = rc.getContext("2d");
+    for (let x = 0; x < W; x++) { g.fillStyle = rampColor(x / (W - 1)); g.fillRect(x, 0, 1, 10); }
+  }
+  $("ramp-ticks").innerHTML = [0, 0.25, 0.5, 0.75, 1].map((q) => `<span>${(q * T.range).toFixed(0)}${q === 1 ? " N" : ""}</span>`).join("");
+  $("tnote").textContent = `Sensor model output: ${T.rows} × ${T.cols} taxels on each ${T.pad_mm[0]} × ${T.pad_mm[1]} mm pad at ${Math.round(T.rate)} Hz, ${T.noise} N noise, ${T.range} N per taxel. Viewed from the handle: hammer head to the left, fingertip up. The ring is the centre of pressure.`;
+}
+for (const side of ["L", "R"]) {
+  const cv = $(`pad-${side}`);
+  cv.addEventListener("mousemove", (ev) => {
+    const T = S.ep.tactile; if (!T) return;
+    const cell = cv.clientWidth / Math.max(T.rows, T.cols);
+    tHover[side] = { col: Math.min(T.rows - 1, Math.floor(ev.offsetX / cell)), row: Math.min(T.cols - 1, Math.floor(ev.offsetY / cell)) };
+    drawTactile();
+  });
+  cv.addEventListener("mouseleave", () => { tHover[side] = null; drawTactile(); });
+}
+new ResizeObserver(() => { if (S.ep) drawTactile(); }).observe($("tactile-card"));
+
 function applyTheme() {
   scene.background = new THREE.Color(css("--stage"));
   const c = new THREE.Color(css("--ink-3"));
   grid.material.color = c; grid.material.opacity = 0.35; grid.material.transparent = true;
   drawAll();
+  if (S.ep) drawTactile();
 }
 
 const VIEWS = {
@@ -393,6 +492,7 @@ function setTime(t) {
     (f > 1 ? `<div class="contact">hammer on nail · ${f.toFixed(0)} N</div>` : "<div>&nbsp;</div>");
   if (nailHeadMat) nailHeadMat.emissive = new THREE.Color(f > 1 ? css("--accent") : "#000000");
   drawAll();
+  drawTactile();
 }
 
 let last = performance.now();

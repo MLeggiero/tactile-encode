@@ -50,7 +50,7 @@ python -m tactile_sim.viewer.live --n 5 --slowdown 20                 # native M
 ```
 
 `runs/replay.html` is a standalone 3D replay (three.js, loaded from a CDN) of the exported episodes with
-the real robot meshes, per-strike records and time-aligned traces. `gymnasium.make("TactileHammer-v0")`
+the real robot meshes, per-strike records, time-aligned traces and a live 8 x 8 pressure heatmap for each pad. `gymnasium.make("TactileHammer-v0")`
 exposes the L2 -> L1 interface (TCP offset, stiffness scale, strike-axis feedforward, grasp force) at 200 Hz.
 
 On a machine with an NVIDIA GPU, set `MUJOCO_GL=egl` before starting Python to enable the optional

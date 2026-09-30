@@ -194,6 +194,7 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
         })
     summ = {k: (None if isinstance(v, float) and not np.isfinite(v) else v) for k, v in res.summary.items()}
     return {
+        "tactile": export_tactile(tb, ep.cfg, contacts),
         "key": key, "label": label, "arm": w.arm_source, "hand": w.hand_source, "dt": w.dt,
         "config": {"v_strike": ep.cfg.swing.v_strike, "grip_hold": ep.cfg.controller.grip_hold,
                    "pad_torsion": ep.cfg.gripper.pad_torsion, "flex_mode": ep.cfg.arm.flex_mode,
@@ -205,6 +206,30 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
         "nail_head": _r(w.data.site_xpos[w.site[names.NAIL_HEAD_SITE]], 4),
         "strike_axis": _r(tb.l1.axis, 3),
     }
+
+
+def export_tactile(tb, cfg, contacts: list[float], base_dt: float = 0.005, window=(-0.02, 0.08)) -> dict | None:
+    """Both pads' taxel frames as the sensor model reported them, quantised to one byte per taxel over the
+    sensor's range: base_dt spacing through the episode plus every sample around each contact."""
+    if "pressure_L" not in tb.sensors:
+        return None
+    hl, hr = tb.sensors["pressure_L"].history(), tb.sensors["pressure_R"].history()
+    n = min(len(hl["t_sample"]), len(hr["t_sample"]))
+    if n == 0:
+        return None
+    t = hl["t_sample"][:n]
+    step = max(1, int(round(base_dt / np.median(np.diff(t))))) if n > 1 else 1
+    keep = np.zeros(n, dtype=bool)
+    keep[::step] = True
+    for tc in contacts:
+        keep |= (t >= tc + window[0]) & (t <= tc + window[1])
+    rng = float(cfg.sensors.pressure_range)
+    vals = np.concatenate([hl["value"][:n][keep], hr["value"][:n][keep]], axis=1)
+    q = np.clip(np.round(vals / rng * 255.0), 0, 255).astype(np.uint8)
+    nr, nc = cfg.sensors.taxel_grid
+    return {"t": _r(t[keep], 5), "data": _b64(q), "rows": nr, "cols": nc, "range": rng,
+            "pad_mm": [round(2e3 * cfg.gripper.pad_half[0], 1), round(2e3 * cfg.gripper.pad_half[2], 1)],
+            "rate": cfg.sensors.pressure_rate, "noise": cfg.sensors.pressure_noise}
 
 
 def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False) -> dict:

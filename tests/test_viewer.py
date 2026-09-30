@@ -47,6 +47,11 @@ def test_standalone_page(tmp_path):
     assert len(ep["frames"]["t"]) == len(ep["frames"]["pos"]) == len(ep["frames"]["quat"])
     assert len(ep["frames"]["pos"][0]) == 3 * len(ep["bodies"])
     assert ep["strikes"][0]["hit"]
+    tac = ep["tactile"]
+    assert (tac["rows"], tac["cols"]) == (8, 8)
+    import base64
+    raw = base64.b64decode(tac["data"])
+    assert len(raw) == len(tac["t"]) * 2 * 64 and max(raw) > 0  # both pads, one byte per taxel
     out = build_html(data, tmp_path / "replay.html")
     html = out.read_text()
     assert "<title>Nail Strike Replay</title>" in html and "/*__REPLAY_DATA__*/" not in html
