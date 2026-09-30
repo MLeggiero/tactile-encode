@@ -1,6 +1,6 @@
 PY ?= .venv/bin/python
 
-.PHONY: venv install assets test test-all lint strikes calibrate
+.PHONY: venv install assets test test-all lint strikes calibrate replay
 
 venv:
 	python3 -m venv .venv
@@ -12,7 +12,7 @@ assets:
 	$(PY) -m tactile_sim.assets.fetch_menagerie
 
 test:
-	$(PY) -m pytest -q -m "not network and not slow"
+	$(PY) -m pytest -q -m "not network"
 
 test-all:
 	$(PY) -m pytest -q
@@ -25,3 +25,6 @@ strikes:
 
 calibrate:
 	$(PY) -m tactile_sim.calibrate pulse
+
+replay:
+	$(PY) -m tactile_sim.viewer.export --n 8 --preset default --preset low-torsion --preset weak-grip --out runs/replay.html

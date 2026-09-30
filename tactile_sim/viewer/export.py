@@ -11,6 +11,7 @@ max-pooled where short pulses matter (contact force, wrist F/T) so peaks survive
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 from pathlib import Path
 
@@ -33,37 +34,86 @@ PRESETS = {
 }
 
 
+def cluster_decimate(verts: np.ndarray, faces: np.ndarray, cell: float) -> tuple[np.ndarray, np.ndarray]:
+    """Vertex-clustering simplification: snap vertices to a `cell`-sized grid, merge each cell to its mean,
+    drop collapsed and duplicate triangles. Crude but dependency-free; fine for a replay view."""
+    key = np.floor(verts / cell).astype(np.int64)
+    _, inv = np.unique(key, axis=0, return_inverse=True)
+    inv = inv.reshape(-1)
+    n = int(inv.max()) + 1
+    out_v = np.zeros((n, 3))
+    np.add.at(out_v, inv, verts)
+    out_v /= np.bincount(inv, minlength=n)[:, None]
+    f = inv[faces]
+    ok = (f[:, 0] != f[:, 1]) & (f[:, 1] != f[:, 2]) & (f[:, 0] != f[:, 2])
+    f = f[ok]
+    f = np.unique(f, axis=0) if len(f) else f
+    return out_v, f
+
+
+def _b64(a: np.ndarray) -> str:
+    return base64.b64encode(np.ascontiguousarray(a).tobytes()).decode("ascii")
+
+
+def export_mesh(m: mujoco.MjModel, mesh_id: int, cell: float) -> dict:
+    va, vn = int(m.mesh_vertadr[mesh_id]), int(m.mesh_vertnum[mesh_id])
+    fa, fn = int(m.mesh_faceadr[mesh_id]), int(m.mesh_facenum[mesh_id])
+    v = m.mesh_vert[va:va + vn].astype(float)
+    f = m.mesh_face[fa:fa + fn].astype(np.int64)
+    if len(f) > 200:
+        v, f = cluster_decimate(v, f, cell)
+    lo, hi = v.min(axis=0), v.max(axis=0)
+    scale = np.maximum(hi - lo, 1e-9) / 65535.0
+    q = np.round((v - lo) / scale).astype(np.uint16)
+    idx_dtype = np.uint16 if len(v) < 65536 else np.uint32
+    return {"min": np.round(lo, 6).tolist(), "scale": scale.tolist(), "v": _b64(q),
+            "f": _b64(f.astype(idx_dtype)), "idx32": idx_dtype is np.uint32, "nf": int(len(f))}
+
+
+def _rgba(m: mujoco.MjModel, g: int) -> list[float]:
+    mat = int(m.geom_matid[g])
+    rgba = m.mat_rgba[mat] if mat >= 0 else m.geom_rgba[g]
+    return np.round(rgba, 3).tolist()
+
+
 def _geom_record(m: mujoco.MjModel, g: int, body_name: str) -> dict | None:
     typ = int(m.geom_type[g])
     kinds = {mujoco.mjtGeom.mjGEOM_BOX: "box", mujoco.mjtGeom.mjGEOM_CAPSULE: "capsule",
-             mujoco.mjtGeom.mjGEOM_CYLINDER: "cylinder", mujoco.mjtGeom.mjGEOM_SPHERE: "sphere"}
-    if typ not in kinds:
-        return None
-    return {"body": body_name, "type": kinds[typ], "size": np.round(m.geom_size[g], 5).tolist(),
-            "pos": np.round(m.geom_pos[g], 5).tolist(), "quat": np.round(m.geom_quat[g], 6).tolist(),
-            "rgba": np.round(m.geom_rgba[g], 3).tolist(), "name": m.geom(g).name}
+             mujoco.mjtGeom.mjGEOM_CYLINDER: "cylinder", mujoco.mjtGeom.mjGEOM_SPHERE: "sphere",
+             mujoco.mjtGeom.mjGEOM_MESH: "mesh"}
+    if typ not in kinds or int(m.geom_group[g]) > 2:
+        return None  # collision-only and helper geoms are not drawn
+    rec = {"body": body_name, "type": kinds[typ], "size": np.round(m.geom_size[g], 5).tolist(),
+           "pos": np.round(m.geom_pos[g], 5).tolist(), "quat": np.round(m.geom_quat[g], 6).tolist(),
+           "rgba": _rgba(m, g), "name": m.geom(g).name}
+    if typ == mujoco.mjtGeom.mjGEOM_MESH:
+        rec["mesh"] = m.mesh(int(m.geom_dataid[g])).name
+    return rec
 
 
-def scene_geometry(model: mujoco.MjModel) -> tuple[list[str], list[dict]]:
-    """Drawable primitives per body. Mesh geoms (Menagerie FR3) are replaced by the fallback arm's capsules,
-    which share body names, kinematics and inertias."""
+def scene_geometry(model: mujoco.MjModel, cell: float = 0.002) -> tuple[list[str], list[dict], dict]:
+    """Drawable geoms per body, with the real FR3 / Franka Hand meshes (simplified) when the scene uses them.
+    A fallback-arm scene is drawn with the fallback's capsules."""
     geoms: list[dict] = []
+    meshes: dict[str, dict] = {}
     for g in range(model.ngeom):
         b = int(model.geom_bodyid[g])
         if b == 0:
             continue  # floor and other world geoms: the viewer draws its own ground
         rec = _geom_record(model, g, model.body(b).name)
-        if rec is not None:
-            geoms.append(rec)
-    have_arm = any(r["body"].startswith("fr3_link") for r in geoms)
-    if not have_arm:
+        if rec is None:
+            continue
+        if rec["type"] == "mesh" and rec["mesh"] not in meshes:
+            meshes[rec["mesh"]] = export_mesh(model, int(model.geom_dataid[g]), cell)
+        geoms.append(rec)
+    if not any(r["body"].startswith("fr3_link") for r in geoms):
         fb = mujoco.MjModel.from_xml_path(str(FALLBACK_ARM_XML))
         for g in range(fb.ngeom):
             rec = _geom_record(fb, g, fb.body(int(fb.geom_bodyid[g])).name)
             if rec is not None:
                 geoms.append(rec)
     bodies = sorted({r["body"] for r in geoms}, key=lambda n: model.body(n).id)
-    return bodies, geoms
+    return bodies, geoms, meshes
 
 
 def _pool(t: np.ndarray, y: np.ndarray, dt: float, mode: str = "maxabs") -> tuple[np.ndarray, np.ndarray]:
@@ -87,7 +137,7 @@ def _r(a, nd=4) -> list:
 def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dict:
     tb, w = res.testbed, res.testbed.world
     m = w.model
-    bodies, _ = scene_geometry(m)
+    bodies, _, _ = scene_geometry(m)
     bid = [m.body(n).id for n in bodies]
     ft = np.asarray(ep.frames_t)
     contacts = [r.t_contact_truth for r in res.strikes if np.isfinite(r.t_contact_truth)]
@@ -132,7 +182,7 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
             "t_contact": round(r.t_contact_truth, 5) if np.isfinite(r.t_contact_truth) else None,
             "t_pred": round(r.t_c_pred, 5),
             "t_flag": round(r.t_flag, 5) if np.isfinite(r.t_flag) else None, "flag_source": r.flag_source,
-            "v": round(r.v_strike_actual, 3), "peak": round(r.peak_force_truth, 1),
+            "v": round(r.v_strike_actual, 3), "v_cmd": round(r.v_cmd, 2), "peak": round(r.peak_force_truth, 1),
             "width_ms": round(r.pulse_width * 1e3, 2), "depth_mm": round(r.depth_inc * 1e3, 3),
             "depth_after_mm": round(r.depth_after * 1e3, 3),
             "slip_mm": round(r.slip_trans * 1e3, 3), "slip_deg": round(float(np.degrees(r.slip_rot)), 3),
@@ -144,7 +194,7 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
         })
     summ = {k: (None if isinstance(v, float) and not np.isfinite(v) else v) for k, v in res.summary.items()}
     return {
-        "key": key, "label": label, "arm": w.arm_source, "dt": w.dt,
+        "key": key, "label": label, "arm": w.arm_source, "hand": w.hand_source, "dt": w.dt,
         "config": {"v_strike": ep.cfg.swing.v_strike, "grip_hold": ep.cfg.controller.grip_hold,
                    "pad_torsion": ep.cfg.gripper.pad_torsion, "flex_mode": ep.cfg.arm.flex_mode,
                    "resistance_0": ep.cfg.plant.resistance_0, "drive_target_mm": ep.cfg.plant.drive_target * 1e3},
@@ -158,7 +208,7 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
 
 
 def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False) -> dict:
-    episodes, geoms = [], None
+    episodes, geoms, meshes = [], None, None
     for key in presets:
         label, over = PRESETS[key]
         base = fast_config() if fast else SimConfig()
@@ -166,12 +216,12 @@ def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False
         ep = Episode(cfg, seed=seed, frame_hz=2000.0)
         res = ep.run(n)
         if geoms is None:
-            _, geoms = scene_geometry(res.testbed.world.model)
+            _, geoms, meshes = scene_geometry(res.testbed.world.model)
         episodes.append(export_episode(ep, res, label, key))
         s = res.summary
         print(f"{key}: {len(res.strikes)} strikes, depth {1e3 * s.get('total_depth', 0):.1f} mm, "
               f"hit rate {s.get('hit_rate', 0):.2f}, max slip {np.degrees(s.get('max_slip_rot', 0)):.2f} deg")
-    return {"geoms": geoms, "episodes": episodes}
+    return {"geoms": geoms, "meshes": meshes, "episodes": episodes}
 
 
 def build_html(data: dict, out: Path) -> Path:

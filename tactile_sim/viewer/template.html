@@ -113,7 +113,7 @@ tbody tr[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%
   <header class="top">
     <div>
       <h1>Nail Strike Replay</h1>
-      <p class="sub" id="sub">Task A testbed episodes: FR3-class arm, compliant-pad gripper, 0.6 kg hammer, pre-started nail in a vertical board.</p>
+      <p class="sub" id="sub">Task A testbed episodes: Franka FR3 with the Franka Hand, 0.6 kg hammer, pre-started nail in a vertical board.</p>
     </div>
     <div class="eps" id="eps" role="group" aria-label="Episode"></div>
   </header>
@@ -124,7 +124,7 @@ tbody tr[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%
         <div class="hud" id="hud"></div>
         <div class="views" role="group" aria-label="Camera">
           <button class="seg" data-view="overview" aria-pressed="true">Overview</button>
-          <button class="seg" data-view="side">Side</button>
+          <button class="seg" data-view="top">Top</button>
           <button class="seg" data-view="nail">Nail</button>
         </div>
       </div>
@@ -211,9 +211,26 @@ function materialFor(g) {
   return new THREE.MeshStandardMaterial({ color: new THREE.Color(r, gg, b), transparent: a < 1, opacity: a,
     metalness: metal ? 0.65 : 0.05, roughness: metal ? 0.35 : 0.7 });
 }
+function b64bytes(str) { const bin = atob(str); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+const meshCache = {};
+function meshGeometry(name) {
+  if (meshCache[name]) return meshCache[name];
+  const M = D.meshes[name];
+  const q = new Uint16Array(b64bytes(M.v).buffer);
+  const pos = new Float32Array(q.length);
+  for (let i = 0; i < q.length; i++) pos[i] = M.min[i % 3] + q[i] * M.scale[i % 3];
+  const fb = b64bytes(M.f).buffer;
+  const idx = M.idx32 ? new Uint32Array(fb) : new Uint16Array(fb);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.computeVertexNormals();
+  return (meshCache[name] = geo);
+}
 function geometryFor(g) {
   const s = g.size;
   let geo;
+  if (g.type === "mesh") return D.meshes && D.meshes[g.mesh] ? meshGeometry(g.mesh) : null;
   if (g.type === "box") geo = new THREE.BoxGeometry(2 * s[0], 2 * s[1], 2 * s[2]);
   else if (g.type === "sphere") geo = new THREE.SphereGeometry(s[0], 20, 14);
   else if (g.type === "capsule") { geo = new THREE.CapsuleGeometry(s[0], 2 * s[1], 6, 18); geo.rotateX(Math.PI / 2); }
@@ -233,7 +250,9 @@ function buildScene() {
     mesh.quaternion.set(g.quat[1], g.quat[2], g.quat[3], g.quat[0]);
     bodyGroups[g.body].add(mesh);
   }
-  // joint knuckles so the capsule arm reads as connected links
+  // joint knuckles so a capsule (fallback) arm reads as connected links; the real FR3 meshes need none
+  const hasArmMeshes = D.geoms.some((g) => g.type === "mesh" && /^fr3_link/.test(g.body));
+  if (hasArmMeshes) return;
   const knuckle = new THREE.MeshStandardMaterial({ color: 0xcfd4d3, roughness: 0.6 });
   for (const name of Object.keys(bodyGroups)) {
     if (/^fr3_link[1-7]$/.test(name)) bodyGroups[name].add(new THREE.Mesh(new THREE.SphereGeometry(0.052, 20, 14), knuckle));
@@ -250,8 +269,8 @@ function applyTheme() {
 
 const VIEWS = {
   overview: (n) => ({ pos: [n[0] + 1.05, n[1] - 0.75, n[2] + 0.45], tgt: [n[0] + 0.05, n[1] - 0.12, n[2] + 0.02] }),
-  side: (n) => ({ pos: [n[0] + 0.95, n[1] - 0.12, n[2] + 0.22], tgt: [n[0], n[1] - 0.12, n[2]] }),
-  nail: (n) => ({ pos: [n[0] + 0.16, n[1] - 0.20, n[2] + 0.10], tgt: [n[0], n[1] - 0.01, n[2]] }),
+  top: (n) => ({ pos: [n[0] + 0.02, n[1] - 0.10, n[2] + 0.75], tgt: [n[0] + 0.02, n[1] - 0.10, n[2]] }),
+  nail: (n) => ({ pos: [n[0] - 0.17, n[1] - 0.16, n[2] + 0.02], tgt: [n[0], n[1] - 0.02, n[2]] }),
 };
 function setView(v) {
   S.view = v;
@@ -295,7 +314,7 @@ function fmt(v, d = 1, unit = "") { return v === null || v === undefined || Numb
 
 function renderEpisodeChrome() {
   const e = S.ep, s = e.summary, c = e.config;
-  $("sub").textContent = `${e.label}. Arm model: ${e.arm === "fr3" ? "Menagerie FR3" : "capsule fallback"}; physics ${Math.round(1 / e.dt)} Hz.`;
+  $("sub").textContent = `${e.label}. ${e.arm === "fr3" ? "Franka FR3" : "Capsule stand-in arm"} with ${e.hand === "franka" ? "the Franka Hand" : "a box stand-in hand"} (MuJoCo Menagerie models); physics ${Math.round(1 / e.dt)} Hz.`;
   const target = c.drive_target_mm;
   const driven = (s.total_depth || 0) * 1e3;
   $("stats").innerHTML = [
@@ -309,7 +328,7 @@ function renderEpisodeChrome() {
     ["Pad torsional friction", `${c.pad_torsion} m`], ["Wrist", c.flex_mode === "wrist" ? "compliant" : "rigid"],
     ["Nail resistance at start", `${c.resistance_0} N`],
   ].map(([k, v]) => `<div>${k}: <span>${v}</span></div>`).join("");
-  $("log").innerHTML = `<thead><tr><th>#</th><th></th><th>v m/s</th><th>peak N</th><th>pulse ms</th><th>depth mm</th><th>tilt °</th><th>slip mm</th><th>flag</th></tr></thead><tbody>` +
+  $("log").innerHTML = `<thead><tr><th>#</th><th></th><th>face m/s</th><th>peak N</th><th>pulse ms</th><th>depth mm</th><th>tilt °</th><th>slip mm</th><th>flag</th></tr></thead><tbody>` +
     e.strikes.map((r, i) => `<tr tabindex="0" data-i="${i}"><td>${r.idx}</td><td><span class="pill ${r.hit ? "hit" : "miss"}">${r.hit ? "hit" : "miss"}</span></td><td>${fmt(r.v, 2)}</td><td>${fmt(r.peak, 0)}</td><td>${fmt(r.width_ms, 1)}</td><td>${fmt(r.depth_mm, 2)}</td><td>${fmt(r.slip_deg, 2)}</td><td>${fmt(r.slip_mm, 2)}</td><td>${r.latency_ms === null ? "—" : `${fmt(r.latency_ms, 2)} ms ${r.flag_source}`}</td></tr>`).join("") + "</tbody>";
   $("log").querySelectorAll("tbody tr").forEach((tr) => {
     const go = () => jumpToStrike(+tr.dataset.i);

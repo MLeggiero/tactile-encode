@@ -111,3 +111,32 @@ M2 and M3 can proceed in parallel after M1; M6 needs M4 + M5.
 - `python -m tactile_sim.calibrate pulse` prints pulse width/peak/restitution across the `solref` sweep; the default is pinned to the ~3 ms row.
 - Compare `--flex-mode rigid` vs `wrist` on the logged 30–300 Hz post-impact F/T energy to confirm ringing is present only with compliance.
 - Add a short "Simulation" section to README linking back to `docs/control_flowchart.html:334` so the sim's numbers stay traceable to the report.
+
+## Implementation notes (as built)
+
+The package follows the plan above. These are the places where building it changed a decision:
+
+- **Horizontal strike.** A vertical stroke with the fingers closing vertically puts the FR3 wrist within
+  0.08 rad of its joint limits. The nail is instead driven sideways into a vertical board while the hand
+  points down (the FR3's natural posture, ~0.9 rad from every limit).
+- **Real hand.** The gripper is Menagerie's Franka Hand (meshes, inertials, finger joints). Compliance is
+  added only on its real 17 x 17 mm fingertip pads, as hard-rubber layers (2e5 N/m). The grasp is
+  force-controlled up to the hand's 140 N peak; heavy finger damping stands in for its non-backdrivable
+  spindle.
+- **Grasp physics.** The noslip solver pass is on by default (soft friction otherwise lets a static grasp
+  creep). Pad torsional friction is 0.02 m. The hold force is 55 N per pad.
+- **Contact.** Hammer-face timeconst 1 ms. Pair margins are 0: MuJoCo 3.14 applied pair force across the
+  whole margin despite a matching gap. Velocity-dependent restitution uses the direct solref form so only
+  damping changes with approach speed.
+- **L2 -> L1 interface.** An `L2Command` may carry a reference trajectory that L1 evaluates at 1 kHz; a
+  200 Hz setpoint would step a 2 m/s swing by 1 cm per tick.
+- **Impact detection.** The pad accelerometer is the fast channel (<= 1 ms). The wrist F/T channel uses
+  departure from a 10 ms baseline rather than a slope, because the tool rings in the grasp during swings.
+- **Aiming.** The swing line is aimed so the hammer face (not the TCP) meets the nail, from the tool-in-hand
+  estimate at swing start, with the swing's own lateral drift learned per v^2 across strikes. The first
+  strike is a 1.2 m/s setting tap.
+- **Defaults from tuning.** Impedance 3000 N/m and 150 Nm/rad (joint friction held the arm ~7 mm off at
+  1500 N/m); strike speed 2.2 m/s (the FR3's torque limits cap the face at ~2.2 m/s anyway).
+- **Not built.** Series-elastic joint mode, the drill plant (stub), cameras beyond an optional renderer.
+- **Viewer.** `tactile_sim/viewer` exports episodes (poses at 2 kHz around impacts, traces, strike records,
+  simplified real meshes) into a standalone three.js replay page; `viewer.live` opens MuJoCo's own viewer.
