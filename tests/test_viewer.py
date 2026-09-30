@@ -1,8 +1,8 @@
 """Replay export: mesh simplification, scene geometry and the standalone page."""
-
 import json
 
 import numpy as np
+import pytest
 from conftest import requires_menagerie
 
 from tactile_sim.config import fast_config
@@ -44,15 +44,33 @@ def test_fallback_scene_draws_capsules():
 def test_standalone_page(tmp_path):
     data = run_and_export(["default"], n=1, fast=True)
     ep = data["episodes"][0]
-    assert len(ep["frames"]["t"]) == len(ep["frames"]["pos"]) == len(ep["frames"]["quat"])
-    assert len(ep["frames"]["pos"][0]) == 3 * len(ep["bodies"])
+    F = ep["frames"]
+    import base64
+    nb = len(ep["bodies"])
+    assert F["n"] == len(F["t"])
+    assert len(base64.b64decode(F["pos"])) == 2 * 3 * nb * F["n"]  # int16 positions
+    assert len(base64.b64decode(F["quat"])) == 2 * 4 * nb * F["n"]
     assert ep["strikes"][0]["hit"]
     tac = ep["tactile"]
     assert (tac["rows"], tac["cols"]) == (8, 8)
-    import base64
+    assert [p["name"] for p in tac["patches"]] == ["L", "R"]
     raw = base64.b64decode(tac["data"])
     assert len(raw) == len(tac["t"]) * 2 * 64 and max(raw) > 0  # both pads, one byte per taxel
+    assert ep["limits"]["violations"] == ""
     out = build_html(data, tmp_path / "replay.html")
     html = out.read_text()
     assert "<title>Nail Strike Replay</title>" in html and "/*__REPLAY_DATA__*/" not in html
     assert '"episodes"' in html
+
+
+@pytest.mark.skipif(not __import__("tactile_sim.assets.fetch_hands", fromlist=["x"]).hand_available("wuji2"),
+                    reason="WUJI Hand 2 not cached")
+def test_wuji_scene_and_patches_export():
+    from tactile_sim.config import hand_config
+
+    w = World(hand_config("wuji2", fast_config()))
+    bodies, geoms, meshes = scene_geometry(w.model)
+    assert any(m.startswith("wuji_") for m in meshes)  # the vendor's hand meshes are drawn
+    patches = [g for g in geoms if g["name"].startswith("patch_")]
+    assert sorted(g["name"] for g in patches) == ["patch_palm", "patch_thumb"]
+    assert not any(g["name"].startswith("wuji_col") for g in geoms)  # collision hulls are not

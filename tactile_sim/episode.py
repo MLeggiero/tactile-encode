@@ -16,6 +16,7 @@ from scipy import signal
 from tactile_sim import names
 from tactile_sim.behaviors.swing import ScriptedSwing, StrikePlan
 from tactile_sim.config import SimConfig
+from tactile_sim.limits import LimitMonitor, check_payload
 from tactile_sim.logging.strike_metrics import StrikeRecord, grasp_slip
 from tactile_sim.sim.testbed import Testbed
 from tactile_sim.sim.truth import pair_force, pulse_stats
@@ -97,6 +98,8 @@ class Episode:
         self.frames_t: list[float] = []
         self.frames_pos: list[np.ndarray] = []
         self.frames_quat: list[np.ndarray] = []
+        self.limits = LimitMonitor(w)
+        self.strike_limits = LimitMonitor(w)
         self.swing = ScriptedSwing(self.tb, on_swing_start=self._on_swing_start, on_strike_end=self._on_strike_end)
         self.tb.l2_callbacks[:] = [self.swing.tick]
 
@@ -112,6 +115,7 @@ class Episode:
         self._board_hit = False
         self._peak_tau = np.zeros(7)
         self._grip_samples: list[tuple[float, float]] = []
+        self.strike_limits.reset()
         self.events.append((f"swing_start_{plan.idx}", plan.t_start))
 
     def _on_strike_end(self, plan: StrikePlan) -> None:
@@ -124,6 +128,7 @@ class Episode:
         rec.slip_trans, rec.slip_rot = grasp_slip(rec._p0, rec._r0, p, r)  # noqa: SLF001
         rec.drop = tb.grip.dropped
         rec.peak_joint_torque = self._peak_tau.copy()
+        rec.limits = self.strike_limits.summary()
         ts, fs = np.asarray(self._series_t), np.asarray(self._series_f)
         if len(ts) and fs.max() > 0:
             st = pulse_stats(ts, fs)
@@ -175,15 +180,17 @@ class Episode:
                     v = w.site_velocity(self.face_site)[:3] @ tb.l1.axis
                     rec.v_strike_actual = float(v)
                     rec.v_tcp = float(w.site_velocity(w.tcp_site)[:3] @ tb.l1.axis)
-                    rec.grip_at_contact = float(np.mean(w.pad_normal_forces()))
+                    rec.grip_at_contact = w.grip_truth()
                 self._series_t.append(t)
                 self._series_f.append(f_nail)
             elif np.isfinite(rec.t_contact_truth) and t - rec.t_contact_truth < 0.05:
                 self._series_t.append(t)
                 self._series_f.append(0.0)
             np.maximum(self._peak_tau, np.abs(d.ctrl[w.arm_act]), out=self._peak_tau)
+            self.strike_limits.step()
             if self._k % 4 == 0:
-                self._grip_samples.append((t, float(np.mean(w.pad_normal_forces()))))
+                self._grip_samples.append((t, w.grip_truth()))
+        self.limits.step()
         if self.record_truth and self._k % self.cfg.logging.truth_decim == 0:
             T = self.truth
             T.t.append(t)
@@ -220,9 +227,14 @@ class Episode:
             self.events.append(("drop", tb.grip.t_drop))
             if self._cur is not None:
                 self._cur.drop = True
+                self._cur.depth_after = tb.world.plant.depth
                 self.records.append(self._cur)
                 self._cur = None
         summary = summarize(self.records, self.cfg)
+        summary.update({f"limit_{k}": v for k, v in self.limits.summary().items()})
+        summary["limit_payload"] = check_payload(tb.world)
+        viol = sorted(self.limits.violations()) + (["payload"] if summary["limit_payload"] > 1.0 else [])
+        summary["limit_violations"] = ",".join(viol)  # empty = every hardware limit held
         if self.dr is not None:
             summary.update({f"dr_{k}": v for k, v in self.dr.as_dict().items()})
         return EpisodeResult(self.records, summary, self.truth.arrays(), self.events, tb)

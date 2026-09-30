@@ -34,6 +34,8 @@ STRIKE_FIELDS = [
     ("grip_at_contact", np.float64),
     ("grip_peak", np.float64), ("t_grip_peak_rel", np.float64), ("t_grip_ramp_start_rel", np.float64),
     ("ringing_energy", np.float64), ("pre_energy", np.float64),
+    # worst hardware-limit ratios during the strike (1.0 = at the limit; see tactile_sim.limits)
+    ("limit_arm_torque_rate", np.float64), ("limit_arm_velocity", np.float64), ("limit_hand_stop_load", np.float64),
 ]
 STRIKE_DTYPE = np.dtype(STRIKE_FIELDS)
 
@@ -66,6 +68,19 @@ class StrikeRecord:
     t_grip_ramp_start_rel: float = float("nan")
     ringing_energy: float = float("nan")
     pre_energy: float = float("nan")
+    limits: dict = field(default_factory=dict)
+
+    @property
+    def limit_arm_torque_rate(self) -> float:
+        return self.limits.get("arm_torque_rate", float("nan"))
+
+    @property
+    def limit_arm_velocity(self) -> float:
+        return self.limits.get("arm_velocity", float("nan"))
+
+    @property
+    def limit_hand_stop_load(self) -> float:
+        return self.limits.get("hand_stop_load", float("nan"))
 
     @property
     def flag_latency(self) -> float:

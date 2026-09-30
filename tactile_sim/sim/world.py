@@ -11,8 +11,7 @@ from tactile_sim import names
 from tactile_sim.config import SimConfig
 from tactile_sim.control.kinematics import site_jacobian, site_pose, solve_ik
 from tactile_sim.model.builder import build_scene, tcp_rotation
-from tactile_sim.model.gripper import finger_q_touch
-from tactile_sim.model.tool_hammer import hammer_geometry
+from tactile_sim.sim.hands import make_hand_io
 
 
 def full_inertia(m: mujoco.MjModel, d: mujoco.MjData, out: np.ndarray) -> np.ndarray:
@@ -53,6 +52,7 @@ class World:
         self.hover_tcp = spec.hover_tcp.copy()
         self.tcp_R_nominal = tcp_rotation()
         self._index()
+        self.hand = make_hand_io(self)
         self.plant.bind(self.model, self.data)
         self._Mfull = np.zeros((self.model.nv, self.model.nv))
         self._vel6 = np.zeros(6)
@@ -67,8 +67,6 @@ class World:
         self.arm_dofs = np.array([m.jnt_dofadr[j] for j in jid])
         self.arm_act = np.array([m.actuator(n).id for n in names.ARM_MOTORS])
         self.tau_limit = m.actuator_ctrlrange[self.arm_act, 1].copy()
-        self.finger_qadr = np.array([m.joint(n).qposadr[0] for n in names.FINGER_JOINTS])
-        self.grip_act = m.actuator(names.GRIP_MOTOR).id
         hj = m.joint("hammer_free")
         self.hammer_qadr = int(hj.qposadr[0])
         self.hammer_dofadr = int(hj.dofadr[0])
@@ -76,8 +74,7 @@ class World:
         self.hand_body = m.body(names.HAND_BODY).id
         self.weld_id = m.equality(names.GRASP_WELD).id
         self.site = {n: m.site(n).id for n in (names.TCP_SITE, names.FT_SITE, names.HAMMER_REF_SITE,
-                                                names.HAMMER_FACE_SITE, names.HAMMER_IMU_SITE, names.NAIL_HEAD_SITE,
-                                                *names.PAD_IMU_SITES)}
+                                                names.HAMMER_FACE_SITE, names.HAMMER_IMU_SITE, names.NAIL_HEAD_SITE)}
         self.tcp_site = self.site[names.TCP_SITE]
         self.wrist_dofs = np.array([m.joint(n).dofadr[0] for n in names.WRIST_FLEX_JOINTS
                                     if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n) >= 0], dtype=int)
@@ -85,9 +82,10 @@ class World:
         for i in range(m.nsensor):
             s = m.sensor(i)
             self.sensor_slices[s.name] = slice(int(s.adr[0]), int(s.adr[0] + s.dim[0]))
-        self.pad_geoms = [m.geom(n).id for n in names.PAD_GEOMS]
-        self._pad_bodies = [m.body(n).id for n in names.PAD_BODIES]
         self.handle_geom = m.geom(names.HAMMER_HANDLE_GEOM).id
+        if self.cfg.gripper.hand == "franka":
+            self.finger_qadr = np.array([m.joint(n).qposadr[0] for n in names.FINGER_JOINTS])
+            self.pad_geoms = [m.geom(n).id for n in names.PAD_GEOMS]
 
     # ------------------------------------------------------------------ helpers
     @property
@@ -127,9 +125,12 @@ class World:
         return tau
 
     def set_grip_force(self, f: float) -> None:
-        """Squeeze force per pad (N); positive closes."""
-        g = self.cfg.gripper.grip_force_max
-        self.data.ctrl[self.grip_act] = -float(np.clip(f, -g, g))
+        """Grip command (N): squeeze per pad on the Franka Hand, summed patch force on a dexterous hand."""
+        self.hand.set_grip(f)
+
+    def grip_truth(self) -> float:
+        """Ground-truth grip force in the grip command's units."""
+        return self.hand.grip_from_patches(self.pad_normal_forces())
 
     def hold_torque(self, q_ref: np.ndarray) -> np.ndarray:
         a = self.cfg.arm
@@ -151,7 +152,9 @@ class World:
         return p_rel, v
 
     def pad_normal_forces(self) -> np.ndarray:
-        """Ground-truth normal force on each pad from the handle (N)."""
+        """Ground-truth normal force on each pad (taxel patch) from the handle (N)."""
+        if self.hand.kind != "franka":
+            return self.hand.patch_forces()
         out = np.zeros(2)
         f6 = np.zeros(6)
         d = self.data
@@ -216,37 +219,8 @@ class World:
         return float(self.model.body_mass[b]), self.model.body_ipos[b].copy()
 
     def pad_taxels(self, side: int, spread: float = 0.003) -> np.ndarray:
-        """Normal force per taxel (row-major, rows along the pad's x) on one pad, from the contacts.
-
-        MuJoCo reduces the pad contact to a few points; a rubber pad spreads each load over its contact
-        patch. Each contact's force is shared among the taxels with Gaussian weights (sigma = `spread`,
-        about the rubber layer's thickness) evaluated at the cell centres; the weights are normalised so
-        the total force is exact. Contacts are placed by their position in the pad frame.
-        """
-        m, d = self.model, self.data
-        nr, nc = self.cfg.sensors.taxel_grid
-        hx, _, hz = self.cfg.gripper.pad_half
-        if not hasattr(self, "_taxel_xz"):
-            xs = -hx + (2 * np.arange(nr) + 1) * hx / nr
-            zs = -hz + (2 * np.arange(nc) + 1) * hz / nc
-            self._taxel_xz = np.stack(np.meshgrid(xs, zs, indexing="ij"), axis=-1).reshape(-1, 2)
-        out = np.zeros(nr * nc)
-        pg = self.pad_geoms[side]
-        body = self._pad_bodies[side]
-        f6 = np.zeros(6)
-        R = d.xmat[body].reshape(3, 3)
-        for i in range(d.ncon):
-            c = d.contact[i]
-            if pg not in (c.geom1, c.geom2) or self.handle_geom not in (c.geom1, c.geom2) or c.efc_address < 0:
-                continue
-            mujoco.mj_contactForce(m, d, i, f6)
-            if f6[0] <= 0:
-                continue
-            p = R.T @ (c.pos - d.xpos[body])
-            dx = self._taxel_xz - np.array([np.clip(p[0], -hx, hx), np.clip(p[2], -hz, hz)])
-            wts = np.exp(-0.5 * np.sum(dx * dx, axis=1) / spread**2)
-            out += f6[0] * wts / wts.sum()
-        return out
+        """Normal force per taxel on one pad / patch (row-major); see HandIO.taxels."""
+        return self.hand.taxels(side, spread)
 
     # ------------------------------------------------------------------ stepping
     def step(self, n: int = 1) -> None:
@@ -277,8 +251,7 @@ class World:
                 raise RuntimeError(f"IK for the hover pose failed (residual {res:.2e})")
             self.q_hover = q
         d.qpos[self.arm_qadr] = self.q_hover
-        g, h = self.cfg.gripper, self.cfg.hammer
-        d.qpos[self.finger_qadr] = finger_q_touch(g, hammer_geometry(h).grip_half_width)
+        self.hand.init_pose()
         mujoco.mj_kinematics(m, d)
         pt, Rt = self.tcp_pose()
         qt = np.zeros(4)
@@ -303,11 +276,16 @@ class World:
         n_weld = int(round(settle_weld / self.dt))
         for i in range(n_weld):
             self.set_grip_force(hold * min(1.0, 2.0 * i / n_weld))
+            self.hand.tick(self.t)
             self.set_arm_torque(self.hold_torque(self.q_hover))
             self.step()
         d.eq_active[self.weld_id] = 0
-        for _ in range(int(round(settle_free / self.dt))):
+        self.hand.locked = False
+        for i in range(int(round(settle_free / self.dt))):
+            if i == int(round(0.5 * settle_free / self.dt)):
+                self.hand.locked = True  # self-locking drives engage once the wrap has seated
             self.set_grip_force(hold)
+            self.hand.tick(self.t)
             self.set_arm_torque(self.hold_torque(self.q_hover))
             self.step()
         d.time = 0.0

@@ -20,13 +20,16 @@ import numpy as np
 
 from tactile_sim import names
 from tactile_sim.assets import FALLBACK_ARM_XML
-from tactile_sim.config import SimConfig, fast_config
+from tactile_sim.config import SimConfig, fast_config, hand_config
 from tactile_sim.episode import Episode, EpisodeResult
 
 TEMPLATE = Path(__file__).with_name("template.html")
+POS_UNIT = 1e-4  # m; int16 covers +-3.27 m
 
 PRESETS = {
-    "default": ("Default testbed", {}),
+    "default": ("Franka Hand (default testbed)", {}),
+    "wuji2": ("WUJI Hand 2 power wrap", {"hand": "wuji2"}),
+    "wuji2-selflock": ("WUJI Hand 2, self-locking drives", {"hand": "wuji2", "gripper": {"lock_mode": "self_locking"}}),
     "low-torsion": ("Slippery pads (torsional friction 0.005 m)", {"gripper": {"pad_torsion": 0.005}}),
     "weak-grip": ("Weak hold force (15 N)", {"controller": {"grip_hold": 15.0}}),
     "rigid-wrist": ("Rigid wrist (no wrist compliance)", {"arm": {"flex_mode": "rigid"}}),
@@ -92,8 +95,8 @@ def _geom_record(m: mujoco.MjModel, g: int, body_name: str) -> dict | None:
 
 
 def scene_geometry(model: mujoco.MjModel, cell: float = 0.002) -> tuple[list[str], list[dict], dict]:
-    """Drawable geoms per body, with the real FR3 / Franka Hand meshes (simplified) when the scene uses them.
-    A fallback-arm scene is drawn with the fallback's capsules."""
+    """Drawable geoms per body, with the real FR3 / hand meshes (simplified) when the scene uses them, plus the
+    taxel patches of a dexterous hand. A fallback-arm scene is drawn with the fallback's capsules."""
     geoms: list[dict] = []
     meshes: dict[str, dict] = {}
     for g in range(model.ngeom):
@@ -106,6 +109,15 @@ def scene_geometry(model: mujoco.MjModel, cell: float = 0.002) -> tuple[list[str
         if rec["type"] == "mesh" and rec["mesh"] not in meshes:
             meshes[rec["mesh"]] = export_mesh(model, int(model.geom_dataid[g]), cell)
         geoms.append(rec)
+    for sid in range(model.nsite):
+        name = model.site(sid).name
+        if name.startswith("patch_"):  # taxel patches, drawn as thin plates on the hand
+            sz = model.site_size[sid]
+            geoms.append({"body": model.body(int(model.site_bodyid[sid])).name, "type": "box",
+                          "size": np.round([sz[0], sz[1], 0.0006], 5).tolist(),
+                          "pos": np.round(model.site_pos[sid], 5).tolist(),
+                          "quat": np.round(model.site_quat[sid], 6).tolist(), "rgba": [0.16, 0.47, 0.84, 0.85],
+                          "name": name})
     if not any(r["body"].startswith("fr3_link") for r in geoms):
         fb = mujoco.MjModel.from_xml_path(str(FALLBACK_ARM_XML))
         for g in range(fb.ngeom):
@@ -156,7 +168,8 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
     series["contact_force"] = {"t": _r(tf), "y": _r(ff, 1)}
     td, dd = _pool(t, T["nail_depth"] * 1e3, 0.005, "mean")
     series["nail_depth"] = {"t": _r(td), "y": _r(dd, 3)}
-    tg, gg = _pool(t, T["pad_forces"].mean(axis=1), 0.002, "mean")
+    grip = T["pad_forces"].mean(axis=1) if w.hand.kind == "franka" else T["pad_forces"].sum(axis=1)
+    tg, gg = _pool(t, grip, 0.002, "mean")
     series["grip_truth"] = {"t": _r(tg), "y": _r(gg, 2)}
     gl = tb.grip.log
     series["grip_setpoint"] = {"t": _r(gl.t[::2]), "y": _r(gl.setpoint[::2], 2)}
@@ -169,7 +182,7 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
         f_ax = fth["value"][:, :3] @ Rft.T @ tb.l1.axis
         tq, fq = _pool(fth["t_sample"], f_ax - np.median(f_ax[: max(1, len(f_ax) // 20)]), 0.001)
         series["ft_axis"] = {"t": _r(tq), "y": _r(fq, 2)}
-    acc = tb.sensors["pad_acc_L"].history()
+    acc = tb.sensors[w.hand.accel_names[0]].history()
     if len(acc["t_sample"]):
         a = np.linalg.norm(acc["value"], axis=1) - 9.81
         ta, aa = _pool(acc["t_sample"], a, 0.001)
@@ -196,12 +209,16 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
     return {
         "tactile": export_tactile(tb, ep.cfg, contacts),
         "key": key, "label": label, "arm": w.arm_source, "hand": w.hand_source, "dt": w.dt,
+        "limits": {k[6:]: (round(v, 3) if isinstance(v, float) else v) for k, v in res.summary.items()
+                   if k.startswith("limit_")},
         "config": {"v_strike": ep.cfg.swing.v_strike, "grip_hold": ep.cfg.controller.grip_hold,
                    "pad_torsion": ep.cfg.gripper.pad_torsion, "flex_mode": ep.cfg.arm.flex_mode,
                    "resistance_0": ep.cfg.plant.resistance_0, "drive_target_mm": ep.cfg.plant.drive_target * 1e3},
         "bodies": bodies,
-        "frames": {"t": _r(ft[keep], 5), "pos": _r(pos.reshape(len(pos), -1), 5),
-                   "quat": _r(quat.reshape(len(quat), -1), 5)},
+        # poses as int16: positions in units of POS_UNIT (0.1 mm), quaternions scaled by 32767
+        "frames": {"t": _r(ft[keep], 5), "n": int(keep.sum()), "pos_unit": POS_UNIT,
+                   "pos": _b64(np.round(pos.reshape(len(pos), -1) / POS_UNIT).astype(np.int16)),
+                   "quat": _b64(np.round(quat.reshape(len(quat), -1) * 32767).astype(np.int16))},
         "series": series, "strikes": strikes, "summary": summ,
         "nail_head": _r(w.data.site_xpos[w.site[names.NAIL_HEAD_SITE]], 4),
         "strike_axis": _r(tb.l1.axis, 3),
@@ -209,40 +226,64 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
 
 
 def export_tactile(tb, cfg, contacts: list[float], base_dt: float = 0.005, window=(-0.02, 0.08)) -> dict | None:
-    """Both pads' taxel frames as the sensor model reported them, quantised to one byte per taxel over the
+    """Every taxel patch's frames as the sensor model reported them, quantised to one byte per taxel over the
     sensor's range: base_dt spacing through the episode plus every sample around each contact."""
-    if "pressure_L" not in tb.sensors:
+    hand = tb.world.hand
+    names = hand.pressure_names
+    if names[0] not in tb.sensors:
         return None
-    hl, hr = tb.sensors["pressure_L"].history(), tb.sensors["pressure_R"].history()
-    n = min(len(hl["t_sample"]), len(hr["t_sample"]))
+    hs = [tb.sensors[n].history() for n in names]
+    n = min(len(h["t_sample"]) for h in hs)
     if n == 0:
         return None
-    t = hl["t_sample"][:n]
+    t = hs[0]["t_sample"][:n]
     step = max(1, int(round(base_dt / np.median(np.diff(t))))) if n > 1 else 1
     keep = np.zeros(n, dtype=bool)
     keep[::step] = True
     for tc in contacts:
         keep |= (t >= tc + window[0]) & (t <= tc + window[1])
     rng = float(cfg.sensors.pressure_range)
-    vals = np.concatenate([hl["value"][:n][keep], hr["value"][:n][keep]], axis=1)
+    vals = np.concatenate([h["value"][:n][keep] for h in hs], axis=1)
     q = np.clip(np.round(vals / rng * 255.0), 0, 255).astype(np.uint8)
     nr, nc = cfg.sensors.taxel_grid
-    return {"t": _r(t[keep], 5), "data": _b64(q), "rows": nr, "cols": nc, "range": rng,
-            "pad_mm": [round(2e3 * cfg.gripper.pad_half[0], 1), round(2e3 * cfg.gripper.pad_half[2], 1)],
-            "rate": cfg.sensors.pressure_rate, "noise": cfg.sensors.pressure_noise}
+    patches = []
+    for k, p in enumerate(hand.patches):
+        if hand.kind == "franka":
+            # viewed from the handle: hammer head to the left, fingertip up; the right finger mirrored
+            label, view = ("Left pad", "L") if p.name == "L" else ("Right pad", "R")
+        else:
+            label, view = {"palm": "Palm", "thumb": "Thumb"}.get(p.name, p.name.title()), "uv"
+        patches.append({"name": p.name, "label": label, "view": view,
+                        "mm": [round(2e3 * p.half[0], 1), round(2e3 * p.half[1], 1)], "col": k})
+    note = ("Viewed from the handle: hammer head to the left, fingertip up." if hand.kind == "franka" else
+            "Rows run along the handle (hammer head to the left), columns across it; each patch sits where "
+            "the wrap loads that part of the hand.")
+    return {"t": _r(t[keep], 5), "data": _b64(q), "rows": nr, "cols": nc, "range": rng, "patches": patches,
+            "rate": cfg.sensors.pressure_rate, "noise": cfg.sensors.pressure_noise, "note": note}
 
 
 def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False) -> dict:
-    episodes, geoms, meshes = [], None, None
+    """Episodes may use different hands: each scene's geoms are tagged with a scene index and the viewer
+    shows the ones of the selected episode's scene."""
+    episodes, geoms, meshes, scenes = [], [], {}, {}
     for key in presets:
         label, over = PRESETS[key]
+        over = dict(over)
         base = fast_config() if fast else SimConfig()
-        cfg = base.replace(**over) if over else base
+        cfg = hand_config(over.pop("hand", "franka"), base, **over)
         ep = Episode(cfg, seed=seed, frame_hz=2000.0)
         res = ep.run(n)
-        if geoms is None:
-            _, geoms, meshes = scene_geometry(res.testbed.world.model)
-        episodes.append(export_episode(ep, res, label, key))
+        scene_key = (cfg.gripper.hand, res.testbed.world.hammer_source)
+        if scene_key not in scenes:
+            scenes[scene_key] = len(scenes)
+            _, g, ms = scene_geometry(res.testbed.world.model)
+            for rec in g:
+                rec["scene"] = scenes[scene_key]
+            geoms += g
+            meshes.update(ms)
+        exp = export_episode(ep, res, label, key)
+        exp["scene"] = scenes[scene_key]
+        episodes.append(exp)
         s = res.summary
         print(f"{key}: {len(res.strikes)} strikes, depth {1e3 * s.get('total_depth', 0):.1f} mm, "
               f"hit rate {s.get('hit_rate', 0):.2f}, max slip {np.degrees(s.get('max_slip_rot', 0)):.2f} deg")

@@ -28,7 +28,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from tactile_sim.behaviors.trajectories import LinePath, Segment, min_jerk, quintic_coeffs, swing_duration
+from tactile_sim.behaviors.trajectories import (
+    LinePath,
+    Segment,
+    brake_profile,
+    min_jerk,
+    quintic_coeffs,
+    strike_profile,
+    swing_duration,
+)
 from tactile_sim.control.interface import L2Command, Mode
 from tactile_sim.control.reference_spreading import PlainRef, ReferenceSpreader
 from tactile_sim.model.builder import strike_axis
@@ -87,7 +95,35 @@ class ScriptedSwing:
         self.on_strike_end = on_strike_end
         self.grip_margin = 0.0
         self.m_tool = tb.l1.payload_mass
+        self.v_cap, self.a_cap = self._arm_caps()
         self.reset()
+
+    def _arm_caps(self) -> tuple[float, float]:
+        """What the FR3 can do along the strike axis at the hover pose (orientation held):
+        v_cap = min_j qd_max_j / |dq_j/dv| from the joint velocity limits, and a_cap = 60 % of the force the
+        joint torque limits can apply along the axis, over the arm + tool's effective mass along it."""
+        import mujoco
+
+        from tactile_sim.control.kinematics import site_jacobian, task_inertia
+        from tactile_sim.limits import FR3_TORQUE, FR3_VELOCITY
+        from tactile_sim.sim.world import full_inertia
+
+        w = self.tb.world
+        if w.q_hover is None:
+            return np.inf, np.inf
+        m = w.model
+        d = mujoco.MjData(m)
+        d.qpos[:] = w.data.qpos
+        d.qpos[w.arm_qadr] = w.q_hover
+        mujoco.mj_forward(m, d)
+        J = site_jacobian(m, d, w.tcp_site, w.arm_dofs)
+        twist = np.concatenate([self.axis, np.zeros(3)])
+        dq = np.linalg.pinv(J) @ twist
+        v_cap = float(np.min(FR3_VELOCITY / np.maximum(np.abs(dq), 1e-9)))
+        M = full_inertia(m, d, np.zeros((m.nv, m.nv)))[np.ix_(w.arm_dofs, w.arm_dofs)]
+        m_eff = float(twist @ task_inertia(M, J) @ twist) + self.tb.l1.payload_mass
+        f_cap = float(1.0 / np.max(np.abs(J.T @ twist) / FR3_TORQUE))
+        return v_cap, 0.6 * f_cap / m_eff
 
     # ------------------------------------------------------------------
     def face_estimate(self) -> np.ndarray:
@@ -124,7 +160,8 @@ class ScriptedSwing:
 
     @property
     def F_hold(self) -> float:
-        return min(self.cfg.controller.grip_hold + self.grip_margin, 70.0)  # Franka Hand continuous rating
+        # continuous-hold ceiling of the hand (Franka Hand: 70 N per pad)
+        return min(self.cfg.controller.grip_hold + self.grip_margin, self.tb.world.hand.grip_hold_max)
 
     def _set_phase(self, name: str, t: float) -> None:
         self.phase = name
@@ -205,19 +242,37 @@ class ScriptedSwing:
         s_now = float((x_now - self.line_origin) @ self.axis)
         s_c = float((self.nail_estimate() - self.face_estimate()) @ self.axis) + s_now
         dist = s_c - s_now
-        v = self._v_swing
-        T = swing_duration(dist, v, a_max=60.0)
+        v_max = sw.v_margin * self.v_cap
+        a_max = min(sw.a_max, self.a_cap)
+        v = min(self._v_swing, v_max)
+        prof = None
+        while sw.brake_decel > 0 and prof is None and v > 0.2:
+            # brake in proportion to the contact speed: a gentle tap should not peak far above its speed
+            a_b = min(sw.brake_decel * v / sw.v_strike, 0.8 * a_max)
+            prof = strike_profile(dist, v, a_b, a_max, min(v_max, 1.25 * v))
+            if prof is None:
+                v *= 0.97  # arriving braking means peaking above the contact speed: lower it until feasible
+        self._v_swing = v
+        if prof is not None:
+            T, c = prof
+            seg_swing = Segment(t, T, c + np.array([s_now, 0, 0, 0, 0, 0]))
+            T_over, d_over = brake_profile(v, a_b)
+            seg_over = Segment(t + T, T_over, quintic_coeffs(s_c, v, -a_b, s_c + d_over, 0.0, 0.0, T_over))
+        else:
+            T = swing_duration(dist, v, a_max=a_max)
+            seg_swing = Segment(t, T, quintic_coeffs(s_now, 0.0, 0.0, s_c, v, 0.0, T))
+            T_over = sw.overshoot / v
+            seg_over = Segment(t + T, T_over, quintic_coeffs(s_c, v, 0.0, s_c + sw.overshoot, v, 0.0, T_over))
         t_c = t + T
-        seg_swing = Segment(t, T, quintic_coeffs(s_now, 0.0, 0.0, s_c, v, 0.0, T))
-        T_over = sw.overshoot / v
-        seg_over = Segment(t_c, T_over, quintic_coeffs(s_c, v, 0.0, s_c + sw.overshoot, v, 0.0, T_over))
         ante = LinePath(self.line_origin, self.axis, self.R, [seg_swing, seg_over])
         rs = ReferenceSpreader(ante, self._make_post, t_c, interim_lead=0.010, timeout=sw.strike_timeout)
         rs.R = self.R
         rs.t_armed = t_c - 0.020
         F_hold = self.F_hold
-        F_pre = float(np.clip(F_hold + sw.grip_pre_gain * self.m_tool * v, F_hold, 120.0))
-        self.plan = StrikePlan(self.k, t, t_c, s_c, v, F_hold, F_pre, min(1.2 * F_pre, 140.0), t_c - 0.020)
+        hand = self.tb.world.hand
+        f_max = hand.grip_force_max
+        F_pre = float(np.clip(F_hold + sw.grip_pre_gain * self.m_tool * v, F_hold, hand.grip_pre_max))
+        self.plan = StrikePlan(self.k, t, t_c, s_c, v, F_hold, F_pre, min(1.2 * F_pre, f_max), t_c - 0.020)
         self.plans.append(self.plan)
         self._armed_once = False
         self.cmd.ref = rs

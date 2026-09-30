@@ -25,7 +25,7 @@ vendor spec where it is known, and used only where it is good enough (see Sensor
 | MJCF used | `wave_01/right_sharpa_wave/right_sharpa_wave_with_flange.xml` | `hand2/hand2_beta2/body/mjcf/right_with_mount.xml` (Beta 2 = Beta 1 + a tactile pad body per fingertip) |
 | Mass | 1.25 kg | 0.62 kg (0.69 kg with mount) |
 | Joints / actuators | 22 hinges, 22 `position` actuators (kp 0.9-13.2, dampratio 0.9) | 20 hinges, 20 PD actuators (kp 0.18-0.69, kv 0.008-0.03) |
-| Joint torque limits in the model | **none** | MCP flex 2.0 Nm, thumb 0.6 Nm, PIP 0.3 Nm, DIP 0.2 Nm |
+| Joint torque limits in the model | **none** | MCP flexion 2.0 Nm, MCP abduction 0.2 Nm, PIP/DIP 0.3 Nm, thumb CMC 0.6 Nm, thumb MCP/IP 0.3 Nm |
 | Joint friction / armature | calibrated per joint class (frictionloss 0.004-0.13 Nm, armature 1e-4-3e-3) | armature 2e-4-5e-4, no friction |
 | Collision | 27 convex-hull meshes; fingertip elastomer `solref 0.06 0.9` | 26 convex-hull meshes, every link collides, 10 assembly pairs excluded |
 | Sites / sensors | none (tactile frames `*_elastomer` exist as bodies) | 5 fingertip sites, fingertip sensor-pad bodies |
@@ -201,3 +201,35 @@ Sharpa.
    commit keeps results reproducible, and a later revision is a manifest update.
 6. **Self-locking and the WUJI tactile pad** are modelled from descriptions, not data. Both are optional
    and reported separately.
+
+## Status: WUJI Hand 2 (built)
+
+Built as planned, with these changes:
+
+- **Hardware limits are part of the test.** `tactile_sim/limits.py` enforces the FR3's torque and
+  1000 Nm/s torque-rate limits and each hand's joint ratings in the command path, and monitors FR3 joint
+  velocity, range, payload and the load on the hand's hard stops (or, self-locking, its gearboxes).
+  Enforcing the torque-rate limit showed the original swing was infeasible on a real FR3, so the swing is
+  now planned inside the arm's velocity and torque caps and arrives at the nail already braking; each
+  hand has its own hover pose chosen for those caps. The Franka results changed accordingly (README).
+- **Contact geometry:** the vendor's per-link convex hulls are used as-is (the palm hull did not block
+  the handle in practice); the hammer handle is cut into 15 mm convex slices so the wrap follows its
+  curve. Hand-handle contacts use soft contact (the skin), not spring-mounted patch bodies.
+- **Grasp synthesis** closes the hand on the welded hammer at full synergy torque, releases the weld and
+  lets the hammer seat under gravity; the seated hammer pose is the tool frame. The keyframe records each
+  joint's hard-stop load: the first wrap tried (thumb abduction closing too) held only because the thumb
+  sat on its stops at up to 7x rating, so the default keeps thumb abduction as a held shaping joint. At
+  the 40 N hold the worst stop load is 0.44x rating (1.5x at full squeeze). Default: handle across the palm
+  under the MCP line, fingers curled around it, thumb flexed over it (CMC abduction held at -0.8 rad).
+- **Taxel patches** go where the seated grasp loads the hand (force-weighted contact centroid, facing the
+  handle): the palm and the thumb's proximal segment for the default 2 x 64 layout.
+- **Self-locking** is a ratchet: a closing joint's opening-side limit follows it closed, shaping joints are
+  held; the limit constraint force is the gearbox load.
+
+Results (8 kHz, 10 strikes) are in the README. In short: with backdrivable joints the wrap turns 3-17 deg in
+the hand per blow and the thumb's hard stops carry up to 26x their rating; with self-locking joints the
+tilt is 0.1-0.5 deg but the gearboxes carry up to 29x rating and the stiff grasp spins FR3 joint 6 past
+its velocity limit. What WUJI's drives and stops can hold decides whether the wrap works; ask WUJI.
+
+Not done yet: E1 (shake tests), E4 in full, E5 (sensor layouts), E6 (control rates), E8/E9, and the
+Sharpa Wave.

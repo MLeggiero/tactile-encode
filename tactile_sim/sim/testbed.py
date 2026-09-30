@@ -38,6 +38,9 @@ class Testbed:
         self.sched.register("l2", self.cfg.swing.rate, self._l2_tick)
         self.sched.register("l1", c.rate, self.l1.tick)
         self.sched.register("grip", c.grip_rate, self._grip_tick)
+        if self.world.hand.kind != "franka":
+            # the hand's own joint controller (MIT mode), after the grip loop has set this tick's synergy
+            self.sched.register("hand", self.cfg.gripper.hand_rate, self.world.hand.tick)
 
     def _l2_tick(self, t: float) -> None:
         for fn in self.l2_callbacks:

@@ -3,6 +3,8 @@
     python -m tactile_sim.run_strikes --n 10 --out runs/demo.h5 --seed 0
     python -m tactile_sim.run_strikes --n 10 --fast --flex-mode rigid --out runs/rigid.h5
     python -m tactile_sim.run_strikes --n 10 --dr --seed 3 --out runs/dr3.h5
+    python -m tactile_sim.run_strikes --n 10 --hand wuji2 --out runs/wuji.h5
+    python -m tactile_sim.run_strikes --n 10 --hand wuji2 --self-locking --out runs/wuji_lock.h5
 """
 
 from __future__ import annotations
@@ -13,14 +15,16 @@ from pathlib import Path
 
 import numpy as np
 
-from tactile_sim.config import SimConfig, fast_config
+from tactile_sim.config import SimConfig, fast_config, hand_config
 from tactile_sim.episode import Episode
 from tactile_sim.logging.writer import write_episode
 
 
 def build_config(args) -> SimConfig:
-    cfg = fast_config() if args.fast else SimConfig()
+    cfg = hand_config(args.hand, fast_config() if args.fast else SimConfig())
     over: dict = {"arm": {"source": args.arm}}
+    if args.self_locking:
+        over["gripper"] = {"lock_mode": "self_locking"}
     if args.dt:
         over["physics"] = {"timestep": args.dt}
     if args.flex_mode:
@@ -43,6 +47,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--flex-mode", choices=["wrist", "rigid"], default=None)
     ap.add_argument("--v-strike", type=float, default=None, help="strike speed (m/s)")
     ap.add_argument("--dr", action="store_true", help="enable domain randomization")
+    ap.add_argument("--hand", choices=["franka", "wuji2"], default="franka")
+    ap.add_argument("--self-locking", action="store_true", help="WUJI: joints that do not backdrive")
     args = ap.parse_args(argv)
     cfg = build_config(args)
     t0 = time.time()
@@ -62,6 +68,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"total {s.get('total_depth', 0) * 1e3:.1f} mm, hit rate {s.get('hit_rate', 0):.2f}, "
           f"strikes to {cfg.plant.drive_target * 1e3:.0f} mm: {'not reached' if not np.isfinite(stt) else int(stt)}, "
           f"drops {s.get('drops', 0)}")
+    lim = {k[6:]: v for k, v in s.items() if k.startswith("limit_") and isinstance(v, float)}
+    print("hardware limits (worst ratio, 1 = at the limit): " +
+          ", ".join(f"{k} {v:.2f} ({ep.limits.where.get(k, '')})".replace(" ()", "") for k, v in lim.items()))
+    print(f"limits exceeded: {s['limit_violations'] or 'none'}")
     print(f"wrote {path}")
     return 0
 

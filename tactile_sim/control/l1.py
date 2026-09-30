@@ -12,6 +12,7 @@ from tactile_sim.control.impedance import CartesianImpedance, ImpedanceOutput
 from tactile_sim.control.interface import L2Command, Mode
 from tactile_sim.control.momentum_observer import ImpactDetector, ImpactEvent, MomentumObserver, external_wrench
 from tactile_sim.control.supervisor import Supervisor
+from tactile_sim.limits import rate_limit
 from tactile_sim.model.builder import strike_axis
 
 
@@ -53,8 +54,9 @@ class L1Controller:
         self.payload_mass, self.payload_com = world.hammer_payload()
         self.payload_inertia = world.hammer_inertia_tcp()
         n_acc = 1
-        if sensors is not None and "pad_acc_L" in sensors:
-            n_acc = max(1, int(round(sensors["pad_acc_L"].spec.rate_hz / c.rate)))
+        self.acc_name = world.hand.accel_names[0]
+        if sensors is not None and self.acc_name in sensors:
+            n_acc = max(1, int(round(sensors[self.acc_name].spec.rate_hz / c.rate)))
         self.n_acc = n_acc
         self.cmd: L2Command | None = None
         self.gate_until = -np.inf
@@ -113,8 +115,8 @@ class L1Controller:
         f_ft_world = None if ft is None else w.data.site_xmat[w.site["ft_site"]].reshape(3, 3) @ ft[:3]
         t_ft = self.sensors["ft"].latest().t_sample if ft is not None else None
         acc = None
-        if self.sensors is not None and "pad_acc_L" in self.sensors:
-            acc = self.sensors["pad_acc_L"].window(self.n_acc)
+        if self.sensors is not None and self.acc_name in self.sensors:
+            acc = self.sensors[self.acc_name].window(self.n_acc)
         ev = self.detector.update(t, self.f_ext, f_ft_world, acc, t_ft)
         if ev is not None:
             self.last_event = ev
@@ -137,7 +139,11 @@ class L1Controller:
             cmd.F_ff = saved
         else:
             out = self.impedance.compute(s, cmd, xd_used, payload)
-        tau = w.set_arm_torque(out.tau)
+        tau_cmd = out.tau
+        rate = self.cfg.arm.torque_rate_limit
+        if rate > 0:  # the FR3 rejects torque steps faster than 1000 Nm/s (libfranka rate limiter)
+            tau_cmd = rate_limit(tau_cmd, w.data.ctrl[w.arm_act], rate, self.dt)
+        tau = w.set_arm_torque(tau_cmd)
         self.last = out
         self.grip_setpoint = cmd.F_grip
         if self.do_log:

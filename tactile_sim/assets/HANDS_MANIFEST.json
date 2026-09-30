@@ -1,0 +1,154 @@
+{
+  "wuji2": {
+    "repo": "wuji-technology/wuji-description",
+    "commit": "c2cd7f8d1ef8b6dc8cb907c17daa5a88b4442d95",
+    "mjcf": "hand2/hand2_beta2/body/mjcf/right_with_mount.xml",
+    "files": [
+      {
+        "path": "hand2/hand2_beta2/body/mjcf/right_with_mount.xml",
+        "sha256": "9bce131e7cf7147b2fdf822cf762ac6ed7a313c449e65c7ff0db3120a617254a",
+        "size": 24172
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "38b27e3155e0c1c8d6f3e909e7a00359a302085dfd9ae963b52a91cbbe25afa3",
+        "size": 1072
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_distal.STL",
+        "sha256": "837f4ffdcd4a786731ded0652a57ec9015605148cba78881d2d4d71ced804976",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_middle.STL",
+        "sha256": "2e1dd153fb0725aa3caed4dd49cb918da0378e875c4b9442bd147793a111f7d7",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_proximal.STL",
+        "sha256": "46b1e8036544dcd4aeba9382d1b3fbe4adb531fb2fe56b6ab5138d0a81f6661c",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_proximal_abd.STL",
+        "sha256": "f1ff36b8d54ce2bf93f42424da9392df6568dc1b286ff588157fe6030797f1f6",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_tip_sensor_frame.STL",
+        "sha256": "4142c661bbe09bcbbee8c6188676915986bcdcc49f397720252864148665da37",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_distal.STL",
+        "sha256": "81ed25e0a780172603b334895e2f7487478e785db0b9c1642ddbb4964b7a388a",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_middle.STL",
+        "sha256": "8f7234c6ef133c11ecea89e3d1a94f4842dec9099c53faccd9312115d86fed4d",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_proximal.STL",
+        "sha256": "ea4db9cd3cccfd4048b620d334a1f00b034110d667aa689e3421e56c08725ff9",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_proximal_abd.STL",
+        "sha256": "483d9af13da2a605263cf27cbbc789f2dfcd571cb0a37b54c9322e5705c7ada9",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_tip_sensor_frame.STL",
+        "sha256": "4142c661bbe09bcbbee8c6188676915986bcdcc49f397720252864148665da37",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_mount.STL",
+        "sha256": "fd30d30dbfd254e317e957588dd5863c46405f719e255fe79104ece93a08e416",
+        "size": 614584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_distal.STL",
+        "sha256": "d6aef893258d6de0200e1bc4cdfeb3a7f941072aa79aa4d955162b362b9af894",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_middle.STL",
+        "sha256": "12466b870cf8cc47aacdc02a535474d65bce3bf128840a8e471c4fede43d57ee",
+        "size": 108384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_proximal.STL",
+        "sha256": "6a5696573c69e37467e3ba3b722d92ecd0078f0e18ae8e1e2c49ad118800ea8b",
+        "size": 56884
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_proximal_abd.STL",
+        "sha256": "321e9e615166eab4cd87ad4bc8609a7c19944fd7200f957d11bb020fa255bb72",
+        "size": 57684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_tip_sensor_frame.STL",
+        "sha256": "b9c9df3fee37dd4f30072c15b65bd1019c4cea1b90dbba9b082eb05b6678d561",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_distal.STL",
+        "sha256": "32129d2a8cf862f410c64201fea9f8942108af3bdc3b6e8ddd5776c3e9da465a",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_middle.STL",
+        "sha256": "9069d35b6f34fe23b49a7b28f8ef2dfd36ee18bebcf72de039e550f38d6a36cb",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_proximal.STL",
+        "sha256": "7f22b426af3ce5ddae228e370d51d15c1c66e7888c4db292ab5b8127dadcef5f",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_proximal_abd.STL",
+        "sha256": "bfc1ac8e3324942ecfd2dae448b925db3bf668a03b3aaa36a050aef1d8734d40",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_tip_sensor_frame.STL",
+        "sha256": "4142c661bbe09bcbbee8c6188676915986bcdcc49f397720252864148665da37",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_distal.STL",
+        "sha256": "133cd575b899cf7c40651d8851065d43c87addb6be61face329c170edcc389dd",
+        "size": 566784
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_middle.STL",
+        "sha256": "a3e9851cd3aed770fb0ed2b05b2ceca86980af1bfef2fbc8e1925e9a6110f56f",
+        "size": 70084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_proximal.STL",
+        "sha256": "e5f4c7dbffeddf626e5d6c7883e10a6c1de0e2d8213a9122dba5ee29a488345f",
+        "size": 197984
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_proximal_abd.STL",
+        "sha256": "d9e28b15b054ede554f23524c32f430fefa3622eb9fa10016c39fec10a2638e8",
+        "size": 48484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_tip_sensor_frame.STL",
+        "sha256": "7a94ebdd1c50ec5b62e73abd51848fe15589d9eb07e2fa3b1eab6567e5f08c12",
+        "size": 282884
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_wrist.STL",
+        "sha256": "748cf6a16bc5bfedf9c7e2ee489459f726740680db1449221133be570f9ee505",
+        "size": 323284
+      }
+    ]
+  }
+}

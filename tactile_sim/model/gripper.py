@@ -68,9 +68,9 @@ def _visual_meshes(body_xml: ET.Element) -> list[tuple[str, str]]:
             if gm.get("class") == "visual" and gm.get("mesh")]
 
 
-def add_wrist_and_hand(link7: ET.Element, arm: ArmCfg, g: GripperCfg, scene_root: ET.Element | None = None,
-                       attach_z: float = 0.107) -> str:
-    """Build F/T body -> (wrist compliance) -> Franka Hand under link 7. Returns the hand source."""
+def add_wrist(link7: ET.Element, arm: ArmCfg, attach_z: float = 0.107) -> tuple[ET.Element, float]:
+    """F/T body -> (wrist compliance) under link 7. Returns the body a hand mounts on and the hand's offset
+    along its z axis."""
     ft = sub(link7, "body", name=names.FT_BODY, pos=(0, 0, attach_z))
     sub(ft, "inertial", pos=(0, 0, 0.01), mass=arm.ft_body_mass, diaginertia=(6e-5, 6e-5, 1e-4))
     sub(ft, "site", name=names.FT_SITE, pos=(0, 0, 0), size=0.005, rgba=(0.1, 0.6, 0.6, 1), group=4)
@@ -90,6 +90,13 @@ def add_wrist_and_hand(link7: ET.Element, arm: ArmCfg, g: GripperCfg, scene_root
         parent = wf
     elif arm.flex_mode != "rigid":
         raise ValueError(f"unknown flex_mode {arm.flex_mode!r} (expected 'rigid' or 'wrist')")
+    return parent, (0.0 if arm.flex_mode == "wrist" else HAND_OFFSET)
+
+
+def add_wrist_and_hand(link7: ET.Element, arm: ArmCfg, g: GripperCfg, scene_root: ET.Element | None = None,
+                       attach_z: float = 0.107) -> str:
+    """Build F/T body -> (wrist compliance) -> Franka Hand under link 7. Returns the hand source."""
+    parent, hand_z = add_wrist(link7, arm, attach_z)
     if g.hand_source not in ("auto", "franka", "box"):
         raise ValueError(f"unknown hand_source {g.hand_source!r}")
 
@@ -100,7 +107,6 @@ def add_wrist_and_hand(link7: ET.Element, arm: ArmCfg, g: GripperCfg, scene_root
     if hand_xml is not None:
         rename = _import_hand_assets(scene_root, hand_xml, hand_xml_path().parent)
 
-    hand_z = 0.0 if arm.flex_mode == "wrist" else HAND_OFFSET
     hand = sub(parent, "body", name=names.HAND_BODY, pos=(0, 0, hand_z), quat=HAND_QUAT)
     sub(hand, "inertial", **HAND_INERTIAL)
     if hand_xml is not None:

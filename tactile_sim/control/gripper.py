@@ -39,29 +39,30 @@ class GripForceLoop:
         self.log = GripLog()
 
     def measure(self) -> float:
-        """Grip force per pad seen by the pressure arrays (mean of the two pads)."""
-        if self.sensors is None or "pressure_L" not in self.sensors:
-            return float(np.mean(self.world.pad_normal_forces()))
-        l, r = self.sensors["pressure_L"].latest(), self.sensors["pressure_R"].latest()
-        if l.seq < 0:
-            return float(np.mean(self.world.pad_normal_forces()))
+        """Grip force seen by the pressure arrays (Franka: mean per pad; dexterous hand: summed patches)."""
+        hand = self.world.hand
+        names = hand.pressure_names
+        if self.sensors is None or names[0] not in self.sensors:
+            return self.world.grip_truth()
+        samples = [self.sensors[n].latest() for n in names]
+        if samples[0].seq < 0:
+            return self.world.grip_truth()
         floor = 2.0 * self.cfg.sensors.pressure_noise
-        return 0.5 * (grip_force(l.value, floor) + grip_force(r.value, floor))
+        return hand.grip_from_patches(np.array([grip_force(s.value, floor) for s in samples]))
 
     def tick(self, t: float, setpoint: float, l1=None) -> float:
         c = self.cfg.controller
-        g = self.cfg.gripper
+        f_max = self.world.hand.grip_force_max
         f = self.measure()
         self.measured = f
         err = setpoint - f
         u_ff = setpoint
         u = u_ff + c.grip_kp * err + c.grip_ki * self.integral
-        lo = 0.0 if setpoint > 0 else -g.grip_force_max
-        if lo < u < g.grip_force_max:  # anti-windup: integrate only when unsaturated
+        lo = 0.0 if setpoint > 0 else -f_max
+        if lo < u < f_max:  # anti-windup: integrate only when unsaturated
             self.integral += err * self.dt
         # while holding, the loop may relax the squeeze but never drive the fingers open
-        lo = 0.0 if setpoint > 0 else -g.grip_force_max
-        u = float(np.clip(u, lo, g.grip_force_max))
+        u = float(np.clip(u, lo, f_max))
         self.world.set_grip_force(u)
         self._check_drop(t, setpoint, f, l1)
         if self.do_log:
@@ -84,9 +85,13 @@ class GripForceLoop:
             self._low_since = None
             return
         acc = 0.0
-        if self.sensors is not None and "pad_acc_L" in self.sensors:
-            a = self.sensors["pad_acc_L"].latest().value
+        acc_name = self.world.hand.accel_names[0]
+        if self.sensors is not None and acc_name in self.sensors:
+            a = self.sensors[acc_name].latest().value
             acc = float(np.linalg.norm(a))
+        if c.drop_impact_holdoff > 0 and l1 is not None and l1.last_event is not None and \
+                t - l1.last_event.t_flag < c.drop_impact_holdoff:
+            acc = 0.0  # the blow itself, not a tool leaving the hand
         if f < max(c.drop_force_frac * setpoint, c.drop_force_abs):
             self._low_since = t if self._low_since is None else self._low_since
             if t - self._low_since >= 0.020 or acc > c.drop_accel:

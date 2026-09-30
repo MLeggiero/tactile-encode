@@ -11,6 +11,7 @@ install:
 assets:
 	$(PY) -m tactile_sim.assets.fetch_menagerie
 	$(PY) -m tactile_sim.assets.ycb
+	$(PY) -m tactile_sim.assets.fetch_hands
 
 test:
 	$(PY) -m pytest -q -m "not network"
@@ -28,4 +29,4 @@ calibrate:
 	$(PY) -m tactile_sim.calibrate pulse
 
 replay:
-	$(PY) -m tactile_sim.viewer.export --n 8 --preset default --preset low-torsion --preset weak-grip --out runs/replay.html
+	$(PY) -m tactile_sim.viewer.export --n 6 --preset default --preset wuji2 --preset wuji2-selflock --out runs/replay.html

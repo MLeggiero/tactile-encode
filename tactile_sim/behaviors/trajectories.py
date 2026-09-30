@@ -99,3 +99,44 @@ def swing_duration(distance: float, v_end: float, a_max: float) -> float:
             return T
         T *= 1.05
     return T
+
+
+def strike_profile(distance: float, v_c: float, a_brake: float, a_max: float,
+                   v_max: float) -> tuple[float, np.ndarray] | None:
+    """Rest-to-contact quintic over `distance` that arrives at `v_c` already decelerating at `a_brake`.
+
+    Arriving while braking means the joint torques have begun to reverse before the blow: the FR3 may change
+    its torque by at most 1000 Nm/s, so a swing that is still accelerating at contact keeps pushing the arm
+    into the nail (and the tool through the grasp) for the ~100 ms it takes to reverse. Returns (T, coeffs)
+    with the peak acceleration under `a_max`, the peak speed under `v_max` and the speed never negative, or
+    None when no duration satisfies them (the caller lowers v_c).
+    """
+    if distance <= 0 or v_c <= 0:
+        return None
+    T = 0.8 * distance / v_c
+    while T < 20.0 * distance / v_c:
+        c = quintic_coeffs(0.0, 0.0, 0.0, distance, v_c, -a_brake, T)
+        pva = np.array([eval_poly(c, t) for t in np.linspace(0.0, T, 200)])
+        if pva[:, 1].min() < -1e-6:
+            return None  # longer swings only dip further back
+        if np.abs(pva[:, 2]).max() <= a_max and pva[:, 1].max() <= v_max:
+            return T, c
+        T *= 1.03
+    return None
+
+
+def brake_profile(v0: float, a0: float) -> tuple[float, float]:
+    """Follow-through after the predicted contact: from speed v0 and deceleration a0 (> 0) to rest.
+
+    Returns (T, distance) of a quintic (p: 0 -> d, v: v0 -> 0, a: -a0 -> 0) whose speed never reverses.
+    """
+    T = 1.5 * v0 / max(a0, 1e-6)
+    for _ in range(60):
+        for frac in np.linspace(0.40, 0.65, 26):
+            d = frac * v0 * T
+            c = quintic_coeffs(0.0, v0, -a0, d, 0.0, 0.0, T)
+            vs = [eval_poly(c, t)[1] for t in np.linspace(0.0, T, 100)]
+            if min(vs) >= -1e-6:
+                return T, d
+        T *= 1.05
+    return T, 0.5 * v0 * T

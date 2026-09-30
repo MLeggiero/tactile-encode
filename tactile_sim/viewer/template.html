@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Nail Strike Replay</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -135,6 +136,7 @@ tbody tr[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%
           <button class="seg" data-view="overview" aria-pressed="true">Overview</button>
           <button class="seg" data-view="top">Top</button>
           <button class="seg" data-view="nail">Nail</button>
+          <button class="seg" data-view="hand">Hand</button>
         </div>
       </div>
       <div class="transport">
@@ -156,11 +158,8 @@ tbody tr[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%
     <aside class="side">
       <div class="stats" id="stats"></div>
       <div class="card tactile" id="tactile-card">
-        <h2>Pad pressure arrays</h2>
-        <div class="pads">
-          <figure><canvas id="pad-L" aria-label="Left pad pressure heatmap"></canvas><figcaption id="cap-L">Left pad</figcaption></figure>
-          <figure><canvas id="pad-R" aria-label="Right pad pressure heatmap"></canvas><figcaption id="cap-R">Right pad</figcaption></figure>
-        </div>
+        <h2>Pressure arrays</h2>
+        <div class="pads" id="pads"></div>
         <div class="ramp"><canvas id="ramp" aria-hidden="true"></canvas><div class="ramp-ticks" id="ramp-ticks"></div></div>
         <p class="note tnote" id="tnote"></p>
       </div>
@@ -256,6 +255,7 @@ function geometryFor(g) {
   return geo;
 }
 const bodyGroups = {};
+const sceneMeshes = [];
 let nailHeadMat = null;
 function buildScene() {
   for (const g of D.geoms) {
@@ -266,6 +266,8 @@ function buildScene() {
     const mesh = new THREE.Mesh(geo, mat);
     mesh.position.set(...g.pos);
     mesh.quaternion.set(g.quat[1], g.quat[2], g.quat[3], g.quat[0]);
+    mesh.userData.scene = g.scene ?? 0;
+    sceneMeshes.push(mesh);
     bodyGroups[g.body].add(mesh);
   }
   // joint knuckles so a capsule (fallback) arm reads as connected links; the real FR3 meshes need none
@@ -295,16 +297,37 @@ function tactile() {
   if (!tactileCache[S.ep.key]) tactileCache[S.ep.key] = b64bytes(T.data);
   return T;
 }
-const tHover = { L: null, R: null };
+const tHover = {};
 function tactileFrame(T, t) {
-  const i = bsearch(T.t, t), n = T.rows * T.cols, bytes = tactileCache[S.ep.key];
-  const scale = T.range / 255, row = bytes.subarray(i * 2 * n, (i + 1) * 2 * n);
-  const L = new Float32Array(n), R = new Float32Array(n);
-  for (let k = 0; k < n; k++) { L[k] = row[k] * scale; R[k] = row[n + k] * scale; }
-  return { L, R, t: T.t[i] };
+  const i = bsearch(T.t, t), n = T.rows * T.cols, np = T.patches.length, bytes = tactileCache[S.ep.key];
+  const scale = T.range / 255, row = bytes.subarray(i * np * n, (i + 1) * np * n);
+  const out = T.patches.map((p, k) => { const v = new Float32Array(n); for (let j = 0; j < n; j++) v[j] = row[k * n + j] * scale; return v; });
+  return { vals: out, t: T.t[i] };
 }
-function drawPad(side, vals, T) {
-  const cv = $(`pad-${side}`), W = cv.clientWidth; if (!W) return;
+// grid cell (col across, row down) of taxel (r along the first axis, c along the second) for each patch view
+function cellOf(view, r, c, nr, nc) {
+  const col = view === "R" ? nr - 1 - r : r;  // the Franka's right pad is mirrored so both read from the handle
+  return [col, nc - 1 - c];
+}
+function buildPads() {
+  const T = S.ep.tactile, box = $("pads");
+  box.innerHTML = "";
+  if (!T) return;
+  box.style.gridTemplateColumns = `repeat(${Math.min(T.patches.length, 2)}, 1fr)`;
+  T.patches.forEach((p, k) => {
+    box.insertAdjacentHTML("beforeend", `<figure><canvas id="pad-${k}" aria-label="${p.label} pressure heatmap"></canvas><figcaption id="cap-${k}">${p.label}</figcaption></figure>`);
+    const cv = $(`pad-${k}`);
+    cv.addEventListener("mousemove", (ev) => {
+      const cell = cv.clientWidth / Math.max(T.rows, T.cols);
+      tHover[k] = { col: Math.min(T.rows - 1, Math.floor(ev.offsetX / cell)), row: Math.min(T.cols - 1, Math.floor(ev.offsetY / cell)) };
+      drawTactile();
+    });
+    cv.addEventListener("mouseleave", () => { tHover[k] = null; drawTactile(); });
+  });
+}
+function drawPad(k, vals, T) {
+  const p = T.patches[k], cv = $(`pad-${k}`); if (!cv) return;
+  const W = cv.clientWidth; if (!W) return;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   cv.width = W * dpr; cv.height = W * dpr;
   const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -312,9 +335,7 @@ function drawPad(side, vals, T) {
   g.fillStyle = css("--panel"); g.fillRect(0, 0, W, W);
   let tot = 0, cx = 0, cy = 0, peak = 0;
   for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
-    const v = vals[r * nc + c];
-    // viewed from the handle: hammer head to the left, fingertip up; the right finger is mirrored
-    const col = side === "L" ? r : nr - 1 - r, rowPix = nc - 1 - c;
+    const v = vals[r * nc + c], [col, rowPix] = cellOf(p.view, r, c, nr, nc);
     g.fillStyle = rampColor(v / T.range);
     g.fillRect(col * cell + gap / 2, rowPix * cell + gap / 2, cell - gap, cell - gap);
     tot += v; cx += v * (col + 0.5); cy += v * (rowPix + 0.5); peak = Math.max(peak, v);
@@ -324,37 +345,28 @@ function drawPad(side, vals, T) {
     g.lineWidth = 2; g.strokeStyle = css("--panel"); g.stroke();
     g.lineWidth = 1.2; g.strokeStyle = css("--ink"); g.stroke();
   }
-  const h = tHover[side];
+  const h = tHover[k];
   if (h) {
     g.strokeStyle = css("--accent"); g.lineWidth = 2; g.strokeRect(h.col * cell + 1, h.row * cell + 1, cell - 2, cell - 2);
-    const r = side === "L" ? h.col : nr - 1 - h.col, c = nc - 1 - h.row;
-    $(`cap-${side}`).innerHTML = `${side === "L" ? "Left" : "Right"} pad · taxel ${r + 1},${c + 1}: <b>${vals[r * nc + c].toFixed(2)} N</b>`;
+    const r = p.view === "R" ? nr - 1 - h.col : h.col, c = nc - 1 - h.row;
+    $(`cap-${k}`).innerHTML = `${p.label} · taxel ${r + 1},${c + 1}: <b>${vals[r * nc + c].toFixed(2)} N</b>`;
   } else {
-    $(`cap-${side}`).innerHTML = `${side === "L" ? "Left" : "Right"} pad · <b>${tot.toFixed(1)} N</b> total · peak ${peak.toFixed(1)} N`;
+    $(`cap-${k}`).innerHTML = `${p.label} · <b>${tot.toFixed(1)} N</b> total · peak ${peak.toFixed(1)} N`;
   }
 }
 function drawTactile() {
   const T = tactile(), card = $("tactile-card");
   card.hidden = !T; if (!T) return;
   const f = tactileFrame(T, S.t);
-  drawPad("L", f.L, T); drawPad("R", f.R, T);
+  f.vals.forEach((v, k) => drawPad(k, v, T));
   const rc = $("ramp"), W = rc.clientWidth;
   if (W) {
     rc.width = W; rc.height = 10; const g = rc.getContext("2d");
     for (let x = 0; x < W; x++) { g.fillStyle = rampColor(x / (W - 1)); g.fillRect(x, 0, 1, 10); }
   }
   $("ramp-ticks").innerHTML = [0, 0.25, 0.5, 0.75, 1].map((q) => `<span>${(q * T.range).toFixed(0)}${q === 1 ? " N" : ""}</span>`).join("");
-  $("tnote").textContent = `Sensor model output: ${T.rows} × ${T.cols} taxels on each ${T.pad_mm[0]} × ${T.pad_mm[1]} mm pad at ${Math.round(T.rate)} Hz, ${T.noise} N noise, ${T.range} N per taxel. Viewed from the handle: hammer head to the left, fingertip up. The ring is the centre of pressure.`;
-}
-for (const side of ["L", "R"]) {
-  const cv = $(`pad-${side}`);
-  cv.addEventListener("mousemove", (ev) => {
-    const T = S.ep.tactile; if (!T) return;
-    const cell = cv.clientWidth / Math.max(T.rows, T.cols);
-    tHover[side] = { col: Math.min(T.rows - 1, Math.floor(ev.offsetX / cell)), row: Math.min(T.cols - 1, Math.floor(ev.offsetY / cell)) };
-    drawTactile();
-  });
-  cv.addEventListener("mouseleave", () => { tHover[side] = null; drawTactile(); });
+  const sizes = [...new Set(T.patches.map((p) => `${p.mm[0]} × ${p.mm[1]} mm`))].join(" / ");
+  $("tnote").textContent = `Sensor model output: ${T.rows} × ${T.cols} taxels per ${sizes} patch at ${Math.round(T.rate)} Hz, ${T.noise} N noise, ${T.range} N per taxel. ${T.note || ""} The ring is the centre of pressure.`;
 }
 new ResizeObserver(() => { if (S.ep) drawTactile(); }).observe($("tactile-card"));
 
@@ -370,6 +382,8 @@ const VIEWS = {
   overview: (n) => ({ pos: [n[0] + 1.05, n[1] - 0.75, n[2] + 0.45], tgt: [n[0] + 0.05, n[1] - 0.12, n[2] + 0.02] }),
   top: (n) => ({ pos: [n[0] + 0.02, n[1] - 0.10, n[2] + 0.75], tgt: [n[0] + 0.02, n[1] - 0.10, n[2]] }),
   nail: (n) => ({ pos: [n[0] - 0.17, n[1] - 0.16, n[2] + 0.02], tgt: [n[0], n[1] - 0.02, n[2]] }),
+  // the grip sits ~0.19 m along the handle (+x) from the head and one head-length short of the nail
+  hand: (n) => ({ pos: [n[0] + 0.40, n[1] + 0.02, n[2] - 0.13], tgt: [n[0] + 0.19, n[1] - 0.14, n[2]] }),
 };
 function setView(v) {
   S.view = v;
@@ -392,11 +406,17 @@ function poseAt(t) {
   const F = S.ep.frames, n = S.ep.bodies.length, ts = F.t;
   const i = bsearch(ts, t), j = Math.min(i + 1, ts.length - 1);
   const a = j > i ? Math.min(Math.max((t - ts[i]) / (ts[j] - ts[i]), 0), 1) : 0;
-  const Pi = F.pos[i], Pj = F.pos[j], Qi = F.quat[i], Qj = F.quat[j];
+  if (!F.P) {  // decode the int16 pose streams once per episode
+    const u = F.pos_unit, P = new Int16Array(b64bytes(F.pos).buffer), Q = new Int16Array(b64bytes(F.quat).buffer);
+    F.P = Float32Array.from(P, (v) => v * u); F.Q = Float32Array.from(Q, (v) => v / 32767);
+  }
+  const o3i = 3 * n * i, o3j = 3 * n * j, o4i = 4 * n * i, o4j = 4 * n * j;
+  const Pi = F.P.subarray(o3i, o3i + 3 * n), Pj = F.P.subarray(o3j, o3j + 3 * n);
+  const Qi = F.Q.subarray(o4i, o4i + 4 * n), Qj = F.Q.subarray(o4j, o4j + 4 * n);
   for (let b = 0; b < n; b++) {
     const g = bodyGroups[S.ep.bodies[b]]; if (!g) continue;
     g.position.set(Pi[3*b] + a * (Pj[3*b] - Pi[3*b]), Pi[3*b+1] + a * (Pj[3*b+1] - Pi[3*b+1]), Pi[3*b+2] + a * (Pj[3*b+2] - Pi[3*b+2]));
-    qa.set(Qi[4*b+1], Qi[4*b+2], Qi[4*b+3], Qi[4*b]); qb.set(Qj[4*b+1], Qj[4*b+2], Qj[4*b+3], Qj[4*b]);
+    qa.set(Qi[4*b+1], Qi[4*b+2], Qi[4*b+3], Qi[4*b]).normalize(); qb.set(Qj[4*b+1], Qj[4*b+2], Qj[4*b+3], Qj[4*b]).normalize();
     g.quaternion.slerpQuaternions(qa, qb, a);
   }
 }
@@ -413,7 +433,8 @@ function fmt(v, d = 1, unit = "") { return v === null || v === undefined || Numb
 
 function renderEpisodeChrome() {
   const e = S.ep, s = e.summary, c = e.config;
-  $("sub").textContent = `${e.label}. ${e.arm === "fr3" ? "Franka FR3" : "Capsule stand-in arm"} with ${e.hand === "franka" ? "the Franka Hand" : "a box stand-in hand"} (MuJoCo Menagerie models); physics ${Math.round(1 / e.dt)} Hz.`;
+  const handName = { franka: "the Franka Hand (MuJoCo Menagerie)", wuji2: "the WUJI Hand 2 (WUJI's published model)", box: "a box stand-in hand" }[e.hand] || e.hand;
+  $("sub").textContent = `${e.label}. ${e.arm === "fr3" ? "Franka FR3 (MuJoCo Menagerie)" : "Capsule stand-in arm"} with ${handName}; physics ${Math.round(1 / e.dt)} Hz.`;
   const target = c.drive_target_mm;
   const driven = (s.total_depth || 0) * 1e3;
   $("stats").innerHTML = [
@@ -423,9 +444,10 @@ function renderEpisodeChrome() {
     ["Impact flag latency", `${fmt((s.mean_flag_latency || 0) * 1e3, 2)} ms`, `after true contact · max ${fmt((s.max_flag_latency || 0) * 1e3, 2)} ms`],
   ].map(([k, v, n]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
   $("cfg").innerHTML = [
-    ["Strike speed (commanded)", `${c.v_strike} m/s`], ["Hold grip force", `${c.grip_hold} N per pad`],
+    ["Strike speed (requested)", `${c.v_strike} m/s`], ["Hold grip force", `${c.grip_hold} N ${e.hand === "franka" ? "per pad" : "on the patches"}`],
     ["Pad torsional friction", `${c.pad_torsion} m`], ["Wrist", c.flex_mode === "wrist" ? "compliant" : "rigid"],
     ["Nail resistance at start", `${c.resistance_0} N`],
+    ["Hardware limits", e.limits && e.limits.violations ? `exceeded: ${e.limits.violations.replaceAll("_", " ").replaceAll(",", ", ")}` : "all held"],
   ].map(([k, v]) => `<div>${k}: <span>${v}</span></div>`).join("");
   $("log").innerHTML = `<thead><tr><th>#</th><th></th><th>face m/s</th><th>peak N</th><th>pulse ms</th><th>depth mm</th><th>tilt °</th><th>slip mm</th><th>flag</th></tr></thead><tbody>` +
     e.strikes.map((r, i) => `<tr tabindex="0" data-i="${i}"><td>${r.idx}</td><td><span class="pill ${r.hit ? "hit" : "miss"}">${r.hit ? "hit" : "miss"}</span></td><td>${fmt(r.v, 2)}</td><td>${fmt(r.peak, 0)}</td><td>${fmt(r.width_ms, 1)}</td><td>${fmt(r.depth_mm, 2)}</td><td>${fmt(r.slip_deg, 2)}</td><td>${fmt(r.slip_mm, 2)}</td><td>${r.latency_ms === null ? "—" : `${fmt(r.latency_ms, 2)} ms ${r.flag_source}`}</td></tr>`).join("") + "</tbody>";
@@ -449,6 +471,9 @@ function jumpToStrike(i) {
 }
 function selectEpisode(k) {
   S.ep = D.episodes[k];
+  for (const m of sceneMeshes) m.visible = m.userData.scene === (S.ep.scene ?? 0);
+  for (const key of Object.keys(tHover)) delete tHover[key];
+  buildPads();
   document.querySelectorAll("#eps .seg").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.k === k)));
   renderEpisodeChrome();
   setView(S.view);

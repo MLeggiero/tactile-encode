@@ -1,4 +1,5 @@
-"""Pad pressure arrays: an 8 x 8 grid (64 taxels) per pad at 1 kHz by default, normal force per taxel."""
+"""Pressure arrays: an 8 x 8 grid (64 taxels) per taxel patch at 1 kHz by default, normal force per taxel.
+The Franka Hand has one patch per pad (L, R); a dexterous hand has the patches of its layout."""
 
 from __future__ import annotations
 
@@ -11,8 +12,8 @@ def make_pressure(world, cfg, rng) -> list[RateLimitedSensor]:
     s = cfg.sensors
     nr, nc = cfg.sensors.taxel_grid
     out = []
-    for side, tag in enumerate("LR"):
-        spec = SensorSpec(f"pressure_{tag}", s.pressure_rate, nr * nc, bandwidth_hz=s.pressure_bandwidth,
+    for side, name in enumerate(world.hand.pressure_names):
+        spec = SensorSpec(name, s.pressure_rate, nr * nc, bandwidth_hz=s.pressure_bandwidth,
                           latency_s=s.pressure_latency, noise_std=s.pressure_noise, saturation=(0.0, s.pressure_range),
                           decimation="mean")
         out.append(RateLimitedSensor(spec, world.dt, (lambda side=side: world.pad_taxels(side)), rng))

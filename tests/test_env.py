@@ -61,10 +61,13 @@ def test_step_command_strikes_the_nail():
     env.reset(seed=0)
     impacts = 0
     info = {}
-    for k in range(160):
+    for k in range(200):
         t = k * env.dt_env
-        dy = -0.10 * min(1.0, t / 0.3) if t < 0.5 else 0.12
-        obs, r, term, trunc, info = env.step(np.array([0, dy, 0, 1.5, 0, 70.0], dtype=np.float32))
+        # a crude L2: back off, then step the offset through the nail with full strike-axis feedforward (the
+        # FR3's 1000 Nm/s torque-rate limit turns the step into a ramp, so it needs the push)
+        dy = -0.10 * min(1.0, t / 0.3) if t < 0.5 else 0.25
+        ff = 0.0 if t < 0.5 else 60.0
+        obs, r, term, trunc, info = env.step(np.array([0, dy, 0, 1.5, ff, 70.0], dtype=np.float32))
         impacts += int(obs["impact"][0])
         if term or trunc:
             break

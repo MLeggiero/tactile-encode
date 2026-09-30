@@ -118,6 +118,20 @@ def _add_ycb(root: ET.Element, b: ET.Element, h: HammerCfg, geo: HammerGeometry)
     # contact-only hulls
     sub(b, "geom", name=names.HAMMER_FACE_GEOM, type="mesh", mesh="hammer_face_hull", mass=0, density=0, **hull)
     sub(b, "geom", name=names.HAMMER_HANDLE_GEOM, type="mesh", mesh="hammer_grip_hull", mass=0, density=0, **hull)
+    # short slices along the curved handle, for wrap grasps (contact-only; unused by the two-finger hand)
+    for key in sorted(k for k in hulls if k.startswith("seg")):
+        sub(asset, "mesh", name=f"hammer_{key}_hull", vertex=fmt(hulls[key].astype(float).reshape(-1)))
+        sub(b, "geom", name=f"hammer_{key}", type="mesh", mesh=f"hammer_{key}_hull", mass=0, density=0, **hull)
+
+
+def handle_segment_geoms(h: HammerCfg) -> list[str]:
+    """Contact geoms along the handle for wrap grasps."""
+    geo = hammer_geometry(h)
+    if geo.source != "ycb":
+        return [names.HAMMER_HANDLE_GEOM]
+    from tactile_sim.assets.ycb import load_hulls
+
+    return [f"hammer_{k}" for k in sorted(load_hulls(Path(geo.path))) if k.startswith("seg")]
 
 
 def add_grasp_weld(root: ET.Element) -> None:

@@ -33,15 +33,17 @@ class ArmCfg:
     wrist_k_lin: float = 2.0e5  # N/m along the flange z axis
     wrist_d_lin: float = 150.0  # Ns/m
     ft_body_mass: float = 0.12  # wrist F/T sensor (Bota SensONE class)
+    torque_rate_limit: float = 1000.0  # Nm/s per joint, libfranka kMaxTorqueRate (0 = off)
     # joint-space hold used only while settling at reset
     hold_kp: tuple[float, ...] = (600, 600, 600, 600, 250, 150, 50)
     hold_kd: tuple[float, ...] = (50, 50, 50, 50, 20, 12, 5)
-    # IK seed: Menagerie "home" keyframe
-    q_seed: tuple[float, ...] = (0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853)
+    # IK seed near the hover pose (see SceneCfg.hover_tcp)
+    q_seed: tuple[float, ...] = (0.0, 0.01, 0.0, -2.36, 0.0, 2.37, 0.79)
 
 
 @dataclass
 class GripperCfg:
+    hand: str = "franka"  # "franka" (two-finger Franka Hand) or "wuji2" (WUJI Hand 2, power wrap)
     hand_source: str = "auto"  # "franka" (Menagerie Franka Hand), "box" (same dims, no meshes), "auto"
     tcp_offset: float = 0.1034  # hand base to grasp centre (Franka Hand TCP)
     finger_range: float = 0.04  # opening per finger
@@ -67,6 +69,22 @@ class GripperCfg:
     # Menagerie uses 1 Ns/m behind its position servo (kv 10); with a force-controlled drive in its place the
     # real hand's non-backdrivable spindle is represented by heavy joint damping instead
     finger_joint_damping: float = 300.0
+    # --- dexterous hands (hand != "franka") ---
+    hand_rate: float = 1000.0  # joint control rate (WUJI Hand 2: 1 kHz MIT mode)
+    mount_yaw: float = 0.0  # rad, hand about the flange z after the mount flip
+    wrap_tcp: tuple[float, float, float] = (-0.004, 0.0315, -0.086)  # handle grasp point, hand frame
+    hand_joint_damping: float = 0.002  # Nms/rad, drive + gearbox viscous loss
+    hand_joint_friction: float = 0.005  # Nm, drive friction
+    hand_friction: float = 1.0  # skin on the handle
+    hand_solref: tuple[float, float] = (0.002, 1.0)
+    # thumb joints (CMC flex, CMC abd, MCP, IP): closing torque sign, 0 = held at thumb_preshape by PD
+    thumb_close: tuple[int, int, int, int] = (1, -1, 1, 1)
+    thumb_preshape: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    # "backdrivable": the joints are plain torque motors (the vendor model). "self_locking": WUJI's drives do
+    # not backdrive: a joint closes under its motor but external load cannot open it (nor move a shaping
+    # joint); the gearbox then carries the load, reported as hand_stop_load.
+    lock_mode: str = "backdrivable"
+    patch_layout: str = "palm_thumb"  # taxel patches: "palm_thumb" (2 x 64, 128 taxels) or "palm"
 
 
 @dataclass
@@ -111,7 +129,10 @@ class SceneCfg:
     # Grasp/TCP frame: hand points down (approach = -z), fingers close along world y, handle along
     # world x. The strike is horizontal along +y into a vertical board; the nail is placed so the
     # hammer face is `hover_clearance` short of the nail head at the hover pose.
-    hover_tcp: tuple[float, float, float] = (0.52, -0.05, 0.35)
+    # Chosen for the FR3's limits: here the joint torque limits can push 123 N along the strike axis (the wrist
+    # joints' 12 Nm bind first) and the joint velocity limits allow 2.6 m/s, with every joint >= 0.68 rad from
+    # its range limits
+    hover_tcp: tuple[float, float, float] = (0.50, 0.0, 0.20)
     hover_clearance: float = 0.06
 
 
@@ -172,6 +193,9 @@ class ControllerCfg:
     drop_force_frac: float = 0.2
     drop_force_abs: float = 1.5  # N; below the array's noise floor a fraction of a tiny setpoint is meaningless
     drop_accel: float = 50.0
+    # a blow shakes the patches and can unload one of them for a few ms; a dexterous hand's drop check
+    # ignores the accelerometer for this long after an impact flag (0 = never)
+    drop_impact_holdoff: float = 0.0
 
 
 @dataclass
@@ -182,7 +206,13 @@ class SwingCfg:
     windup_height: float = 0.15
     windup_time: float = 0.45
     v_strike: float = 2.2  # m/s; drives 20 mm in 9 strikes at the default nail resistance
-    overshoot: float = 0.03
+    overshoot: float = 0.03  # follow-through past the predicted contact when brake_decel = 0
+    # Hardware-feasible striking (see tactile_sim.limits): the swing peaks just before contact and arrives
+    # braking at brake_decel, so the torque reversal is under way when the blow lands; the strike speed is
+    # capped at v_margin of the fastest speed the FR3's joint velocity limits allow at the strike pose.
+    a_max: float = 25.0  # m/s^2 peak swing acceleration
+    brake_decel: float = 15.0  # m/s^2 at contact (0 = the old accelerate-through-contact swing)
+    v_margin: float = 0.8
     strike_k: tuple[float, float, float] = (3000.0, 3000.0, 4000.0)  # (across, across, along) the strike axis
     recover_time: float = 0.4
     settle_time: float = 0.15
@@ -268,6 +298,29 @@ def _from_dict(tp, d):
             kwargs[f.name] = v
         del ftype
     return tp(**kwargs)
+
+
+WUJI2_OVERRIDES: dict[str, dict[str, Any]] = {
+    "gripper": {"hand": "wuji2", "wrap_tcp": (0.004, 0.0315, -0.078), "thumb_close": (1, 0, 1, 1),
+                "thumb_preshape": (0.0, -0.8, 0.0, 0.0), "mount_yaw": 3.141592653589793},
+    # the hand points along the strike axis. At this hover pose the FR3's joint velocity limits allow 2.6 m/s
+    # along it (1.3 m/s at the Franka Hand's hover pose, where the strike is an elbow extension) and every
+    # joint is >= 0.94 rad from its limits
+    "arm": {"q_seed": (0.74, 0.14, -0.58, -1.8, 1.48, 1.49, -0.24)},
+    "scene": {"hover_tcp": (0.52, 0.30, 0.50)},
+    # grip force = summed normal force on the palm and thumb patches
+    "controller": {"grip_hold": 40.0, "drop_impact_holdoff": 0.05},
+}
+
+
+def hand_config(hand: str, base: SimConfig | None = None, **sections: dict[str, Any]) -> SimConfig:
+    """Config for a given hand: "franka" (the default testbed) or "wuji2" (WUJI Hand 2 power wrap)."""
+    cfg = base or SimConfig()
+    if hand == "wuji2":
+        cfg = cfg.replace(**WUJI2_OVERRIDES)
+    elif hand != "franka":
+        raise ValueError(f"unknown hand {hand!r}")
+    return cfg.replace(**sections) if sections else cfg
 
 
 def fast_config(**sections: dict[str, Any]) -> SimConfig:

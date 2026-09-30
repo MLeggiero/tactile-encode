@@ -10,11 +10,11 @@ import numpy as np
 from tactile_sim import names
 from tactile_sim.config import SimConfig
 from tactile_sim.model.arm import load_arm_tree
-from tactile_sim.model.gripper import add_grip_actuation, add_wrist_and_hand
+from tactile_sim.model.gripper import add_grip_actuation, add_wrist, add_wrist_and_hand
 from tactile_sim.model.plants import make_plant
 from tactile_sim.model.plants.base import Plant
 from tactile_sim.model.sensors_mjcf import add_sensors
-from tactile_sim.model.tool_hammer import add_grasp_weld, add_hammer, face_offset
+from tactile_sim.model.tool_hammer import add_grasp_weld, add_hammer, face_offset, handle_segment_geoms
 from tactile_sim.model.xmlutil import find_body, sub
 
 
@@ -40,6 +40,7 @@ class SceneSpec:
     sensors: list[tuple[str, int]] = field(default_factory=list)
     hand_source: str = "box"
     hammer_source: str = "primitive"
+    hand_info: dict | None = None  # dexterous hands: joints, taxel patches, grasp keyframe
 
 
 def hover_tcp_position(cfg: SimConfig) -> np.ndarray:
@@ -74,25 +75,55 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
         conaffinity=0)
     sub(wb, "camera", name="scene_cam", pos=(1.3, -0.9, 0.9), xyaxes=(0.57, 0.82, 0, -0.35, 0.24, 0.9))
 
-    hand_source = add_wrist_and_hand(find_body(root, "fr3_link7"), cfg.arm, cfg.gripper, root)
-    add_grip_actuation(root, cfg.gripper)
-    hammer_source = add_hammer(wb, cfg.hammer, root)
-    add_grasp_weld(root)
-
+    g = cfg.gripper
     contact = root.find("contact")
     if contact is None:
         contact = sub(root, "contact")
-    g = cfg.gripper
-    pad_solref = g.pad_solref if g.pad_mode == "explicit" else g.soft_pad_solref
-    for pad in names.PAD_GEOMS:
-        sub(contact, "pair", name=f"pair_{pad}_handle", geom1=pad, geom2=names.HAMMER_HANDLE_GEOM, condim=4,
-            friction=(g.pad_friction, g.pad_friction, g.pad_torsion, 0.0001, 0.0001), solref=pad_solref,
-            solimp=g.pad_solimp)
+    hand_info = None
+    pad_sites = None
+    if g.hand == "franka":
+        hand_source = add_wrist_and_hand(find_body(root, "fr3_link7"), cfg.arm, g, root)
+        add_grip_actuation(root, g)
+        hammer_source = add_hammer(wb, cfg.hammer, root)
+        pad_solref = g.pad_solref if g.pad_mode == "explicit" else g.soft_pad_solref
+        for pad in names.PAD_GEOMS:
+            sub(contact, "pair", name=f"pair_{pad}_handle", geom1=pad, geom2=names.HAMMER_HANDLE_GEOM, condim=4,
+                friction=(g.pad_friction, g.pad_friction, g.pad_torsion, 0.0001, 0.0001), solref=pad_solref,
+                solimp=g.pad_solimp)
+    elif g.hand == "wuji2":
+        hand_info = _add_wuji(root, cfg, contact)
+        hand_source = "wuji2"
+        hammer_source = hand_info["hammer_source"]
+        pad_sites = {p.name: f"patch_{p.name}" for p in hand_info["patches"]}
+    else:
+        raise ValueError(f"unknown hand {g.hand!r} (expected 'franka' or 'wuji2')")
+    add_grasp_weld(root)
 
     plant = make_plant(cfg)
     plant.add_mjcf(root, wb, nail_head_target(cfg), strike_axis())
-    sensors = add_sensors(root)
+    sensors = add_sensors(root, pad_sites)
     ET.indent(root)
     return SceneSpec(xml=ET.tostring(root, encoding="unicode"), arm_source=source, plant=plant,
                      hover_tcp=hover_tcp_position(cfg), sensors=sensors, hand_source=hand_source,
-                     hammer_source=hammer_source)
+                     hammer_source=hammer_source, hand_info=hand_info)
+
+
+def _add_wuji(root, cfg: SimConfig, contact) -> dict:
+    from tactile_sim.assets.fetch_hands import hand_xml
+    from tactile_sim.model.hands import wuji
+    from tactile_sim.model.hands.wuji_grasp import wrap_grasp
+
+    path = hand_xml("wuji2")
+    if path is None:
+        raise FileNotFoundError("WUJI Hand 2 not cached; run `python -m tactile_sim.assets.fetch_hands`")
+    g = cfg.gripper
+    grasp = wrap_grasp(cfg, path)
+    patches = wuji.patches_from_grasp(grasp.contact_frames, grasp.contact_force, g.patch_layout)
+    parent, hand_z = add_wrist(find_body(root, "fr3_link7"), cfg.arm)
+    info = wuji.add_wuji_hand(parent, root, g, path, (0.0, 0.0, hand_z), tcp_pos=grasp.hammer_pos,
+                              tcp_q=grasp.hammer_quat, patches=patches)
+    wb = root.find("worldbody")
+    info["hammer_source"] = add_hammer(wb, cfg.hammer, root)
+    wuji.contact_pairs(contact, info["col_geoms"], handle_segment_geoms(cfg.hammer), g)
+    info["grasp"] = grasp
+    return info

@@ -1,17 +1,16 @@
-"""3-axis MEMS accelerometers: one under each grip pad (8 kHz, +-16 g) and one in the hammer head."""
+"""3-axis MEMS accelerometers: one under each taxel patch (8 kHz, +-16 g) and one in the hammer head."""
 
 from __future__ import annotations
 
 from tactile_sim.sensors.base import RateLimitedSensor, SensorSpec
-
-ACCEL_SENSORS = {"pad_acc_L": "pad_acc_L", "pad_acc_R": "pad_acc_R", "hammer_acc": "hammer_acc"}
 
 
 def make_accels(world, cfg, rng) -> list[RateLimitedSensor]:
     s = cfg.sensors
     sd = world.data.sensordata
     out = []
-    for name, mj in ACCEL_SENSORS.items():
+    for name in [*world.hand.accel_names, "hammer_acc"]:
+        mj = name
         sl = world.sensor_slices[mj]
         # the hammer-head IMU is a force-truth rig instrument: wide range, same bandwidth
         rng_lim = s.accel_range if name != "hammer_acc" else 200 * 9.80665

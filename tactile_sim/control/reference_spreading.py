@@ -38,8 +38,11 @@ class ReferenceSpreader:
             return x, xd, xdd, Mode.POST
         x, xd, xdd = self.ante.evaluate(t)
         if t >= self.t_c_pred - self.interim_lead:
-            # interim: keep the ante position/velocity, drop the acceleration feedforward
-            return x, xd, np.zeros(6), Mode.INTERIM
+            # interim: keep the ante position/velocity; drop an accelerating feedforward (it would push through
+            # the contact) but keep a braking one (its torque reversal is already under way)
+            if float(xdd[:3] @ xd[:3]) >= 0.0:
+                xdd = np.zeros(6)
+            return x, xd, xdd, Mode.INTERIM
         return x, xd, xdd, Mode.ANTE
 
 

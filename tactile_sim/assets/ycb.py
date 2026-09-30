@@ -33,7 +33,9 @@ STL_MEMBER = "048_hammer/google_16k/nontextured.stl"
 MASS = 0.665  # YCB object mass (kg)
 HEAD_MASS = 0.45  # 16 oz steel head; the wooden handle carries the rest
 HEAD_DEPTH = 0.045  # the head occupies the top 45 mm along the handle axis
-PREPROC_VERSION = 4
+PREPROC_VERSION = 6
+SEG_LEN = 0.015  # handle slices for wrap grasps: short convex hulls follow the curved handle
+SEG_SPAN = (-0.075, 0.12)  # slice range along the handle, hammer frame x
 
 
 def cache_dir() -> Path:
@@ -142,6 +144,14 @@ def preprocess(stl_bytes: bytes, out: Path, grip_from_head: float) -> dict:
     face = L[L[:, 1] < face_local[1] + 0.012]
     face = face[np.abs(face[:, 0] - face_local[0]) < 0.03]
     hulls = {"grip": grip, "face": face, "head": L[is_head_v], "handle": L[~is_head_v]}
+    x0s = np.arange(SEG_SPAN[0], SEG_SPAN[1] - 1e-9, SEG_LEN)
+    segs = []
+    for x0 in x0s:
+        # slices overlap by 1 mm so the hull chain has no seams for a finger to catch on
+        pts = L[(L[:, 0] >= x0 - 0.001) & (L[:, 0] < x0 + SEG_LEN + 0.001) & ~is_head_v]
+        if len(pts) >= 20:  # past the handle's end there is nothing to slice
+            hulls[f"seg{len(segs):02d}"] = pts
+            segs.append([float(x0), float(x0 + SEG_LEN)])
     np.savez(out / "hulls.npz", **{k: v.astype(np.float32) for k, v in hulls.items()})
     meta = {
         "version": PREPROC_VERSION, "sha256": SHA256, "grip_from_head": grip_from_head,
@@ -150,6 +160,7 @@ def preprocess(stl_bytes: bytes, out: Path, grip_from_head: float) -> dict:
                                                    axis=1))),
         "grip_half_width": float(np.max(np.abs(grip[:, 1]))),  # along the finger closing axis (y)
         "grip_half_thickness": float(np.max(np.abs(grip[:, 2]))),
+        "segments": segs,
         "length": float(np.ptp(L[:, 0])), "mass": MASS, "head_mass": HEAD_MASS,
         "license": "YCB object set, CC BY 4.0 (https://www.ycbbenchmarks.com)",
     }
