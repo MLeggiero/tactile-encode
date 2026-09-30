@@ -66,7 +66,17 @@ class Episode:
     def __init__(self, cfg: SimConfig | None = None, seed: int | None = 0, record_truth: bool = True,
                  testbed: Testbed | None = None, frame_hz: float | None = None):
         self.cfg = cfg or SimConfig()
+        self.dr = None
+        if self.cfg.dr.enabled:
+            from tactile_sim.sim.randomize import apply_dr, sample_dr
+
+            self.dr = sample_dr(self.cfg, np.random.default_rng(seed))
+            self.cfg = apply_dr(self.cfg, self.dr)
         self.tb = testbed or Testbed(self.cfg, seed=seed)
+        if self.dr is not None:
+            from tactile_sim.sim.randomize import apply_runtime_dr
+
+            apply_runtime_dr(self.tb, self.dr)
         if testbed is not None:
             self.tb.reset(seed)
         self.record_truth = record_truth
@@ -211,7 +221,10 @@ class Episode:
                 self._cur.drop = True
                 self.records.append(self._cur)
                 self._cur = None
-        return EpisodeResult(self.records, summarize(self.records, self.cfg), self.truth.arrays(), self.events, tb)
+        summary = summarize(self.records, self.cfg)
+        if self.dr is not None:
+            summary.update({f"dr_{k}": v for k, v in self.dr.as_dict().items()})
+        return EpisodeResult(self.records, summary, self.truth.arrays(), self.events, tb)
 
 
 def summarize(records: list[StrikeRecord], cfg: SimConfig) -> dict:
