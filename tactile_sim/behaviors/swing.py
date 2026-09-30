@@ -124,7 +124,7 @@ class ScriptedSwing:
 
     @property
     def F_hold(self) -> float:
-        return min(self.cfg.controller.grip_hold + self.grip_margin, 100.0)
+        return min(self.cfg.controller.grip_hold + self.grip_margin, 70.0)  # Franka Hand continuous rating
 
     def _set_phase(self, name: str, t: float) -> None:
         self.phase = name

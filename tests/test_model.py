@@ -97,5 +97,5 @@ def test_ft_sees_hand_and_tool_weight(settled_world):
 def test_taxels_register_grip(settled_world):
     w = settled_world
     for side in "LR":
-        tot = sum(w.sensor(f"taxel_{side}_{r}{c}")[0] for r in range(4) for c in range(4))
+        tot = w.pad_taxels("LR".index(side)).sum()
         assert tot == pytest.approx(w.cfg.controller.grip_hold, rel=0.15)

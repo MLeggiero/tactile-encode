@@ -15,6 +15,7 @@ import numpy as np
 
 from tactile_sim import names
 from tactile_sim.config import SimConfig
+from tactile_sim.model.tool_hammer import face_offset
 from tactile_sim.sim.truth import pair_force, pulse_stats
 from tactile_sim.sim.world import World
 
@@ -40,14 +41,14 @@ def free_strike(cfg: SimConfig, v: float = 2.5, gap: float = 0.002, duration: fl
     quat = np.zeros(4)
     mujoco.mju_mat2Quat(quat, R.reshape(-1))
     head = d.site_xpos[w.site[names.NAIL_HEAD_SITE]].copy()
-    face_local = np.array([-cfg.hammer.grip_from_head, -cfg.hammer.head_half_len, 0.0])
+    face_local = np.array(face_offset(cfg.hammer))
     s = w.plant.axis
     d.qpos[w.hammer_qadr:w.hammer_qadr + 3] = head - s * gap - R @ face_local
     d.qpos[w.hammer_qadr + 3:w.hammer_qadr + 7] = quat
     d.qvel[w.hammer_dofadr:w.hammer_dofadr + 3] = v * s
     gravity = m.opt.gravity.copy()
     m.opt.gravity[:] = 0.0
-    g1, g2 = m.geom(names.HAMMER_HEAD_GEOM).id, m.geom(names.NAIL_HEAD_GEOM).id
+    g1, g2 = m.geom(names.HAMMER_FACE_GEOM).id, m.geom(names.NAIL_HEAD_GEOM).id
     face = w.site[names.HAMMER_FACE_SITE]
     n = int(round(duration / w.dt))
     ts, fs, vf, pen = np.zeros(n), np.zeros(n), np.zeros(n), np.zeros(n)

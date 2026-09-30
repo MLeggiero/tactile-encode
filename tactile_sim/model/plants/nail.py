@@ -52,7 +52,7 @@ class NailPlant(Plant):
         contact = root.find("contact")
         if contact is None:
             contact = sub(root, "contact")
-        sub(contact, "pair", name=PAIR_FACE_NAIL, geom1=names.HAMMER_HEAD_GEOM, geom2=names.NAIL_HEAD_GEOM,
+        sub(contact, "pair", name=PAIR_FACE_NAIL, geom1=names.HAMMER_FACE_GEOM, geom2=names.NAIL_HEAD_GEOM,
             condim=3, friction=(0.3, 0.3, 0.005, 0.0001, 0.0001), solref=h.face_solref, solimp=h.face_solimp,
             margin=0.0)
         sub(contact, "pair", name=PAIR_HEAD_BOARD, geom1=names.HAMMER_HEAD_GEOM, geom2=names.BOARD_GEOM,
@@ -67,7 +67,7 @@ class NailPlant(Plant):
         self.pair_id = model.pair(PAIR_FACE_NAIL).id
         self.face_site = model.site(names.HAMMER_FACE_SITE).id
         self.head_site = model.site(names.NAIL_HEAD_SITE).id
-        self.face_geom = model.geom(names.HAMMER_HEAD_GEOM).id
+        self.face_geom = model.geom(names.HAMMER_FACE_GEOM).id
         self.nail_geom = model.geom(names.NAIL_HEAD_GEOM).id
         self.hammer_body = model.body(names.HAMMER_BODY).id
         self.resistance_0 = float(self.cfg.plant.resistance_0)

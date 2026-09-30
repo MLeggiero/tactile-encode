@@ -24,7 +24,6 @@ PAD_JOINTS = {
     "pad_L": ["pad_L_n", "pad_L_t1", "pad_L_t2"],
     "pad_R": ["pad_R_n", "pad_R_t1", "pad_R_t2"],
 }
-TAXEL_GRID = (4, 4)
 
 # Hammer
 HAMMER_BODY = "hammer"

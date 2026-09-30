@@ -46,7 +46,7 @@ class TactileHammerEnv(gym.Env):
         self.observation_space = spaces.Dict({
             "ft": spaces.Box(-inf, inf, (self.n_ft, 6), np.float32),
             "pad_acc": spaces.Box(-inf, inf, (self.n_acc, 6), np.float32),
-            "pressure": spaces.Box(0.0, inf, (2, 16), np.float32),
+            "pressure": spaces.Box(0.0, inf, (2, int(np.prod(c.sensors.taxel_grid))), np.float32),
             "joint_pos": spaces.Box(-inf, inf, (7,), np.float32),
             "joint_vel": spaces.Box(-inf, inf, (7,), np.float32),
             "tau_ext": spaces.Box(-inf, inf, (7,), np.float32),

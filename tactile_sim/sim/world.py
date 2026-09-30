@@ -12,6 +12,7 @@ from tactile_sim.config import SimConfig
 from tactile_sim.control.kinematics import site_jacobian, site_pose, solve_ik
 from tactile_sim.model.builder import build_scene, tcp_rotation
 from tactile_sim.model.gripper import finger_q_touch
+from tactile_sim.model.tool_hammer import hammer_geometry
 
 
 def full_inertia(m: mujoco.MjModel, d: mujoco.MjData, out: np.ndarray) -> np.ndarray:
@@ -45,6 +46,7 @@ class World:
         self.spec = spec
         self.arm_source = spec.arm_source
         self.hand_source = spec.hand_source
+        self.hammer_source = spec.hammer_source
         self.model = mujoco.MjModel.from_xml_string(spec.xml)
         self.data = mujoco.MjData(self.model)
         self.plant = spec.plant
@@ -84,6 +86,7 @@ class World:
             s = m.sensor(i)
             self.sensor_slices[s.name] = slice(int(s.adr[0]), int(s.adr[0] + s.dim[0]))
         self.pad_geoms = [m.geom(n).id for n in names.PAD_GEOMS]
+        self._pad_bodies = [m.body(n).id for n in names.PAD_BODIES]
         self.handle_geom = m.geom(names.HAMMER_HANDLE_GEOM).id
 
     # ------------------------------------------------------------------ helpers
@@ -212,6 +215,39 @@ class World:
         b = self.hammer_body
         return float(self.model.body_mass[b]), self.model.body_ipos[b].copy()
 
+    def pad_taxels(self, side: int, spread: float = 0.003) -> np.ndarray:
+        """Normal force per taxel (row-major, rows along the pad's x) on one pad, from the contacts.
+
+        MuJoCo reduces the pad contact to a few points; a rubber pad spreads each load over its contact
+        patch. Each contact's force is shared among the taxels with Gaussian weights (sigma = `spread`,
+        about the rubber layer's thickness) evaluated at the cell centres; the weights are normalised so
+        the total force is exact. Contacts are placed by their position in the pad frame.
+        """
+        m, d = self.model, self.data
+        nr, nc = self.cfg.sensors.taxel_grid
+        hx, _, hz = self.cfg.gripper.pad_half
+        if not hasattr(self, "_taxel_xz"):
+            xs = -hx + (2 * np.arange(nr) + 1) * hx / nr
+            zs = -hz + (2 * np.arange(nc) + 1) * hz / nc
+            self._taxel_xz = np.stack(np.meshgrid(xs, zs, indexing="ij"), axis=-1).reshape(-1, 2)
+        out = np.zeros(nr * nc)
+        pg = self.pad_geoms[side]
+        body = self._pad_bodies[side]
+        f6 = np.zeros(6)
+        R = d.xmat[body].reshape(3, 3)
+        for i in range(d.ncon):
+            c = d.contact[i]
+            if pg not in (c.geom1, c.geom2) or self.handle_geom not in (c.geom1, c.geom2) or c.efc_address < 0:
+                continue
+            mujoco.mj_contactForce(m, d, i, f6)
+            if f6[0] <= 0:
+                continue
+            p = R.T @ (c.pos - d.xpos[body])
+            dx = self._taxel_xz - np.array([np.clip(p[0], -hx, hx), np.clip(p[2], -hz, hz)])
+            wts = np.exp(-0.5 * np.sum(dx * dx, axis=1) / spread**2)
+            out += f6[0] * wts / wts.sum()
+        return out
+
     # ------------------------------------------------------------------ stepping
     def step(self, n: int = 1) -> None:
         for _ in range(n):
@@ -242,7 +278,7 @@ class World:
             self.q_hover = q
         d.qpos[self.arm_qadr] = self.q_hover
         g, h = self.cfg.gripper, self.cfg.hammer
-        d.qpos[self.finger_qadr] = finger_q_touch(g, h.handle_radius)
+        d.qpos[self.finger_qadr] = finger_q_touch(g, hammer_geometry(h).grip_half_width)
         mujoco.mj_kinematics(m, d)
         pt, Rt = self.tcp_pose()
         qt = np.zeros(4)

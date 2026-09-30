@@ -37,7 +37,7 @@ def test_real_robot_meshes_are_exported():
 def test_fallback_scene_draws_capsules():
     w = World(fast_config(arm={"source": "fallback"}, gripper={"hand_source": "box"}))
     _, geoms, meshes = scene_geometry(w.model)
-    assert meshes == {}
+    assert all(k.startswith("hammer") for k in meshes)  # only the tool is a mesh
     assert any(g["type"] == "capsule" and g["body"] == "fr3_link2" for g in geoms)
 
 

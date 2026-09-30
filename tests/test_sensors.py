@@ -132,11 +132,11 @@ def test_scheduler_rates():
 
 
 def test_center_of_pressure():
-    tax = np.zeros(16)
+    tax = np.zeros(64)
     tax[0] = 10.0  # row 0, col 0 corner
-    cop = center_of_pressure(tax, (0.025, 0.002, 0.011))
+    cop = center_of_pressure(tax, (0.0085, 0.002, 0.0085), (8, 8))
     assert cop[0] < 0 and cop[1] < 0
-    assert np.allclose(center_of_pressure(np.ones(16), (0.025, 0.002, 0.011)), 0.0)
+    assert np.allclose(center_of_pressure(np.ones(64), (0.0085, 0.002, 0.0085), (8, 8)), 0.0)
 
 
 def test_suite_on_world(settled_world):
@@ -152,7 +152,7 @@ def test_suite_on_world(settled_world):
     T = w.t - t0
     for name, rate in [("ft", w.cfg.sensors.ft_rate), ("pad_acc_L", w.cfg.sensors.accel_rate),
                        ("pressure_L", w.cfg.sensors.pressure_rate), ("joint_pos", w.cfg.sensors.joint_rate)]:
-        assert abs(len(suite[name].values) - rate * T) <= 2, name
+        assert abs(len(suite[name].values) - rate * T) <= 2 + 1e-6, name
     # static grasp: F/T z ~ weight below the sensor, grip ~ 40 N per pad, pad accel ~ 1 g
     assert abs(suite.latest("ft")[2]) == pytest.approx(15.0, abs=2.0)
     assert suite.latest("pressure_L").sum() == pytest.approx(w.cfg.controller.grip_hold, abs=5.0)

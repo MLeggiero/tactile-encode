@@ -138,5 +138,9 @@ The package follows the plan above. These are the places where building it chang
 - **Defaults from tuning.** Impedance 3000 N/m and 150 Nm/rad (joint friction held the arm ~7 mm off at
   1500 N/m); strike speed 2.2 m/s (the FR3's torque limits cap the face at ~2.2 m/s anyway).
 - **Not built.** Series-elastic joint mode, the drill plant (stub), cameras beyond an optional renderer.
+- **Tool and tactile arrays.** The hammer is the YCB 048_hammer scan (`tactile_sim/assets/ycb.py`
+  fetches it by sha256 and cuts contact hulls and a mass split from it). The pad pressure arrays are
+  8 x 8 per pad at 1 kHz, binned from contacts in Python with a 3 mm spread: MuJoCo's touch sensor also
+  counts contacts whose normal ray crosses a site, which double-counted edge contacts.
 - **Viewer.** `tactile_sim/viewer` exports episodes (poses at 2 kHz around impacts, traces, strike records,
   simplified real meshes) into a standalone three.js replay page; `viewer.live` opens MuJoCo's own viewer.

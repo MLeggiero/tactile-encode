@@ -66,18 +66,19 @@ class GripperCfg:
     soft_pad_solref: tuple[float, float] = (0.004, 0.6)
     # Menagerie uses 1 Ns/m behind its position servo (kv 10); with a force-controlled drive in its place the
     # real hand's non-backdrivable spindle is represented by heavy joint damping instead
-    finger_joint_damping: float = 100.0
+    finger_joint_damping: float = 300.0
 
 
 @dataclass
 class HammerCfg:
+    model: str = "auto"  # "ycb" (YCB 048_hammer scan), "primitive" (cylinder + capsule), "auto"
     head_mass: float = 0.45
     head_radius: float = 0.0125
     head_half_len: float = 0.05  # along the strike axis
     handle_radius: float = 0.014
     handle_len: float = 0.28
-    handle_mass: float = 0.15
-    grip_from_head: float = 0.16  # grasp centre to head axis, along the handle
+    handle_mass: float = 0.215  # YCB 048_hammer: 665 g total
+    grip_from_head: float = 0.19  # grasp centre to head axis: the flat, widest part of the YCB handle
     face_solref: tuple[float, float] = (0.001, 0.4)
     face_solimp: tuple[float, float, float] = (0.95, 0.99, 0.001)
     board_solref: tuple[float, float] = (0.002, 0.8)
@@ -128,11 +129,12 @@ class SensorsCfg:
     accel_bandwidth: float = 3500.0
     accel_noise: float = 0.05
     accel_range: float = 16 * 9.80665
-    pressure_rate: float = 500.0
+    taxel_grid: tuple[int, int] = (8, 8)  # per pad (rows along the handle, columns along the finger)
+    pressure_rate: float = 1000.0
     pressure_latency: float = 0.002
-    pressure_bandwidth: float = 100.0
-    pressure_noise: float = 0.3
-    pressure_range: float = 60.0
+    pressure_bandwidth: float = 300.0
+    pressure_noise: float = 0.1  # N per taxel
+    pressure_range: float = 20.0  # N per taxel
     joint_rate: float = 1000.0
     joint_latency: float = 0.0
     joint_pos_quant: float = 2.0**-14
@@ -168,6 +170,7 @@ class ControllerCfg:
     grip_ki: float = 15.0
     grip_hold: float = 55.0  # N per pad; Franka Hand continuous rating is 70 N
     drop_force_frac: float = 0.2
+    drop_force_abs: float = 1.5  # N; below the array's noise floor a fraction of a tiny setpoint is meaningless
     drop_accel: float = 50.0
 
 

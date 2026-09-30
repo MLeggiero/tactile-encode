@@ -151,17 +151,7 @@ def _add_pad(finger: ET.Element, pname: str, side: int, g: GripperCfg) -> None:
     sub(pad, "geom", name=names.PAD_GEOMS[side], type="box", size=(hx, hy, hz), pos=(0, -hy, 0),
         rgba=(0.12, 0.12, 0.14, 1), contype=0, conaffinity=0, mass=0)
     sub(pad, "site", name=names.PAD_IMU_SITES[side], pos=(0, -hy, 0), size=0.002, group=4)
-    nr, nc = names.TAXEL_GRID
-    for r in range(nr):  # rows along the pad's x (across the finger, = along the handle)
-        for c in range(nc):  # columns along the pad's z (along the finger)
-            x = -hx + (2 * r + 1) * hx / nr
-            z = -hz + (2 * c + 1) * hz / nc
-            sub(pad, "site", name=taxel_site(side, r, c), type="box", size=(hx / nr, hy + 0.003, hz / nc),
-                pos=(x, -hy, z), rgba=(0.3, 0.8, 0.3, 0.2), group=5)
-
-
-def taxel_site(side: int, r: int, c: int) -> str:
-    return f"taxel_{'LR'[side]}_{r}{c}"
+    # pressure-array taxels are binned from the pad's contacts in World.pad_taxels (no MJCF sensors)
 
 
 def add_grip_actuation(root: ET.Element, g: GripperCfg) -> None:

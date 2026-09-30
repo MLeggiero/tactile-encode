@@ -81,7 +81,7 @@ class Episode:
             self.tb.reset(seed)
         self.record_truth = record_truth
         w = self.tb.world
-        self.g_face = w.model.geom(names.HAMMER_HEAD_GEOM).id
+        self.g_face = w.model.geom(names.HAMMER_FACE_GEOM).id
         self.g_nail = w.model.geom(names.NAIL_HEAD_GEOM).id
         self.g_board = w.model.geom(names.BOARD_GEOM).id
         self.face_site = w.site[names.HAMMER_FACE_SITE]

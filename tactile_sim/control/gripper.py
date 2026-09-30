@@ -45,7 +45,7 @@ class GripForceLoop:
         l, r = self.sensors["pressure_L"].latest(), self.sensors["pressure_R"].latest()
         if l.seq < 0:
             return float(np.mean(self.world.pad_normal_forces()))
-        floor = 3.0 * self.cfg.sensors.pressure_noise
+        floor = 2.0 * self.cfg.sensors.pressure_noise
         return 0.5 * (grip_force(l.value, floor) + grip_force(r.value, floor))
 
     def tick(self, t: float, setpoint: float, l1=None) -> float:
@@ -87,7 +87,7 @@ class GripForceLoop:
         if self.sensors is not None and "pad_acc_L" in self.sensors:
             a = self.sensors["pad_acc_L"].latest().value
             acc = float(np.linalg.norm(a))
-        if f < c.drop_force_frac * setpoint:
+        if f < max(c.drop_force_frac * setpoint, c.drop_force_abs):
             self._low_since = t if self._low_since is None else self._low_since
             if t - self._low_since >= 0.020 or acc > c.drop_accel:
                 self.dropped = True

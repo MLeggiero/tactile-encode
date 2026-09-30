@@ -5,7 +5,6 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 
 from tactile_sim import names
-from tactile_sim.model.gripper import taxel_site
 from tactile_sim.model.xmlutil import sub
 
 # name -> dim, in declaration order
@@ -25,9 +24,6 @@ def add_sensors(root: ET.Element) -> list[tuple[str, int]]:
     add("accelerometer", "pad_acc_L", 3, site=names.PAD_IMU_SITES[0])
     add("accelerometer", "pad_acc_R", 3, site=names.PAD_IMU_SITES[1])
     add("accelerometer", "hammer_acc", 3, site=names.HAMMER_IMU_SITE)
-    nr, nc = names.TAXEL_GRID
-    for side in range(2):
-        for r in range(nr):
-            for c in range(nc):
-                add("touch", taxel_site(side, r, c), 1, site=taxel_site(side, r, c))
+    # pad pressure arrays are binned from contacts in tactile_sim.sim.world.World.pad_taxels: MuJoCo's touch
+    # sensor also counts contacts whose normal ray crosses a site, so neighbouring taxels share a contact
     return out

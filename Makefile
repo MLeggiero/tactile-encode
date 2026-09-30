@@ -10,6 +10,7 @@ install:
 
 assets:
 	$(PY) -m tactile_sim.assets.fetch_menagerie
+	$(PY) -m tactile_sim.assets.ycb
 
 test:
 	$(PY) -m pytest -q -m "not network"
