@@ -105,7 +105,7 @@ class Episode:
         w = self.tb.world
         p, r = w.hammer_in_hand()
         rec = StrikeRecord(idx=plan.idx, t_swing_start=plan.t_start, t_c_pred=plan.t_c_pred,
-                           depth_before=w.plant.depth)
+                           depth_before=w.plant.depth, v_cmd=plan.v_strike)
         rec._p0, rec._r0 = p, r  # noqa: SLF001 - private scratch
         self._cur = rec
         self._series_t, self._series_f = [], []
@@ -174,6 +174,7 @@ class Episode:
                     rec.t_contact_truth = t
                     v = w.site_velocity(self.face_site)[:3] @ tb.l1.axis
                     rec.v_strike_actual = float(v)
+                    rec.v_tcp = float(w.site_velocity(w.tcp_site)[:3] @ tb.l1.axis)
                     rec.grip_at_contact = float(np.mean(w.pad_normal_forces()))
                 self._series_t.append(t)
                 self._series_f.append(f_nail)

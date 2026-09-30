@@ -155,7 +155,7 @@ def test_suite_on_world(settled_world):
         assert abs(len(suite[name].values) - rate * T) <= 2, name
     # static grasp: F/T z ~ weight below the sensor, grip ~ 40 N per pad, pad accel ~ 1 g
     assert abs(suite.latest("ft")[2]) == pytest.approx(15.0, abs=2.0)
-    assert suite.latest("pressure_L").sum() == pytest.approx(40.0, abs=5.0)
+    assert suite.latest("pressure_L").sum() == pytest.approx(w.cfg.controller.grip_hold, abs=5.0)
     assert np.linalg.norm(suite.latest("pad_acc_L")) == pytest.approx(9.81, abs=0.5)
 
 

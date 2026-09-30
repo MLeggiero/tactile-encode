@@ -29,7 +29,9 @@ STRIKE_FIELDS = [
     ("peak_force_truth", np.float64), ("impulse", np.float64), ("pulse_width", np.float64),
     ("peak_ft_meas", np.float64), ("depth_before", np.float64), ("depth_after", np.float64),
     ("depth_inc", np.float64), ("slip_trans", np.float64), ("slip_rot", np.float64), ("drop", np.bool_),
-    ("peak_joint_torque", np.float64, (7,)), ("v_strike_actual", np.float64), ("grip_at_contact", np.float64),
+    ("peak_joint_torque", np.float64, (7,)), ("v_cmd", np.float64), ("v_strike_actual", np.float64),
+    ("v_tcp", np.float64),
+    ("grip_at_contact", np.float64),
     ("grip_peak", np.float64), ("t_grip_peak_rel", np.float64), ("t_grip_ramp_start_rel", np.float64),
     ("ringing_energy", np.float64), ("pre_energy", np.float64),
 ]
@@ -55,7 +57,9 @@ class StrikeRecord:
     slip_rot: float = 0.0
     drop: bool = False
     peak_joint_torque: np.ndarray = field(default_factory=lambda: np.zeros(7))
-    v_strike_actual: float = 0.0
+    v_cmd: float = 0.0  # commanded strike speed (the first strike may be a setting tap)
+    v_strike_actual: float = 0.0  # hammer face speed along the strike axis at contact
+    v_tcp: float = 0.0  # hand (TCP) speed along the strike axis at contact
     grip_at_contact: float = float("nan")
     grip_peak: float = float("nan")
     t_grip_peak_rel: float = float("nan")

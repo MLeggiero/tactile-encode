@@ -81,7 +81,7 @@ class ScriptedSwing:
         self.face_local = np.array(face_offset(self.cfg.hammer))
         self.aim_gain = aim_gain
         self.aim_offset = np.zeros(3)  # line origin shift from the nominal hover pose
-        self.drift_est = np.zeros(3)  # learned lateral face drift from hover to contact
+        self.drift_per_v2 = np.zeros(3)  # learned lateral face drift per (strike speed)^2
         self.face_hover = None
         self.on_swing_start = on_swing_start
         self.on_strike_end = on_strike_end
@@ -182,10 +182,6 @@ class ScriptedSwing:
         self._set_phase("windup", t)
         self.cmd.K = self.K_nom.copy()
         self.cmd.R_K = np.eye(3)
-        # the face should sit at (nail - expected drift) at hover so that it lands on the nail
-        self.face_hover = self.face_estimate()
-        err = self._lateral(self.nail_estimate() - self.drift_est - self.face_hover)
-        self.aim_offset += err
         self.line_origin = self.origin + self.aim_offset
         x_now = self.tb.world.tcp_pose()[0]
         s0 = float((x_now - self.line_origin) @ self.axis)
@@ -195,24 +191,33 @@ class ScriptedSwing:
     def _start_swing(self, t: float) -> None:
         sw = self.cfg.swing
         self._set_phase("swing", t)
+        # static aim at the windup pose: shift the line so the face, plus the drift the swing is expected
+        # to add, lands on the nail. Tracking drift grows with the swing's acceleration, i.e. ~ v^2.
+        v_next = sw.first_tap_speed if (self.k == 0 and sw.first_tap_speed > 0) else sw.v_strike
+        self._v_swing = v_next
+        self.face_hover = self.face_estimate()
+        err = self._lateral(self.nail_estimate() - self.drift_per_v2 * v_next**2 - self.face_hover)
+        self._aim_step = err
+        self.aim_offset += err
+        self.line_origin = self.origin + self.aim_offset
         # along-axis distance from the face (at the hover point of the line) to the nail head
         x_now = self.tb.world.tcp_pose()[0]
         s_now = float((x_now - self.line_origin) @ self.axis)
         s_c = float((self.nail_estimate() - self.face_estimate()) @ self.axis) + s_now
         dist = s_c - s_now
-        T = swing_duration(dist, sw.v_strike, a_max=60.0)
+        v = self._v_swing
+        T = swing_duration(dist, v, a_max=60.0)
         t_c = t + T
-        seg_swing = Segment(t, T, quintic_coeffs(s_now, 0.0, 0.0, s_c, sw.v_strike, 0.0, T))
-        T_over = sw.overshoot / sw.v_strike
-        seg_over = Segment(t_c, T_over, quintic_coeffs(s_c, sw.v_strike, 0.0, s_c + sw.overshoot, sw.v_strike, 0.0,
-                                                       T_over))
+        seg_swing = Segment(t, T, quintic_coeffs(s_now, 0.0, 0.0, s_c, v, 0.0, T))
+        T_over = sw.overshoot / v
+        seg_over = Segment(t_c, T_over, quintic_coeffs(s_c, v, 0.0, s_c + sw.overshoot, v, 0.0, T_over))
         ante = LinePath(self.line_origin, self.axis, self.R, [seg_swing, seg_over])
         rs = ReferenceSpreader(ante, self._make_post, t_c, interim_lead=0.010, timeout=sw.strike_timeout)
         rs.R = self.R
         rs.t_armed = t_c - 0.020
         F_hold = self.F_hold
-        F_pre = float(np.clip(F_hold + sw.grip_pre_gain * self.m_tool * sw.v_strike, F_hold, 120.0))
-        self.plan = StrikePlan(self.k, t, t_c, s_c, sw.v_strike, F_hold, F_pre, min(1.2 * F_pre, 140.0), t_c - 0.020)
+        F_pre = float(np.clip(F_hold + sw.grip_pre_gain * self.m_tool * v, F_hold, 120.0))
+        self.plan = StrikePlan(self.k, t, t_c, s_c, v, F_hold, F_pre, min(1.2 * F_pre, 140.0), t_c - 0.020)
         self.plans.append(self.plan)
         self._armed_once = False
         self.cmd.ref = rs
@@ -224,10 +229,11 @@ class ScriptedSwing:
 
     def _make_post(self, t_switch: float, x_now: np.ndarray):
         sw = self.cfg.swing
-        # iterative re-aim: learn the lateral drift of the face between hover and contact (or timeout)
+        # iterative re-aim: learn the lateral drift the swing adds between its start and contact (or timeout);
+        # the face was shifted by the static aim at swing start, so measure from the aimed position
         if self.face_hover is not None:
-            d_k = self._lateral(self.face_estimate() - self.face_hover)
-            self.drift_est += self.aim_gain * (d_k - self.drift_est)
+            d_k = self._lateral(self.face_estimate() - (self.face_hover + self._aim_step))
+            self.drift_per_v2 += self.aim_gain * (d_k / self._v_swing**2 - self.drift_per_v2)
         s_f = float((x_now - self.line_origin) @ self.axis)
         segs = [Segment(t_switch, 0.02, min_jerk(s_f, s_f, 0.02)),
                 Segment(t_switch + 0.02, sw.recover_time, min_jerk(s_f, 0.0, sw.recover_time))]

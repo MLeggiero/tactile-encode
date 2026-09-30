@@ -11,6 +11,7 @@ from tactile_sim import names
 from tactile_sim.config import SimConfig
 from tactile_sim.control.kinematics import site_jacobian, site_pose, solve_ik
 from tactile_sim.model.builder import build_scene, tcp_rotation
+from tactile_sim.model.gripper import finger_q_touch
 
 
 def full_inertia(m: mujoco.MjModel, d: mujoco.MjData, out: np.ndarray) -> np.ndarray:
@@ -43,6 +44,7 @@ class World:
         spec = build_scene(self.cfg)
         self.spec = spec
         self.arm_source = spec.arm_source
+        self.hand_source = spec.hand_source
         self.model = mujoco.MjModel.from_xml_string(spec.xml)
         self.data = mujoco.MjData(self.model)
         self.plant = spec.plant
@@ -240,7 +242,7 @@ class World:
             self.q_hover = q
         d.qpos[self.arm_qadr] = self.q_hover
         g, h = self.cfg.gripper, self.cfg.hammer
-        d.qpos[self.finger_qadr] = h.handle_radius + 2 * g.pad_half[1]
+        d.qpos[self.finger_qadr] = finger_q_touch(g, h.handle_radius)
         mujoco.mj_kinematics(m, d)
         pt, Rt = self.tcp_pose()
         qt = np.zeros(4)

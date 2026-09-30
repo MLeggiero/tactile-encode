@@ -38,6 +38,7 @@ class SceneSpec:
     plant: Plant
     hover_tcp: np.ndarray
     sensors: list[tuple[str, int]] = field(default_factory=list)
+    hand_source: str = "box"
 
 
 def hover_tcp_position(cfg: SimConfig) -> np.ndarray:
@@ -72,7 +73,7 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
         conaffinity=0)
     sub(wb, "camera", name="scene_cam", pos=(1.3, -0.9, 0.9), xyaxes=(0.57, 0.82, 0, -0.35, 0.24, 0.9))
 
-    add_wrist_and_hand(find_body(root, "fr3_link7"), cfg.arm, cfg.gripper)
+    hand_source = add_wrist_and_hand(find_body(root, "fr3_link7"), cfg.arm, cfg.gripper, root)
     add_grip_actuation(root, cfg.gripper)
     add_hammer(wb, cfg.hammer)
     add_grasp_weld(root)
@@ -92,4 +93,4 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
     sensors = add_sensors(root)
     ET.indent(root)
     return SceneSpec(xml=ET.tostring(root, encoding="unicode"), arm_source=source, plant=plant,
-                     hover_tcp=hover_tcp_position(cfg), sensors=sensors)
+                     hover_tcp=hover_tcp_position(cfg), sensors=sensors, hand_source=hand_source)

@@ -30,7 +30,7 @@ def test_grip_holds_setpoint_and_settles():
     tb.l2_callbacks.append(lambda t: setattr(tb.l1.cmd, "t", t))
     tb.run_for(0.2)
     truth = tb.world.pad_normal_forces()
-    assert np.allclose(truth, 40.0, atol=2.0)
+    assert np.allclose(truth, tb.cfg.controller.grip_hold, atol=2.0)
     assert tb.grip.measured == pytest.approx(truth.mean(), abs=1.5)
     tb.l1.cmd.F_grip = 80.0
     f = []
@@ -66,7 +66,9 @@ def _shake(grip, T=1.0):
 
 
 def test_firm_grip_survives_shake():
-    (slip_t, slip_r), tb = _shake(40.0)
+    """The default hold force (55 N, under the Franka Hand's 70 N continuous rating) survives a 2 g shake.
+    At 40 N the real hand's 17 mm pads let the hammer twist ~7 deg."""
+    (slip_t, slip_r), tb = _shake(fast_config().controller.grip_hold)
     assert slip_t < 0.007 and np.degrees(slip_r) < 1.4
     assert not tb.grip.dropped
 

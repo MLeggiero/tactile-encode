@@ -42,18 +42,20 @@ class ArmCfg:
 
 @dataclass
 class GripperCfg:
-    hand_mass: float = 0.73
-    finger_mass: float = 0.02
-    tcp_offset: float = 0.1034  # flange to grasp centre along the flange z axis
+    hand_source: str = "auto"  # "franka" (Menagerie Franka Hand), "box" (same dims, no meshes), "auto"
+    tcp_offset: float = 0.1034  # hand base to grasp centre (Franka Hand TCP)
     finger_range: float = 0.04  # opening per finger
-    grip_force_max: float = 150.0  # N per pad
+    finger_armature: float = 0.1  # Menagerie hand.xml
+    grip_force_max: float = 140.0  # N per finger: Franka Hand peak (70 N continuous)
     pad_mode: str = "explicit"  # "explicit" (spring-mounted pads) or "soft_contact"
-    pad_half: tuple[float, float, float] = (0.025, 0.002, 0.011)  # along handle, thickness, width
-    pad_mass: float = 0.01
-    pad_k_n: float = 5.0e4  # N/m normal
-    pad_d_n: float = 15.0  # Ns/m normal
-    pad_k_t: float = 3.0e4  # N/m tangential
-    pad_d_t: float = 10.0
+    pad_half: tuple[float, float, float] = (0.0085, 0.002, 0.0085)  # Franka fingertip pad: 17 x 17 mm
+    # hard-rubber fingertip insert (Franka Hand): stiff enough that a 3 g shake tilts the hammer ~2.5 deg,
+    # soft enough that the tool still rings in the grasp after a blow
+    pad_mass: float = 0.02
+    pad_k_n: float = 2.0e5  # N/m normal
+    pad_d_n: float = 60.0  # Ns/m normal
+    pad_k_t: float = 1.0e5  # N/m tangential
+    pad_d_t: float = 20.0
     pad_travel_n: float = 0.004
     pad_travel_t: float = 0.002
     pad_friction: float = 1.3
@@ -62,7 +64,9 @@ class GripperCfg:
     pad_solimp: tuple[float, float, float] = (0.9, 0.95, 0.001)
     # soft-contact-only pads (pad_mode="soft_contact")
     soft_pad_solref: tuple[float, float] = (0.004, 0.6)
-    finger_joint_damping: float = 20.0
+    # Menagerie uses 1 Ns/m behind its position servo (kv 10); with a force-controlled drive in its place the
+    # real hand's non-backdrivable spindle is represented by heavy joint damping instead
+    finger_joint_damping: float = 100.0
 
 
 @dataclass
@@ -162,7 +166,7 @@ class ControllerCfg:
     impact_refractory: float = 0.100
     grip_kp: float = 0.2
     grip_ki: float = 15.0
-    grip_hold: float = 40.0
+    grip_hold: float = 55.0  # N per pad; Franka Hand continuous rating is 70 N
     drop_force_frac: float = 0.2
     drop_accel: float = 50.0
 
@@ -171,6 +175,7 @@ class ControllerCfg:
 class SwingCfg:
     rate: float = 200.0
     approach_time: float = 0.6
+    first_tap_speed: float = 1.2  # m/s; a setting tap teaches the aim loop the swing's drift (0 = no tap)
     windup_height: float = 0.15
     windup_time: float = 0.45
     v_strike: float = 2.2  # m/s; drives 20 mm in 9 strikes at the default nail resistance
@@ -178,7 +183,7 @@ class SwingCfg:
     strike_k: tuple[float, float, float] = (3000.0, 3000.0, 4000.0)  # (across, across, along) the strike axis
     recover_time: float = 0.4
     settle_time: float = 0.15
-    grip_lead: float = 0.150
+    grip_lead: float = 0.155  # ramp start before predicted contact (>= 150 ms before the actual one)
     grip_ramp_end: float = 0.050
     grip_peak_delay: float = 0.060
     grip_decay: float = 0.200
