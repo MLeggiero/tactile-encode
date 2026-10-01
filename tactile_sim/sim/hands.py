@@ -241,8 +241,9 @@ class WujiHandIO(HandIO):
         self._q_locked = self.world.data.qpos[self.qadr].copy()
 
     def closed_further(self) -> float:
-        """Mean angle the closing joints have advanced since the drives locked (rad). With self-locking drives
-        a tool can only leave the wrap if the fingers close into the space it vacates."""
+        """Mean angle the closing joints have advanced since the grasp seated (rad). A tool can only leave the
+        wrap if the fingers close into the space it vacates (backdrivable: the synergy drives them shut;
+        self-locking: the ratchet lets them close but never open)."""
         if getattr(self, "_q_locked", None) is None:
             return 0.0
         d = self.synergy.close_dir

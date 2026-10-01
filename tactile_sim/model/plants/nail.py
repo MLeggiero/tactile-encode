@@ -57,6 +57,19 @@ class NailPlant(Plant):
             margin=0.0)
         sub(contact, "pair", name=PAIR_HEAD_BOARD, geom1=names.HAMMER_HEAD_GEOM, geom2=names.BOARD_GEOM,
             condim=3, friction=(0.5, 0.5, 0.005, 0.0001, 0.0001), solref=h.board_solref, margin=0.0)
+        if self.cfg.scene.table and axis[2] < -np.cos(np.radians(30)):
+            # the board lies on a table: a tabletop from the board's underside to the floor (visual only)
+            under = surface + axis * 2 * bt
+            tx, ty = self.cfg.scene.table_half
+            top = float(under[2])
+            table = sub(worldbody, "body", name="table", pos=(under[0], under[1], 0.0))
+            sub(table, "geom", name="table_top", type="box", size=(tx, ty, 0.015), pos=(0, 0, top - 0.015),
+                rgba=(0.55, 0.57, 0.6, 1), contype=0, conaffinity=0)
+            for sx in (-1, 1):
+                for sy in (-1, 1):
+                    sub(table, "geom", type="cylinder", size=(0.02, 0.5 * (top - 0.03)),
+                        pos=(sx * (tx - 0.04), sy * (ty - 0.04), 0.5 * (top - 0.03)),
+                        rgba=(0.45, 0.47, 0.5, 1), contype=0, conaffinity=0)
         self.axis = axis
 
     def bind(self, model: mujoco.MjModel, data: mujoco.MjData) -> None:

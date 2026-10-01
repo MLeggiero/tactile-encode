@@ -239,7 +239,7 @@ Sharpa Wave.
 - **Model:** Dexmate's Vega U URDF (`dexmate-ai/dexmate-urdf`, Apache-2.0, pinned) compiled by MuJoCo: a fixed
   pedestal, a lift (0-0.4 m) and a torso flip (0-1 rad) under the head and two 7-joint arms. Dexmate ships
   the pedestal, lift and torso meshes only as GLB; `tactile_sim/assets/glb.py` converts them to OBJ. Dexmate's
-  Vega U robot profile drives only the upper body (arms, head), so the lift (0.1 m, shoulders 1.34 m up) and
+  Vega U robot profile drives only the upper body (arms, head), so the lift (0 m, shoulders 1.24 m up) and
   flip (upright) are set before a run and compiled as fixed joints. A WUJI Hand 2 on each wrist: the right
   one (with the grasp synthesis, patches and joint law above) strikes, the left one holds a relaxed pose on
   position servos at its joint ratings; the left arm and head hold a pose. The wheeled Vega-1P (same arms,
@@ -251,12 +251,18 @@ Sharpa Wave.
   accelerometer and every 10 ms sends differential-IK targets, offset by the gravity droop of the arm and of
   every held joint, rate-limited to 90 % of the joint velocity limits. Factory gains, drive inertia and any
   torque-rate limit are not published; the sim's values are assumptions and the P multiplier is swept.
-- **Strike:** Vega's arm cannot push the hand fast along its own pointing direction, so the strike was
-  searched over hover pose, direction and an arc radius (`StrikeGeometry`): a forward strike on the right,
-  arcing about a pivot 0.8 m behind the face. The joint velocity limits allow ~1.2 m/s there; the swing
-  reaches ~0.85 m/s.
+- **Strike:** a vertical nail in a board lying on a tabletop (top at 0.84 m), driven straight down by the
+  right arm in front of the robot. The path is an arc (`StrikeGeometry`): the tool turns about a pivot
+  0.6 m behind the face along the handle, through ~25 deg over a 0.20 m windup, and the face meets the nail
+  square, moving straight down. Hover pose, handle direction and arc radius were searched for the speed the
+  joint velocity and torque limits allow: a longer arc is faster (0.8 m: ~1.9 m/s cap) but the windup is
+  then limited by joint 7's range; 0.6 m allows ~1.5 m/s, and the swing reaches ~1.1 m/s. The grasp is
+  synthesised under gravity in the tool frame of this pose (the hammer hangs differently than in a forward
+  strike). An earlier forward (horizontal) strike reached ~0.85 m/s.
 - **Fixes found on the way, which also changed the FR3 + WUJI numbers:** the learned lateral aim drift was
   applied at the requested rather than the achievable strike speed; and the WUJI drop check fired when the
-  two patches lost the load while the fingers still held the tool.
+  two patches lost the load while the fingers still held the tool. With the downward strike the windup's
+  deceleration presses the handle onto the bare fingers, so the drop check now needs the fingers to close
+  into the space a lost tool would leave for any WUJI hand, not only a self-locking one.
 
 Results are in the README.

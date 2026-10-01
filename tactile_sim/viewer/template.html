@@ -378,8 +378,8 @@ function applyTheme() {
   if (S.ep) drawTactile();
 }
 
-// camera offsets in the task frame (h = along the handle, away from the head; a = strike axis; z = up), so they
-// hold for any strike direction
+// camera offsets in the task frame (h = along the handle, away from the head; a = strike axis; c = h x a, which
+// is up for a horizontal strike), so they hold for any strike direction
 const VIEWS = {
   overview: { pos: [1.05, -0.75, 0.45], tgt: [0.05, -0.12, 0.02] },
   top: { pos: [0.02, -0.10, 0.75], tgt: [0.02, -0.10, 0] },
@@ -387,18 +387,30 @@ const VIEWS = {
   // the grip sits ~0.19 m along the handle from the head and one head-length short of the nail
   hand: { pos: [0.40, 0.02, -0.13], tgt: [0.19, -0.14, 0] },
 };
+// a downward strike onto a tabletop: c is horizontal. The "top" view looks along c at the swing plane (h, a), as
+// it does for a horizontal strike, which here is from the side; it shows the arc the hammer travels.
+const VERTICAL_VIEWS = {
+  overview: { pos: [0.55, -0.55, 1.25], tgt: [-0.05, -0.25, -0.15] },
+  top: { pos: [0.12, -0.15, 0.95], tgt: [0.12, -0.15, 0] },
+  nail: { pos: [-0.08, -0.12, 0.25], tgt: [0, -0.02, 0] },
+  hand: { pos: [0.35, -0.25, 0.30], tgt: [0.19, -0.12, 0] },
+};
 // a humanoid's torso hides the FR3 overview angle: look at the striking arm from its side instead
 const VEGA_OVERVIEW = { overview: { pos: [1.5, -0.45, 0.75], tgt: [0.3, -0.35, 0.05] } };
 const VIEWS_BY_ARM = { vega_1p: VEGA_OVERVIEW, vega_1u: VEGA_OVERVIEW };
+function cross(u, v) { return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]; }
+function vertical() { return Math.abs(S.ep.strike_axis[2]) > 0.85; }
 function taskPoint(o) {
   const n = S.ep.nail_head, a = S.ep.strike_axis, h = S.ep.handle_axis || [1, 0, 0];
-  return [0, 1, 2].map((k) => n[k] + o[0] * h[k] + o[1] * a[k] + (k === 2 ? o[2] : 0));
+  const c = vertical() ? cross(h, a) : [0, 0, 1];
+  return [0, 1, 2].map((k) => n[k] + o[0] * h[k] + o[1] * a[k] + o[2] * c[k]);
 }
 function setView(v) {
   S.view = v;
-  const V = (VIEWS_BY_ARM[S.ep.arm] || {})[v] || VIEWS[v];
+  const V = vertical() ? VERTICAL_VIEWS[v] : (VIEWS_BY_ARM[S.ep.arm] || {})[v] || VIEWS[v];
   camera.position.set(...taskPoint(V.pos)); controls.target.set(...taskPoint(V.tgt)); controls.update();
   document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
+  document.querySelector('[data-view="top"]').textContent = vertical() ? "Side" : "Top";
 }
 document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
 
@@ -476,7 +488,7 @@ function markCurrent() {
 function strikeTime(r) { return r.t_contact ?? r.t_pred; }
 function jumpToStrike(i) {
   const r = S.ep.strikes[i];
-  setTime(strikeTime(r) - 0.03); S.strike = i; setPlaying(false); markCurrent();
+  setTime(strikeTime(r) - 0.03); S.strike = i; drawPath(); setPlaying(false); markCurrent();
 }
 function selectEpisode(k) {
   S.ep = D.episodes[k];
@@ -511,10 +523,24 @@ document.querySelectorAll("[data-win]").forEach((b) => b.addEventListener("click
   drawAll();
 }));
 
+// the hammer face's path through the current strike's swing (curved for an arc strike)
+const pathMat = new THREE.LineBasicMaterial({ color: 0xd08a2c, depthTest: false, transparent: true, opacity: 0.9 });
+const pathLine = new THREE.Line(new THREE.BufferGeometry(), pathMat); pathLine.renderOrder = 1; scene.add(pathLine);
+let pathFor = null;
+function drawPath() {
+  const r = S.ep.strikes[S.strike];
+  const key = r && r.path ? `${S.ep.key}:${S.strike}` : null;
+  if (key === pathFor) return;
+  pathFor = key;
+  pathLine.visible = !!key;
+  if (key) pathLine.geometry.setFromPoints(r.path.map((p) => new THREE.Vector3(...p)));
+}
+
 function setTime(t) {
   S.t = Math.max(0, Math.min(t, tMax()));
   const k = currentStrikeIndex(S.t);
   if (k !== S.strike) { S.strike = k; markCurrent(); }
+  drawPath();
   poseAt(S.t);
   $("scrub").value = String(Math.round((S.t / tMax()) * 1000));
   const r = S.ep.strikes[S.strike];

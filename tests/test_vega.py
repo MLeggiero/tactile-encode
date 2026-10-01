@@ -57,7 +57,26 @@ def test_vega_model_ratings_and_interface(vega_tb):
     names = [m.joint(i).name for i in range(m.njnt)]
     assert "Lift" not in names and "torso_flip" not in names and "torso_j1" not in names
     assert not any("wheel" in n for n in names)
-    assert w.data.body("arm_center").xpos[2] == pytest.approx(1.343, abs=0.01)  # lift at 0.1 m
+    assert w.data.body("arm_center").xpos[2] == pytest.approx(1.243, abs=0.01)  # lift at 0.0 m
+
+
+@requires_vega
+def test_vega_u_hammers_down_onto_a_tabletop_board(vega_tb):
+    from tactile_sim.model.builder import strike_axis
+
+    w = vega_tb.world
+    assert np.allclose(strike_axis(w.cfg), [0.0, 0.0, -1.0])  # a vertical nail, driven straight down
+    assert w.geom.L > 0  # a curved (arc) path, not a straight line
+    d = w.data
+    board_bottom = d.geom("board_geom").xpos[2] - w.model.geom("board_geom").size[2]
+    table_top = d.geom("table_top").xpos[2] + w.model.geom("table_top").size[2]
+    assert table_top == pytest.approx(board_bottom, abs=1e-3)  # the board lies on the table
+    assert 0.7 < table_top < 0.95
+    # over the swing the tool turns about the pivot, so the hammer face is not translated along a line
+    _, R0 = w.geom.pose(w.geom.s_c0 - 0.2)
+    _, R1 = w.geom.pose(w.geom.s_c0)
+    angle = np.degrees(np.arccos(np.clip((np.trace(R0.T @ R1) - 1) / 2, -1, 1)))
+    assert angle > 10
 
 
 @requires_vega

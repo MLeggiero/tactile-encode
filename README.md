@@ -12,19 +12,20 @@ learned layers (L2 reactive, L3 World-Action-Model / VLA planner) will train aga
   - the **Franka FR3** (MuJoCo Menagerie) with torque-controlled joints and a wrist F/T sensor body, holding
     either the **Franka Hand** (Menagerie; the default), with compliant rubber layers on its real 17 x 17 mm
     pads, or a WUJI Hand 2;
-  - the **Dexmate Vega U** (Dexmate's URDF, Apache-2.0): a fixed pedestal with a lift and a torso flip under
-    a head and two 7-joint arms, with a WUJI Hand 2 on each arm. Dexmate's Vega U interface drives only the
-    upper body, so the lift (0.1 m: shoulders 1.34 m up) and flip (upright) are set before a run. The right
-    arm strikes; the left arm and hand hold a pose. Vega's arms take joint position targets at 100 Hz
-    (Dexmate's `dexcontrol` exposes no torque mode), tracked by the drives' own torque-limited PD servos. The
-    wheeled Vega-1P (same arms, torso, locked base) is also available (`--robot vega_1p`).
+  - the **Dexmate Vega U** (Dexmate's URDF, Apache-2.0): a fixed pedestal with a lift and a torso flip under a
+    head and two 7-joint arms, with a WUJI Hand 2 on each arm. Dexmate's Vega U interface drives only the
+    upper body, so the lift (0 m: shoulders 1.24 m up) and flip (upright) are set before a run. The right arm
+    strikes down on a nail in a board lying on a table in front of it; the left arm and hand hold a pose.
+    Vega's arms take joint position targets at 100 Hz (Dexmate's `dexcontrol` exposes no torque mode), tracked
+    by the drives' own torque-limited PD servos. The wheeled Vega-1P (same arms, torso, locked base) is also
+    available (`--robot vega_1p`, with a forward strike into a vertical board).
   - The **WUJI Hand 2** (WUJI's published MJCF, Beta 2, MIT license) holds the hammer in a power wrap. Its 20
     joints are torque motors limited to WUJI's per-joint ratings and run a 1 kHz joint law (MIT mode).
 - **Tool:** the YCB 048_hammer scan (steel claw hammer, wooden handle, 665 g, CC BY 4.0), gripped
   190 mm from its head on the flat, widest part of the handle. The full scan is drawn; contacts use convex
   hulls cut from the scan (gripped handle section, striking face, whole head). Offline, a primitive
   hammer with the same masses is used.
-- **Plant:** a nail in a vertical board. The nail resists with Coulomb friction that grows with depth.
+- **Plant:** a nail in a board: a vertical board for the FR3, a board lying on a tabletop for the Vega U. The nail resists with Coulomb friction that grows with depth.
   The hammer-nail contact gives a ~4 ms blow at ~500-730 N.
 - **Sensors:** wrist F/T at 4 kHz, accelerometers at 8 kHz (+-16 g) under each taxel patch, 8 x 8 pressure
   arrays (64 taxels) at 1 kHz, joint encoders and torques at 1 kHz, and the momentum observer's external
@@ -103,8 +104,9 @@ the strike axis at the hover pose, swing acceleration at 60 % of what the joint 
 there, and the swing peaks just before the nail and arrives braking. A 1000 Nm/s torque-rate limit needs
 ~170 ms to reverse a saturated joint, so a swing still accelerating at contact keeps driving the arm into
 the nail and the tool through the grasp. Each arm and hand has a hover pose (and strike direction) chosen for these
-caps. The strike may be a straight line with the tool's orientation held (the FR3) or an arc about a pivot
-behind the grip (Vega: 0.8 m), which meets the nail square.
+caps. The strike may be a straight line with the tool's orientation held (the FR3) or a curve: an arc about a
+pivot behind the grip (Vega U: 0.6 m behind the face, the tool turning ~25 deg over a 0.20 m windup),
+which meets the nail square. The replay viewer draws the face's path for each swing.
 
 Vega's factory servo gains, drive inertia and torque-rate limit are not published. The sim assumes stiff
 harmonic-drive servos (`ArmCfg.servo_kp/kd`, `vega_armature`); results should be read as a sweep over the
@@ -115,31 +117,35 @@ P multiplier, not single numbers.
 | Metric | FR3 + Franka Hand | FR3 + WUJI | FR3 + WUJI, self-locking | Vega U + WUJI | Vega U + WUJI, self-locking | Target |
 |---|---|---|---|---|---|---|
 | Strikes on the nail | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 | >= 90 % |
-| Nail driven | 13.8 mm | 12.3 mm | 15.6 mm | 3.1 mm | 2.4 mm | 20 mm in <= 10 |
-| Face speed at contact | 1.3-1.8 m/s | 1.2-2.2 m/s | 1.2-1.8 m/s | 0.82-0.89 m/s | 0.82-0.85 m/s | |
-| Impact flag after contact | 0.4-1.1 ms | 0.25-1.1 ms | 0.25-1.1 ms | 0.75-1.75 ms | 1.0-1.75 ms | <= 2 ms |
-| Tool tilt in the grasp per strike | 0.5-2.9 deg (> 1.4 on 3) | 1.9-30.7 deg | 0.1-0.5 deg | 0.6-3.2 deg (> 1.4 on 5) | 0.7-1.3 deg | <= 1.4 deg |
-| Tool slip per strike | 0.6-1.0 mm | 2.3-8.2 mm | 0.2-0.9 mm | 0.2-0.6 mm | 0.2-0.4 mm | <= 7 mm |
+| Nail driven | 13.8 mm | 12.3 mm | 15.6 mm | 10.2 mm | 13.9 mm | 20 mm in <= 10 |
+| Face speed at contact | 1.3-1.8 m/s | 1.2-2.2 m/s | 1.2-1.8 m/s | 1.08-1.13 m/s | 1.09-1.12 m/s | |
+| Impact flag after contact | 0.4-1.1 ms | 0.25-1.1 ms | 0.25-1.1 ms | 0.6-1.75 ms | 0.4-1.5 ms | <= 2 ms |
+| Tool tilt in the grasp per strike | 0.5-2.9 deg (> 1.4 on 3) | 1.9-30.7 deg | 0.1-0.5 deg | 0.3-2.8 deg (> 1.4 on 5) | 0.3-2.2 deg (> 1.4 on 1) | <= 1.4 deg |
+| Tool slip per strike | 0.6-1.0 mm | 2.3-8.2 mm | 0.2-0.9 mm | 0.3-1.0 mm | 0.1-0.8 mm | <= 7 mm |
 | Arm limits | all held | joint 6 speed 1.14x | joint 6 speed 1.31x | all held | all held | none exceeded |
-| Hand joint loads | within rating | hard stops up to 16x rating | gearboxes up to 32x | hard stops up to 4x | gearboxes up to 40x | |
+| Hand joint loads | within rating | hard stops up to 16x rating | gearboxes up to 32x | hard stops up to 4x | gearboxes up to 20x | |
 
 ## Findings so far
 
-- **The Vega U with WUJI hands swings a hammer at ~0.85 m/s, half the FR3's speed, and drives ~0.3 mm per blow.**
-  It is not short of joint speed in principle: if every joint ran at its limit together, the face could
-  reach 3.7 m/s. But to strike with the hand pointing along the strike axis (the WUJI wrap's geometry) the
-  arm can do ~1.0-1.4 m/s at best anywhere in reach, against 2.6 m/s for the FR3. An arc strike gives Vega
-  no more speed but twice the torque headroom. The slow, soft blows are easy on the grasp (tilt at most 3.2 deg,
-  4x a joint's rating at worst on a hard stop) and on the arm (every Vega limit held).
+- **Driving the nail down onto a tabletop with a curved swing, the Vega U with WUJI hands strikes at
+  ~1.1 m/s and drives ~1 mm per blow (10.2 mm in 10; 13.9 mm with self-locking drives).** A forward,
+  horizontal strike managed only ~0.85 m/s and 0.3 mm per blow. Vega is not short of joint speed in
+  principle: if every joint ran at its limit together, the face could reach 3.7 m/s. But to strike with the
+  hand pointing along the strike axis (the WUJI wrap's geometry) a straight push manages ~1.0-1.4 m/s at best
+  anywhere in reach, against 2.6 m/s for the FR3. Swinging down in an arc lets the shoulder and elbow turn the
+  tool instead: the longer the arc's radius, the faster (0.6 m allows ~1.5 m/s, 0.8 m ~1.9 m/s), until
+  joint 7's range limits the windup. The blows stay easy on the grasp (tilt at most 2.8 deg, 4x a joint's
+  rating at worst on a hard stop) and on the arm (every Vega limit held).
 - With Vega's position interface the servo stiffness matters most where it is too high: at a P multiplier of
-  4 the arm rings against its 100 Hz stepwise targets, trips the impact detector before contact, exceeds its
-  joint velocity limits (1.27x) and hits 2 of 10. Between 0.25 and 1 the nail goes the same ~3 mm in 10
-  strikes; softer servos let the tool tilt a little more.
+  4 the arm rings against its 100 Hz stepwise targets, trips the impact detector before contact and hits
+  5 of 10, driving nothing. At 0.25 the nail goes 12.2 mm in 10 strikes, about as far as at 1 (10.2 mm);
+  softer servos let the tool tilt a little more.
 - Two taxel patches see only part of a wrap's load. When the tool turns a few degrees in the hand, or the
   swing loads the fingers, the palm and thumb patches can unload while the fingers still hold it; a drop
-  check that compares the patches with the grip setpoint then fires falsely. The WUJI drop check requires
-  the patches to go empty, and with self-locking drives also the fingers to close into the space a lost
-  tool would leave (joint encoders).
+  check that compares the patches with the grip setpoint then fires falsely. In the downward strike, the
+  windup's deceleration lifts the hammer off the palm and onto the bare fingers for a moment. The WUJI drop
+  check requires the patches to go empty and the fingers to close into the space a lost tool would leave
+  (joint encoders).
 - **The earlier results were not achievable on a real FR3.** Before the limits were enforced, the
   controller stepped joint torques at up to 43x libfranka's 1000 Nm/s limit and the wrist spun past its
   velocity limit after each blow; the arm would have stopped with a reflex. Within the limits the FR3 hits
@@ -187,7 +193,7 @@ P multiplier, not single numbers.
 | M9 | drill plant (Task B) | stub only |
 | D0-D6 | WUJI Hand 2: fetch, import, grasp synthesis, taxel patches, joint control, strikes, viewer | done |
 | D7 | experiments E1-E9 of `docs/dexterous_hand_plan.md` | partly (E2, E3, E7) |
-| V0-V3 | Vega U (and Vega-1P): fetch, URDF import (GLB meshes converted), position-servo interface, WUJI hands on both arms, arc strike, limits, tests, viewer | done |
+| V0-V3 | Vega U (and Vega-1P): fetch, URDF import (GLB meshes converted), position-servo interface, WUJI hands on both arms, downward arc strike onto a tabletop, limits, tests, viewer | done |
 | | Sharpa Wave | not started |
 
 Not built: the series-elastic joint mode from the plan (`flex_mode="sea"`), the drill/screw plant, and

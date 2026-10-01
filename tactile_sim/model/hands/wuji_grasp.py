@@ -61,9 +61,18 @@ class WrapGrasp:
                    d.get("contact_frames"))
 
 
-def hover_hand_rotation() -> np.ndarray:
-    """Hand orientation in the world at the hover pose: TCP frame = diag(1, -1, -1) (see builder)."""
-    return np.diag([1.0, -1.0, -1.0]) @ wuji.R_HAND_TCP.T
+def hover_hand_rotation(cfg: SimConfig | None = None) -> np.ndarray:
+    """Hand orientation in the world with the tool in its nominal strike orientation (builder.tcp_rotation), so
+    the grasp seats under gravity the way the task will load it."""
+    from tactile_sim.model.builder import tcp_rotation
+
+    return tcp_rotation(cfg) @ wuji.R_HAND_TCP.T
+
+
+def _gravity_in_tool(cfg: SimConfig) -> list[float]:
+    from tactile_sim.model.builder import tcp_rotation
+
+    return np.round(tcp_rotation(cfg).T @ np.array([0.0, 0.0, -1.0]), 3).tolist()
 
 
 def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
@@ -72,7 +81,7 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
                        "sol": g.hand_solref,
                        "mu": g.hand_friction, "tors": g.pad_torsion, "damp": g.hand_joint_damping,
                        "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "hammer": h.model,
-                       "grip": h.grip_from_head, "mass": (h.head_mass, h.handle_mass),
+                       "grip": h.grip_from_head, "mass": (h.head_mass, h.handle_mass), "g": _gravity_in_tool(cfg),
                        "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
@@ -92,7 +101,7 @@ def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:
     sub(root, "actuator")
     contact = sub(root, "contact")
     q_hand = np.zeros(4)
-    mujoco.mju_mat2Quat(q_hand, hover_hand_rotation().reshape(-1))
+    mujoco.mju_mat2Quat(q_hand, hover_hand_rotation(cfg).reshape(-1))
     q_mount_inv = np.zeros(4)
     mujoco.mju_negQuat(q_mount_inv, np.array(wuji.mount_quat(cfg.gripper.mount_yaw)))
     q_base = np.zeros(4)

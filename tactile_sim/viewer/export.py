@@ -194,7 +194,11 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
 
     strikes = []
     for r in res.strikes:
+        # the hammer face's path from the start of the swing to just past contact, every 2 ms
+        t_end = r.t_contact_truth if np.isfinite(r.t_contact_truth) else r.t_c_pred
+        sel = np.flatnonzero((t >= r.t_swing_start) & (t <= t_end + 0.01))[::max(1, int(round(0.002 / w.dt)))]
         strikes.append({
+            "path": _r(T["face_pos"][sel], 4),
             "idx": r.idx + 1, "hit": bool(r.hit), "t_swing": round(r.t_swing_start, 4),
             "t_contact": round(r.t_contact_truth, 5) if np.isfinite(r.t_contact_truth) else None,
             "t_pred": round(r.t_c_pred, 5),

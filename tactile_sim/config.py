@@ -152,6 +152,12 @@ class SceneCfg:
     hover_tcp: tuple[float, float, float] = (0.50, 0.0, 0.20)
     hover_clearance: float = 0.06
     strike_yaw: float = 0.0  # rad: the task (strike axis, board, grasp frame) turned about the vertical
+    # or, set explicitly: the strike direction (into the board) and the handle direction (from the head toward
+    # the grip), e.g. strike_dir (0, 0, -1) for a nail driven down into a board lying on a table
+    strike_dir: tuple[float, float, float] | None = None
+    handle_dir: tuple[float, float, float] = (1.0, 0.0, 0.0)
+    table: bool = True  # a table under the board when it lies flat (strike within 30 deg of vertical)
+    table_half: tuple[float, float] = (0.35, 0.45)  # tabletop half extents (m)
 
 
 @dataclass
@@ -342,12 +348,17 @@ WUJI2_OVERRIDES: dict[str, dict[str, Any]] = {
 # use the same arm, placed identically relative to the shoulders (arm_center).
 _VEGA_STRIKE = {"swing": {"arc_radius": 0.8}}
 VEGA_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
-    # Vega U: fixed pedestal; lift at 0.1 m puts the shoulders 1.34 m above the floor, torso upright
+    # Vega U: fixed pedestal, lift down (shoulders 1.24 m up), torso upright. The nail stands upright in a board
+    # lying on a table and is driven straight down, the handle across the body; the hammer swings on an arc
+    # (pivot 0.6 m behind the face), its head rising 0.20 m along it at the windup, so the tool turns 25 deg
+    # through the swing. Searched over hover pose, handle direction and arc radius: the joint velocity limits
+    # allow 1.5 m/s here (1.9 m/s on a flatter 0.8 m arc; 1.2 m/s for the best horizontal strike); the windup is
+    # as long as the wrist roll's range allows.
     "vega_1u": {
-        "arm": {"robot": "vega_1u", "flex_mode": "rigid", "vega_lift": 0.1, "vega_flip": 0.0,
-                "q_seed": (-1.32, -0.46, 0.18, -1.78, -0.81, 0.27, 0.72)},
-        "scene": {"hover_tcp": (0.628, -0.30, 1.165), "strike_yaw": -1.5707963267948966},
-        **_VEGA_STRIKE,
+        "arm": {"robot": "vega_1u", "flex_mode": "rigid", "vega_lift": 0.0, "vega_flip": 0.0,
+                "q_seed": (0.63, -0.42, -2.55, -1.55, 1.42, -0.4, 0.94)},
+        "scene": {"hover_tcp": (0.50, -0.10, 1.05), "strike_dir": (0.0, 0.0, -1.0), "handle_dir": (0.0, -1.0, 0.0)},
+        "swing": {"arc_radius": 0.6, "windup_height": 0.20},
     },
     # Vega-1P: wheeled base locked, torso standing upright (shoulders 1.35 m up)
     "vega_1p": {

@@ -83,6 +83,22 @@ def test_static_hold_and_grip_loop(wuji_tb):
 
 
 @requires_wuji
+def test_a_tool_leaving_the_wrap_is_a_drop(wuji_tb):
+    """Patches alone cannot tell a lost tool from a handle pressed onto the bare fingers; the fingers closing
+    into the space the tool vacated can."""
+    tb = wuji_tb
+    tb.reset(0)
+    tb.run_for(0.2)
+    assert not tb.grip.dropped
+    w = tb.world
+    w.data.qpos[w.hammer_qadr:w.hammer_qadr + 3] += np.array([0.0, 0.0, -1.0])  # pull the hammer out
+    w.data.qvel[w.hammer_dofadr:w.hammer_dofadr + 6] = 0.0
+    tb.run_for(0.3)
+    assert tb.grip.dropped and tb.l1.supervisor.frozen
+    assert w.hand.closed_further() > 0.1
+
+
+@requires_wuji
 def test_self_locking_drive_does_not_backdrive():
     tb = Testbed(wuji_cfg(gripper={"lock_mode": "self_locking"}))
     w, hand = tb.world, tb.world.hand

@@ -24,6 +24,13 @@ def tcp_rotation(cfg: SimConfig | None = None) -> np.ndarray:
 
     The hammer face points along the TCP's -y, i.e. world +y at zero yaw, which is the strike direction.
     """
+    if cfg is not None and cfg.scene.strike_dir is not None:
+        a = np.asarray(cfg.scene.strike_dir, float)
+        a /= np.linalg.norm(a)
+        h = np.asarray(cfg.scene.handle_dir, float)
+        h = h - (h @ a) * a
+        h /= np.linalg.norm(h)
+        return np.column_stack([h, -a, np.cross(h, -a)])
     yaw = cfg.scene.strike_yaw if cfg is not None else 0.0
     c, s = np.cos(yaw), np.sin(yaw)
     Rz = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])

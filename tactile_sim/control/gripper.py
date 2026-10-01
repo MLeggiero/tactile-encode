@@ -93,8 +93,10 @@ class GripForceLoop:
                 t - l1.last_event.t_flag < c.drop_impact_holdoff:
             acc = 0.0  # the blow itself, not a tool leaving the hand
         hand = self.world.hand
-        if getattr(hand, "self_locking", False) and hand.closed_further() < 0.1:
-            self._low_since = None  # locked fingers still hold the tool even when the patches lose the load
+        if hasattr(hand, "closed_further") and hand.closed_further() < 0.1:
+            # a wrap still encloses the tool when the patches lose the load (the swing can press the handle
+            # onto the bare fingers); the tool has left only if the fingers closed into the space it vacated
+            self._low_since = None
             return
         if f < max(c.drop_force_frac * setpoint, c.drop_force_abs):
             self._low_since = t if self._low_since is None else self._low_since
