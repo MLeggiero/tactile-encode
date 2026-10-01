@@ -29,8 +29,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from tactile_sim.behaviors.trajectories import (
-    LinePath,
     Segment,
+    StrikePath,
     brake_profile,
     min_jerk,
     quintic_coeffs,
@@ -70,11 +70,11 @@ class ScriptedSwing:
         self.cfg = tb.cfg
         sw = self.cfg.swing
         self.n_strikes = sw.n_strikes if n_strikes is None else n_strikes
-        self.axis = strike_axis()
+        self.axis = strike_axis(self.cfg)
         self.origin = tb.world.hover_tcp.copy()
         self.R = tb.world.tcp_R_nominal.copy()
         # strike frame for the stiffness: z along the strike axis
-        x_k = np.array([1.0, 0.0, 0.0])
+        x_k = tb.world.tcp_R_nominal[:, 0]  # along the handle, across the strike
         z_k = self.axis
         self.R_K = np.column_stack([x_k, np.cross(z_k, x_k), z_k])
         c = self.cfg.controller
@@ -99,13 +99,12 @@ class ScriptedSwing:
         self.reset()
 
     def _arm_caps(self) -> tuple[float, float]:
-        """What the FR3 can do along the strike axis at the hover pose (orientation held):
+        """What the arm can do along the strike axis at the hover pose (orientation held):
         v_cap = min_j qd_max_j / |dq_j/dv| from the joint velocity limits, and a_cap = 60 % of the force the
         joint torque limits can apply along the axis, over the arm + tool's effective mass along it."""
         import mujoco
 
         from tactile_sim.control.kinematics import site_jacobian, task_inertia
-        from tactile_sim.limits import FR3_TORQUE, FR3_VELOCITY
         from tactile_sim.sim.world import full_inertia
 
         w = self.tb.world
@@ -117,13 +116,24 @@ class ScriptedSwing:
         d.qpos[w.arm_qadr] = w.q_hover
         mujoco.mj_forward(m, d)
         J = site_jacobian(m, d, w.tcp_site, w.arm_dofs)
-        twist = np.concatenate([self.axis, np.zeros(3)])
-        dq = np.linalg.pinv(J) @ twist
-        v_cap = float(np.min(FR3_VELOCITY / np.maximum(np.abs(dq), 1e-9)))
+        spec = w.arm_spec
         M = full_inertia(m, d, np.zeros((m.nv, m.nv)))[np.ix_(w.arm_dofs, w.arm_dofs)]
-        m_eff = float(twist @ task_inertia(M, J) @ twist) + self.tb.l1.payload_mass
-        f_cap = float(1.0 / np.max(np.abs(J.T @ twist) / FR3_TORQUE))
-        return v_cap, 0.6 * f_cap / m_eff
+        if w.geom.L <= 0:
+            twist = np.concatenate([self.axis, np.zeros(3)])
+            dq = np.linalg.pinv(J) @ twist
+            v_cap = float(np.min(spec.velocity / np.maximum(np.abs(dq), 1e-9)))
+            m_eff = float(twist @ task_inertia(M, J) @ twist) + self.tb.l1.payload_mass
+            f_cap = float(1.0 / np.max(np.abs(J.T @ twist) / spec.torque))
+            return v_cap, 0.6 * f_cap / m_eff
+        # arc: per unit face speed along the path the joint rates are J^+ twist; per unit face acceleration the
+        # joint torques (arm + tool inertia) are M_eff J^+ twist. Taken at the hover pose.
+        dx, om, _ = w.geom.tangent(0.0)
+        dq = np.linalg.pinv(J) @ np.concatenate([dx, om])
+        v_cap = float(np.min(spec.velocity / np.maximum(np.abs(dq), 1e-9)))
+        mass, com = w.hammer_payload()
+        M_eff = M + w.payload_mass_matrix(mass, com, w.hammer_inertia_tcp())
+        a_cap = float(np.min(spec.torque / np.maximum(np.abs(M_eff @ dq), 1e-9)))
+        return v_cap, 0.6 * a_cap
 
     # ------------------------------------------------------------------
     def face_estimate(self) -> np.ndarray:
@@ -151,10 +161,10 @@ class ScriptedSwing:
         self.cmd = L2Command(self.tb.t, self.origin.copy(), self.R.copy(), K=self.K_nom.copy(),
                              F_grip=self.cfg.controller.grip_hold)
         x_now = self.tb.world.tcp_pose()[0]
-        s0 = float((x_now - self.origin) @ self.axis)
-        T = self.cfg.swing.approach_time
         self.line_origin = self.origin.copy()
-        self.cmd.ref = PlainRef(LinePath(self.origin, self.axis, self.R, [Segment(self.tb.t, T, min_jerk(s0, 0.0, T))]))
+        s0 = self._geom().s_of(x_now)
+        T = self.cfg.swing.approach_time
+        self.cmd.ref = PlainRef(self._path([Segment(self.tb.t, T, min_jerk(s0, 0.0, T))]))
         self.tb.l1.set_command(self.cmd)
         self.done = False
 
@@ -199,8 +209,7 @@ class ScriptedSwing:
         elif self.phase == "post":
             if t >= self.phase_t0 + 0.02 + sw.recover_time:
                 self._set_phase("settle", t)
-                cmd.ref = PlainRef(LinePath(self.line_origin, self.axis, self.R,
-                                            [Segment(t, 0.001, min_jerk(0, 0, 0.001))]))
+                cmd.ref = PlainRef(self._path([Segment(t, 0.001, min_jerk(0, 0, 0.001))]))
                 cmd.R_K = np.eye(3)
         elif self.phase == "settle":
             if t >= self.phase_t0 + sw.settle_time:
@@ -221,9 +230,9 @@ class ScriptedSwing:
         self.cmd.R_K = np.eye(3)
         self.line_origin = self.origin + self.aim_offset
         x_now = self.tb.world.tcp_pose()[0]
-        s0 = float((x_now - self.line_origin) @ self.axis)
-        self.cmd.ref = PlainRef(LinePath(self.line_origin, self.axis, self.R,
-                                         [Segment(t, sw.windup_time, min_jerk(s0, -sw.windup_height, sw.windup_time))]))
+        s0 = self._geom().s_of(x_now)
+        self.cmd.ref = PlainRef(self._path([Segment(t, sw.windup_time, min_jerk(s0, -sw.windup_height,
+                                                                                   sw.windup_time))]))
 
     def _start_swing(self, t: float) -> None:
         sw = self.cfg.swing
@@ -231,16 +240,19 @@ class ScriptedSwing:
         # static aim at the windup pose: shift the line so the face, plus the drift the swing is expected
         # to add, lands on the nail. Tracking drift grows with the swing's acceleration, i.e. ~ v^2.
         v_next = sw.first_tap_speed if (self.k == 0 and sw.first_tap_speed > 0) else sw.v_strike
+        v_next = min(v_next, sw.v_margin * self.v_cap)  # the drift was learned at the speed actually swung
         self._v_swing = v_next
-        self.face_hover = self.face_estimate()
+        # where the face will be at the nominal contact if the tool moves rigidly along the path from here
+        s_c0 = self.tb.world.geom.s_c0
+        self.face_hover = self._face_at(s_c0)
         err = self._lateral(self.nail_estimate() - self.drift_per_v2 * v_next**2 - self.face_hover)
         self._aim_step = err
         self.aim_offset += err
         self.line_origin = self.origin + self.aim_offset
-        # along-axis distance from the face (at the hover point of the line) to the nail head
+        # path parameter at which the face reaches the nail head
         x_now = self.tb.world.tcp_pose()[0]
-        s_now = float((x_now - self.line_origin) @ self.axis)
-        s_c = float((self.nail_estimate() - self.face_estimate()) @ self.axis) + s_now
+        s_now = self._geom().s_of(x_now)
+        s_c = s_c0 + float((self.nail_estimate() - self._face_at(s_c0)) @ self.axis)
         dist = s_c - s_now
         v_max = sw.v_margin * self.v_cap
         a_max = min(sw.a_max, self.a_cap)
@@ -264,7 +276,7 @@ class ScriptedSwing:
             T_over = sw.overshoot / v
             seg_over = Segment(t + T, T_over, quintic_coeffs(s_c, v, 0.0, s_c + sw.overshoot, v, 0.0, T_over))
         t_c = t + T
-        ante = LinePath(self.line_origin, self.axis, self.R, [seg_swing, seg_over])
+        ante = self._path([seg_swing, seg_over])
         rs = ReferenceSpreader(ante, self._make_post, t_c, interim_lead=0.010, timeout=sw.strike_timeout)
         rs.R = self.R
         rs.t_armed = t_c - 0.020
@@ -289,10 +301,28 @@ class ScriptedSwing:
         if self.face_hover is not None:
             d_k = self._lateral(self.face_estimate() - (self.face_hover + self._aim_step))
             self.drift_per_v2 += self.aim_gain * (d_k / self._v_swing**2 - self.drift_per_v2)
-        s_f = float((x_now - self.line_origin) @ self.axis)
+        s_f = self._geom().s_of(x_now)
         segs = [Segment(t_switch, 0.02, min_jerk(s_f, s_f, 0.02)),
                 Segment(t_switch + 0.02, sw.recover_time, min_jerk(s_f, 0.0, sw.recover_time))]
-        return LinePath(self.line_origin, self.axis, self.R, segs)
+        return self._path(segs)
+
+    def _face_at(self, s: float) -> np.ndarray:
+        """Face position predicted at path parameter s: the current face estimate carried rigidly from the hand's
+        current pose to the path pose at s (for a straight strike, a shift along the strike axis)."""
+        g = self._geom()
+        x_now, R_now = self.tb.world.tcp_pose()
+        if g.L <= 0:
+            return self.face_estimate() + self.axis * (s - g.s_of(x_now))
+        # arc: the hand goes from where it actually is to the path pose at s, carrying the tool with it
+        p1, R1 = g.pose(s)
+        return p1 + R1 @ R_now.T @ (self.face_estimate() - x_now)
+
+    def _geom(self):
+        """The strike path shifted by the current aim (line_origin - origin)."""
+        return self.tb.world.geom.shifted(self.line_origin - self.origin)
+
+    def _path(self, segs) -> StrikePath:
+        return StrikePath(self._geom(), segs)
 
     # ------------------------------------------------------------------
     def _grip(self, t: float) -> float:

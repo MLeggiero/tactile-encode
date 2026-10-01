@@ -49,8 +49,11 @@ class World:
         self.model = mujoco.MjModel.from_xml_string(spec.xml)
         self.data = mujoco.MjData(self.model)
         self.plant = spec.plant
-        self.hover_tcp = spec.hover_tcp.copy()
-        self.tcp_R_nominal = tcp_rotation()
+        self.tcp_R_nominal = tcp_rotation(self.cfg)  # tool orientation at the nominal contact
+        from tactile_sim.model.builder import strike_geometry
+
+        self.geom = strike_geometry(self.cfg)
+        self.hover_tcp, self.hover_R = self.geom.pose(0.0)  # = spec.hover_tcp, R nominal for a straight strike
         self._index()
         self.hand = make_hand_io(self)
         self.plant.bind(self.model, self.data)
@@ -62,11 +65,31 @@ class World:
     # ------------------------------------------------------------------ indices
     def _index(self) -> None:
         m = self.model
-        jid = [m.joint(n).id for n in names.ARM_JOINTS]
+        from tactile_sim.model.robots import arm_spec
+
+        self.arm_spec = spec = arm_spec(self.cfg.arm)
+        jid = [m.joint(n).id for n in spec.joints]
         self.arm_qadr = np.array([m.jnt_qposadr[j] for j in jid])
         self.arm_dofs = np.array([m.jnt_dofadr[j] for j in jid])
-        self.arm_act = np.array([m.actuator(n).id for n in names.ARM_MOTORS])
-        self.tau_limit = m.actuator_ctrlrange[self.arm_act, 1].copy()
+        self.arm_act = np.array([m.actuator(n).id for n in spec.motors])
+        self.tau_limit = spec.torque.copy()
+        self.position_arm = spec.interface == "position"
+        if self.position_arm:
+            from tactile_sim.model.robots import vega_hold_pose
+
+            # every joint of the robot other than the striking arm holds a pose on its own servo
+            self.held = {n: v for n, v in vega_hold_pose(self.cfg.arm).items()}
+            self.held_qadr = np.array([m.joint(n).qposadr[0] for n in self.held])
+            self.held_dofs = np.array([m.joint(n).dofadr[0] for n in self.held])
+            self.held_act = np.array([m.actuator(f"m_{n}").id for n in self.held])
+            self.held_q = np.array(list(self.held.values()))
+            self.servo_kp = m.actuator_gainprm[self.arm_act, 0].copy()
+            self.servo_kd = -m.actuator_biasprm[self.arm_act, 2].copy()
+            self.left_hand_act = np.array([m.actuator(i).id for i in range(m.nu)
+                                           if m.actuator(i).name.startswith("m_l_")], dtype=int)
+            # relaxed, half-curled fingers; abduction and the thumb at their zero
+            self.left_hand_q = np.array([0.0 if ("abd" in m.actuator(int(a)).name or "thumb" in m.actuator(int(a)).name)
+                                         else 0.35 for a in self.left_hand_act])
         hj = m.joint("hammer_free")
         self.hammer_qadr = int(hj.qposadr[0])
         self.hammer_dofadr = int(hj.dofadr[0])
@@ -117,7 +140,62 @@ class World:
             t=self.t, q=d.qpos[self.arm_qadr].copy(), qd=d.qvel[dofs].copy(), tcp_pos=p, tcp_R=R,
             tcp_vel=self.site_velocity(self.tcp_site), J=J, M=self._Mfull[np.ix_(dofs, dofs)].copy(),
             bias=d.qfrc_bias[dofs].copy(), passive=d.qfrc_passive[dofs].copy(),
-            tau_cmd=d.ctrl[self.arm_act].copy())
+            tau_cmd=self.arm_torque())
+
+    def arm_torque(self) -> np.ndarray:
+        """Joint torque the striking arm's drives apply this step."""
+        return self.data.actuator_force[self.arm_act].copy()
+
+    def gravity_torque(self, q_arm: np.ndarray) -> np.ndarray:
+        """Static torque the striking arm needs at `q_arm` (other joints as they are), tool included."""
+        m, d = self.model, self.data
+        if not hasattr(self, "_dg"):
+            self._dg = mujoco.MjData(m)
+        dg = self._dg
+        dg.qpos[:] = d.qpos
+        dg.qpos[self.arm_qadr] = q_arm
+        dg.qvel[:] = 0.0
+        mujoco.mj_forward(m, dg)
+        tau = dg.qfrc_bias[self.arm_dofs].copy()
+        mass, com = self.hammer_payload()
+        p, R = site_pose(dg, self.tcp_site)
+        jp = np.zeros((3, m.nv))
+        mujoco.mj_jac(m, dg, jp, None, p + R @ com, self.hand_body)
+        return tau + jp[:, self.arm_dofs].T @ (-mass * m.opt.gravity)
+
+    def set_arm_position(self, q: np.ndarray, qd: np.ndarray | None = None, droop: np.ndarray | None = None) -> None:
+        """Position-interface arm: send joint targets (and velocity feedforward) to the drives' PD servos.
+
+        The servo applies kp (target - q) + kd (qd_ff - qd), so the target is offset by droop = g(q) / kp to
+        land on q under gravity, and by kd / kp * qd_ff to carry the velocity feedforward."""
+        tgt = np.asarray(q, float).copy()
+        if droop is not None:
+            tgt += droop
+        if qd is not None:
+            tgt += self.servo_kd / self.servo_kp * np.asarray(qd, float)
+        self.data.ctrl[self.arm_act] = tgt
+
+    def held_droop(self) -> np.ndarray:
+        """Static servo droop of the held joints at the current posture (gravity torque / kp)."""
+        m, d = self.model, self.data
+        if not hasattr(self, "_dh"):
+            self._dh = mujoco.MjData(m)
+        dh = self._dh
+        dh.qpos[:] = d.qpos
+        dh.qpos[self.held_qadr] = self.held_q
+        dh.qvel[:] = 0.0
+        mujoco.mj_forward(m, dh)
+        return dh.qfrc_bias[self.held_dofs] / m.actuator_gainprm[self.held_act, 0]
+
+    def hold_others(self, update: bool = True) -> None:
+        """Held joints (torso, head, left arm) and the idle left hand keep their poses; their targets carry the
+        droop of the current posture (the striking arm moves the torso's load)."""
+        d = self.data
+        if update:
+            self._held_droop = self.held_droop()
+        d.ctrl[self.held_act] = self.held_q + self._held_droop
+        if len(self.left_hand_act):
+            d.ctrl[self.left_hand_act] = self.left_hand_q
 
     def set_arm_torque(self, tau: np.ndarray) -> np.ndarray:
         tau = np.clip(tau, -self.tau_limit, self.tau_limit)
@@ -131,6 +209,13 @@ class World:
     def grip_truth(self) -> float:
         """Ground-truth grip force in the grip command's units."""
         return self.hand.grip_from_patches(self.pad_normal_forces())
+
+    def _hold_arm(self) -> None:
+        if self.position_arm:
+            self.set_arm_position(self.q_hover, droop=self._hover_droop)
+            self.hold_others(update=False)
+        else:
+            self.set_arm_torque(self.hold_torque(self.q_hover))
 
     def hold_torque(self, q_ref: np.ndarray) -> np.ndarray:
         a = self.cfg.arm
@@ -245,12 +330,18 @@ class World:
         """Put the arm at the hover pose with the hammer grasped and settled; time restarts at 0."""
         m, d = self.model, self.data
         mujoco.mj_resetData(m, d)
+        if self.position_arm:
+            d.qpos[self.held_qadr] = self.held_q
+            mujoco.mj_forward(m, d)
         if self.q_hover is None:
-            q, res = self.ik(self.hover_tcp)
+            q, res = self.ik(self.hover_tcp, self.hover_R)
             if res > 1e-4:
                 raise RuntimeError(f"IK for the hover pose failed (residual {res:.2e})")
             self.q_hover = q
         d.qpos[self.arm_qadr] = self.q_hover
+        if self.position_arm:
+            self._hover_droop = self.gravity_torque(self.q_hover) / self.servo_kp
+            self._held_droop = self.held_droop()
         self.hand.init_pose()
         mujoco.mj_kinematics(m, d)
         pt, Rt = self.tcp_pose()
@@ -277,16 +368,17 @@ class World:
         for i in range(n_weld):
             self.set_grip_force(hold * min(1.0, 2.0 * i / n_weld))
             self.hand.tick(self.t)
-            self.set_arm_torque(self.hold_torque(self.q_hover))
+            self._hold_arm()
             self.step()
         d.eq_active[self.weld_id] = 0
         self.hand.locked = False
         for i in range(int(round(settle_free / self.dt))):
             if i == int(round(0.5 * settle_free / self.dt)):
-                self.hand.locked = True  # self-locking drives engage once the wrap has seated
+                if hasattr(self.hand, "lock_engaged"):
+                    self.hand.lock_engaged()  # self-locking drives engage once the wrap has seated
             self.set_grip_force(hold)
             self.hand.tick(self.t)
-            self.set_arm_torque(self.hold_torque(self.q_hover))
+            self._hold_arm()
             self.step()
         d.time = 0.0
         self.step_count = 0

@@ -26,6 +26,7 @@ class PhysicsCfg:
 
 @dataclass
 class ArmCfg:
+    robot: str = "fr3"  # "fr3" (Franka FR3, 1 kHz torque control), "vega_1u" / "vega_1p" (Dexmate Vega, right arm)
     source: str = "auto"  # "fr3" (Menagerie, required), "fallback" (capsules), "auto" (fr3 if cached)
     flex_mode: str = "wrist"  # "rigid" or "wrist"
     wrist_k_rot: float = 1500.0  # Nm/rad, hinges about the flange x and y axes
@@ -34,6 +35,22 @@ class ArmCfg:
     wrist_d_lin: float = 150.0  # Ns/m
     ft_body_mass: float = 0.12  # wrist F/T sensor (Bota SensONE class)
     torque_rate_limit: float = 1000.0  # Nm/s per joint, libfranka kMaxTorqueRate (0 = off)
+    # --- Dexmate Vega U / Vega-1P (robot = "vega_1u" / "vega_1p"). Its public interface (dexcontrol) streams joint
+    # position targets, with an optional velocity feedforward, at 100 Hz by default; stiffness is the factory PD
+    # gains scaled by a per-joint P multiplier in [0.1, 4]. Dexmate does not publish the factory gains or the
+    # drives' reflected inertia: the values below are assumptions (stiff harmonic-drive servos), to be swept.
+    command_rate: float = 100.0  # Hz, position targets (ZOH between updates)
+    servo_kp: tuple[float, ...] = (3000.0, 3000.0, 1500.0, 1500.0, 400.0, 400.0, 400.0)  # Nm/rad, factory (assumed)
+    servo_kd: tuple[float, ...] = (60.0, 60.0, 30.0, 30.0, 4.0, 4.0, 4.0)  # Nms/rad (assumed)
+    servo_p_mult: float = 1.0  # dexcontrol set_pid multiplier, [0.1, 4]
+    vega_armature: tuple[float, ...] = (0.25, 0.25, 0.08, 0.08, 0.02, 0.02, 0.02)  # kg m^2 (assumed)
+    vega_damping: float = 0.5  # Nms/rad viscous drive loss (assumed)
+    torso_pose: tuple[float, float, float] = (0.0, 0.0, 0.0)  # Vega-1P torso joints
+    vega_lift: float = 0.2  # m, Vega U lift (0-0.4); set before a run, not part of Dexmate's motion interface
+    vega_flip: float = 0.0  # rad, Vega U torso flip (0-1), likewise
+    head_pose: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    left_arm_pose: tuple[float, ...] = (0.064, 0.3, 0.0, -1.556, 1.271, 0.0, 0.0)  # Dexmate "L_shape" pose
+    left_hand: bool = True  # an idle WUJI Hand 2 on the left arm
     # joint-space hold used only while settling at reset
     hold_kp: tuple[float, ...] = (600, 600, 600, 600, 250, 150, 50)
     hold_kd: tuple[float, ...] = (50, 50, 50, 50, 20, 12, 5)
@@ -134,6 +151,7 @@ class SceneCfg:
     # its range limits
     hover_tcp: tuple[float, float, float] = (0.50, 0.0, 0.20)
     hover_clearance: float = 0.06
+    strike_yaw: float = 0.0  # rad: the task (strike axis, board, grasp frame) turned about the vertical
 
 
 @dataclass
@@ -213,6 +231,9 @@ class SwingCfg:
     a_max: float = 25.0  # m/s^2 peak swing acceleration
     brake_decel: float = 15.0  # m/s^2 at contact (0 = the old accelerate-through-contact swing)
     v_margin: float = 0.8
+    # 0 = straight-line strike with the tool's orientation held; > 0 = arc strike: the tool turns about a pivot this
+    # far behind the face along the handle, so the elbow and shoulder whip the head (StrikeGeometry)
+    arc_radius: float = 0.0
     strike_k: tuple[float, float, float] = (3000.0, 3000.0, 4000.0)  # (across, across, along) the strike axis
     recover_time: float = 0.4
     settle_time: float = 0.15
@@ -309,17 +330,51 @@ WUJI2_OVERRIDES: dict[str, dict[str, Any]] = {
     "arm": {"q_seed": (0.74, 0.14, -0.58, -1.8, 1.48, 1.49, -0.24)},
     "scene": {"hover_tcp": (0.52, 0.30, 0.50)},
     # grip force = summed normal force on the palm and thumb patches
-    "controller": {"grip_hold": 40.0, "drop_impact_holdoff": 0.05},
+    # two patches see only part of a wrap's load, and the share moves when the tool shifts a few degrees or the
+    # swing loads the fingers: a drop is the patches going empty, not falling below a fraction of the setpoint
+    "controller": {"grip_hold": 40.0, "drop_impact_holdoff": 0.05, "drop_force_frac": 0.0},
 }
 
 
-def hand_config(hand: str, base: SimConfig | None = None, **sections: dict[str, Any]) -> SimConfig:
-    """Config for a given hand: "franka" (the default testbed) or "wuji2" (WUJI Hand 2 power wrap)."""
+# Dexmate Vega: a forward strike with the right arm. Hover pose, strike direction and arc radius were searched for
+# the fastest strike the arm's joint velocity and torque limits allow: ~1.0-1.4 m/s at best anywhere in reach
+# (2.6 m/s for the FR3); the arc gives this pose twice the torque headroom of a straight strike. Both Vegas
+# use the same arm, placed identically relative to the shoulders (arm_center).
+_VEGA_STRIKE = {"swing": {"arc_radius": 0.8}}
+VEGA_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    # Vega U: fixed pedestal; lift at 0.1 m puts the shoulders 1.34 m above the floor, torso upright
+    "vega_1u": {
+        "arm": {"robot": "vega_1u", "flex_mode": "rigid", "vega_lift": 0.1, "vega_flip": 0.0,
+                "q_seed": (-1.32, -0.46, 0.18, -1.78, -0.81, 0.27, 0.72)},
+        "scene": {"hover_tcp": (0.628, -0.30, 1.165), "strike_yaw": -1.5707963267948966},
+        **_VEGA_STRIKE,
+    },
+    # Vega-1P: wheeled base locked, torso standing upright (shoulders 1.35 m up)
+    "vega_1p": {
+        "arm": {"robot": "vega_1p", "flex_mode": "rigid", "torso_pose": (0.6, 1.2, 0.6),
+                "q_seed": (-1.32, -0.46, 0.18, -1.78, -0.81, 0.27, 0.72)},
+        "scene": {"hover_tcp": (0.311, -0.30, 1.172), "strike_yaw": -1.5707963267948966},
+        **_VEGA_STRIKE,
+    },
+}
+
+
+def hand_config(hand: str, base: SimConfig | None = None, robot: str = "fr3",
+                **sections: dict[str, Any]) -> SimConfig:
+    """Config for a hand on an arm: hand "franka" (the default testbed) or "wuji2" (WUJI Hand 2 power wrap),
+    robot "fr3", "vega_1u" (Dexmate Vega U) or "vega_1p" (Dexmate Vega-1P); on a Vega, WUJI hands on both arms,
+    the right one striking."""
     cfg = base or SimConfig()
     if hand == "wuji2":
         cfg = cfg.replace(**WUJI2_OVERRIDES)
     elif hand != "franka":
         raise ValueError(f"unknown hand {hand!r}")
+    if robot in VEGA_OVERRIDES:
+        if hand != "wuji2":
+            raise ValueError("the Vega is modelled with WUJI hands only")
+        cfg = cfg.replace(**VEGA_OVERRIDES[robot])
+    elif robot != "fr3":
+        raise ValueError(f"unknown robot {robot!r}")
     return cfg.replace(**sections) if sections else cfg
 
 

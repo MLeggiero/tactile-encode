@@ -25,7 +25,12 @@ class Testbed:
         self.world.reset()
         self.tau_ext = Holder(7)
         self.sensors = build_sensor_suite(self.world, self.cfg, self.rng, self.tau_ext)
-        self.l1 = L1Controller(self.world, self.cfg, self.sensors, self.tau_ext, log=log)
+        if self.world.position_arm:
+            from tactile_sim.control.position_l1 import PositionL1
+
+            self.l1 = PositionL1(self.world, self.cfg, self.sensors, self.tau_ext, log=log)
+        else:
+            self.l1 = L1Controller(self.world, self.cfg, self.sensors, self.tau_ext, log=log)
         self.grip = GripForceLoop(self.world, self.cfg, self.sensors, log=log)
         self.sched = RateScheduler(self.world.dt)
         self.l2_callbacks = []

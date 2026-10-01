@@ -378,17 +378,26 @@ function applyTheme() {
   if (S.ep) drawTactile();
 }
 
+// camera offsets in the task frame (h = along the handle, away from the head; a = strike axis; z = up), so they
+// hold for any strike direction
 const VIEWS = {
-  overview: (n) => ({ pos: [n[0] + 1.05, n[1] - 0.75, n[2] + 0.45], tgt: [n[0] + 0.05, n[1] - 0.12, n[2] + 0.02] }),
-  top: (n) => ({ pos: [n[0] + 0.02, n[1] - 0.10, n[2] + 0.75], tgt: [n[0] + 0.02, n[1] - 0.10, n[2]] }),
-  nail: (n) => ({ pos: [n[0] - 0.17, n[1] - 0.16, n[2] + 0.02], tgt: [n[0], n[1] - 0.02, n[2]] }),
-  // the grip sits ~0.19 m along the handle (+x) from the head and one head-length short of the nail
-  hand: (n) => ({ pos: [n[0] + 0.40, n[1] + 0.02, n[2] - 0.13], tgt: [n[0] + 0.19, n[1] - 0.14, n[2]] }),
+  overview: { pos: [1.05, -0.75, 0.45], tgt: [0.05, -0.12, 0.02] },
+  top: { pos: [0.02, -0.10, 0.75], tgt: [0.02, -0.10, 0] },
+  nail: { pos: [-0.17, -0.16, 0.02], tgt: [0, -0.02, 0] },
+  // the grip sits ~0.19 m along the handle from the head and one head-length short of the nail
+  hand: { pos: [0.40, 0.02, -0.13], tgt: [0.19, -0.14, 0] },
 };
+// a humanoid's torso hides the FR3 overview angle: look at the striking arm from its side instead
+const VEGA_OVERVIEW = { overview: { pos: [1.5, -0.45, 0.75], tgt: [0.3, -0.35, 0.05] } };
+const VIEWS_BY_ARM = { vega_1p: VEGA_OVERVIEW, vega_1u: VEGA_OVERVIEW };
+function taskPoint(o) {
+  const n = S.ep.nail_head, a = S.ep.strike_axis, h = S.ep.handle_axis || [1, 0, 0];
+  return [0, 1, 2].map((k) => n[k] + o[0] * h[k] + o[1] * a[k] + (k === 2 ? o[2] : 0));
+}
 function setView(v) {
   S.view = v;
-  const p = VIEWS[v](S.ep.nail_head);
-  camera.position.set(...p.pos); controls.target.set(...p.tgt); controls.update();
+  const V = (VIEWS_BY_ARM[S.ep.arm] || {})[v] || VIEWS[v];
+  camera.position.set(...taskPoint(V.pos)); controls.target.set(...taskPoint(V.tgt)); controls.update();
   document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
 }
 document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
@@ -434,7 +443,7 @@ function fmt(v, d = 1, unit = "") { return v === null || v === undefined || Numb
 function renderEpisodeChrome() {
   const e = S.ep, s = e.summary, c = e.config;
   const handName = { franka: "the Franka Hand (MuJoCo Menagerie)", wuji2: "the WUJI Hand 2 (WUJI's published model)", box: "a box stand-in hand" }[e.hand] || e.hand;
-  $("sub").textContent = `${e.label}. ${e.arm === "fr3" ? "Franka FR3 (MuJoCo Menagerie)" : "Capsule stand-in arm"} with ${handName}; physics ${Math.round(1 / e.dt)} Hz.`;
+  $("sub").textContent = `${e.label}. ${{ fr3: "Franka FR3 (MuJoCo Menagerie)", vega_1u: "Dexmate Vega U (Dexmate's URDF; pedestal and lift fixed, right arm striking, left arm holding)", vega_1p: "Dexmate Vega-1P (Dexmate's URDF; right arm striking, left arm holding)" }[e.arm] || "Capsule stand-in arm"} with ${handName}; physics ${Math.round(1 / e.dt)} Hz.`;
   const target = c.drive_target_mm;
   const driven = (s.total_depth || 0) * 1e3;
   $("stats").innerHTML = [

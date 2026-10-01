@@ -233,3 +233,30 @@ its velocity limit. What WUJI's drives and stops can hold decides whether the wr
 
 Not done yet: E1 (shake tests), E4 in full, E5 (sensor layouts), E6 (control rates), E8/E9, and the
 Sharpa Wave.
+
+## Status: WUJI Hand 2 on the Dexmate Vega U (built)
+
+- **Model:** Dexmate's Vega U URDF (`dexmate-ai/dexmate-urdf`, Apache-2.0, pinned) compiled by MuJoCo: a fixed
+  pedestal, a lift (0-0.4 m) and a torso flip (0-1 rad) under the head and two 7-joint arms. Dexmate ships
+  the pedestal, lift and torso meshes only as GLB; `tactile_sim/assets/glb.py` converts them to OBJ. Dexmate's
+  Vega U robot profile drives only the upper body (arms, head), so the lift (0.1 m, shoulders 1.34 m up) and
+  flip (upright) are set before a run and compiled as fixed joints. A WUJI Hand 2 on each wrist: the right
+  one (with the grasp synthesis, patches and joint law above) strikes, the left one holds a relaxed pose on
+  position servos at its joint ratings; the left arm and head hold a pose. The wheeled Vega-1P (same arms,
+  a three-joint torso, wheels locked) builds from the same code.
+- **Interface, as Dexmate exposes it:** `dexcontrol` takes joint position targets (optionally with velocity
+  feedforward) at 100 Hz and lets the user scale the factory P gains by 0.1-4; no torque mode. The sim
+  runs every Vega joint on a torque-limited PD servo (ratings from the URDF) and a host loop
+  (`tactile_sim/control/position_l1.py`) that detects impacts at 1 kHz from the wrist F/T and the patch
+  accelerometer and every 10 ms sends differential-IK targets, offset by the gravity droop of the arm and of
+  every held joint, rate-limited to 90 % of the joint velocity limits. Factory gains, drive inertia and any
+  torque-rate limit are not published; the sim's values are assumptions and the P multiplier is swept.
+- **Strike:** Vega's arm cannot push the hand fast along its own pointing direction, so the strike was
+  searched over hover pose, direction and an arc radius (`StrikeGeometry`): a forward strike on the right,
+  arcing about a pivot 0.8 m behind the face. The joint velocity limits allow ~1.2 m/s there; the swing
+  reaches ~0.85 m/s.
+- **Fixes found on the way, which also changed the FR3 + WUJI numbers:** the learned lateral aim drift was
+  applied at the requested rather than the achievable strike speed; and the WUJI drop check fired when the
+  two patches lost the load while the fingers still held the tool.
+
+Results are in the README.

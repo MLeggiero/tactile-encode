@@ -47,7 +47,7 @@ class L1Controller:
                                             np.asarray(self.cfg.arm.q_seed))
         self.observer = MomentumObserver(7, c.observer_gain, self.dt)
         self.friction_scale = 1.0  # observer's friction model relative to the truth
-        self.axis = strike_axis()
+        self.axis = strike_axis(self.cfg)
         self.detector = ImpactDetector(self.axis, c.impact_force_thresh, c.impact_ft_thresh, c.impact_refractory,
                                        accel_thresh=c.impact_accel_thresh)
         self.supervisor = Supervisor(c)

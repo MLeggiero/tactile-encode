@@ -30,6 +30,10 @@ PRESETS = {
     "default": ("Franka Hand (default testbed)", {}),
     "wuji2": ("WUJI Hand 2 power wrap", {"hand": "wuji2"}),
     "wuji2-selflock": ("WUJI Hand 2, self-locking drives", {"hand": "wuji2", "gripper": {"lock_mode": "self_locking"}}),
+    "vega-wuji2": ("Vega U, WUJI Hand 2 on each arm", {"hand": "wuji2", "robot": "vega_1u"}),
+    "vega-wuji2-selflock": ("Vega U, WUJI hands, self-locking drives",
+                            {"hand": "wuji2", "robot": "vega_1u", "gripper": {"lock_mode": "self_locking"}}),
+    "vega1p-wuji2": ("Vega-1P, WUJI Hand 2 on each arm", {"hand": "wuji2", "robot": "vega_1p"}),
     "low-torsion": ("Slippery pads (torsional friction 0.005 m)", {"gripper": {"pad_torsion": 0.005}}),
     "weak-grip": ("Weak hold force (15 N)", {"controller": {"grip_hold": 15.0}}),
     "rigid-wrist": ("Rigid wrist (no wrist compliance)", {"arm": {"flex_mode": "rigid"}}),
@@ -118,7 +122,7 @@ def scene_geometry(model: mujoco.MjModel, cell: float = 0.002) -> tuple[list[str
                           "pos": np.round(model.site_pos[sid], 5).tolist(),
                           "quat": np.round(model.site_quat[sid], 6).tolist(), "rgba": [0.16, 0.47, 0.84, 0.85],
                           "name": name})
-    if not any(r["body"].startswith("fr3_link") for r in geoms):
+    if not any(r["body"].startswith(("fr3_link", "R_arm_l")) for r in geoms):
         fb = mujoco.MjModel.from_xml_path(str(FALLBACK_ARM_XML))
         for g in range(fb.ngeom):
             rec = _geom_record(fb, g, fb.body(int(fb.geom_bodyid[g])).name)
@@ -222,6 +226,7 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
         "series": series, "strikes": strikes, "summary": summ,
         "nail_head": _r(w.data.site_xpos[w.site[names.NAIL_HEAD_SITE]], 4),
         "strike_axis": _r(tb.l1.axis, 3),
+        "handle_axis": _r(w.tcp_R_nominal[:, 0], 3),
     }
 
 
@@ -270,10 +275,10 @@ def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False
         label, over = PRESETS[key]
         over = dict(over)
         base = fast_config() if fast else SimConfig()
-        cfg = hand_config(over.pop("hand", "franka"), base, **over)
+        cfg = hand_config(over.pop("hand", "franka"), base, robot=over.pop("robot", "fr3"), **over)
         ep = Episode(cfg, seed=seed, frame_hz=2000.0)
         res = ep.run(n)
-        scene_key = (cfg.gripper.hand, res.testbed.world.hammer_source)
+        scene_key = (cfg.arm.robot, cfg.gripper.hand, res.testbed.world.hammer_source)
         if scene_key not in scenes:
             scenes[scene_key] = len(scenes)
             _, g, ms = scene_geometry(res.testbed.world.model)

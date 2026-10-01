@@ -35,8 +35,10 @@ class ReferenceSpreader:
                 self.post = self.make_post(t, x_now)
         if self.post is not None:
             x, xd, xdd = self.post.evaluate(t)
+            self.R = getattr(self.post, "R", getattr(self, "R", None))
             return x, xd, xdd, Mode.POST
         x, xd, xdd = self.ante.evaluate(t)
+        self.R = getattr(self.ante, "R", getattr(self, "R", None))
         if t >= self.t_c_pred - self.interim_lead:
             # interim: keep the ante position/velocity; drop an accelerating feedforward (it would push through
             # the contact) but keep a braking one (its torque reversal is already under way)
@@ -52,7 +54,9 @@ class PlainRef:
     def __init__(self, path, mode: Mode = Mode.FREE):
         self.path = path
         self.mode = mode
+        self.R = getattr(path, "R", None)
 
     def evaluate(self, t: float, t_flag: float | None, x_now: np.ndarray):
         x, xd, xdd = self.path.evaluate(t)
+        self.R = getattr(self.path, "R", self.R)
         return x, xd, xdd, self.mode

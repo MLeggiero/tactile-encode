@@ -5,6 +5,7 @@
     python -m tactile_sim.run_strikes --n 10 --dr --seed 3 --out runs/dr3.h5
     python -m tactile_sim.run_strikes --n 10 --hand wuji2 --out runs/wuji.h5
     python -m tactile_sim.run_strikes --n 10 --hand wuji2 --self-locking --out runs/wuji_lock.h5
+    python -m tactile_sim.run_strikes --n 10 --hand wuji2 --robot vega_1u --out runs/vega_u.h5
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from tactile_sim.logging.writer import write_episode
 
 
 def build_config(args) -> SimConfig:
-    cfg = hand_config(args.hand, fast_config() if args.fast else SimConfig())
+    cfg = hand_config(args.hand, fast_config() if args.fast else SimConfig(), robot=args.robot)
     over: dict = {"arm": {"source": args.arm}}
     if args.self_locking:
         over["gripper"] = {"lock_mode": "self_locking"}
@@ -48,6 +49,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--v-strike", type=float, default=None, help="strike speed (m/s)")
     ap.add_argument("--dr", action="store_true", help="enable domain randomization")
     ap.add_argument("--hand", choices=["franka", "wuji2"], default="franka")
+    ap.add_argument("--robot", choices=["fr3", "vega_1u", "vega_1p"], default="fr3",
+                    help="Dexmate Vega U / Vega-1P with WUJI hands on both arms (needs --hand wuji2)")
     ap.add_argument("--self-locking", action="store_true", help="WUJI: joints that do not backdrive")
     args = ap.parse_args(argv)
     cfg = build_config(args)

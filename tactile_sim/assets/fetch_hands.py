@@ -1,4 +1,4 @@
-"""Fetch pinned dexterous-hand models (WUJI Hand 2) into a local cache.
+"""Fetch pinned third-party robot models (WUJI Hand 2 left/right, Dexmate Vega-1P) into a local cache.
 
 Same scheme as fetch_menagerie: files come one at a time from raw.githubusercontent.com at a pinned commit
 and are verified against HANDS_MANIFEST.json. Only the MJCF used here, the meshes it references and the
@@ -26,6 +26,16 @@ ENV_VAR = "TACTILE_SIM_HANDS"
 HAND_SOURCES = {
     "wuji2": ("wuji-technology/wuji-description", "c2cd7f8d1ef8b6dc8cb907c17daa5a88b4442d95",
               "hand2/hand2_beta2/body/mjcf/right_with_mount.xml", "LICENSE"),
+    "wuji2_left": ("wuji-technology/wuji-description", "c2cd7f8d1ef8b6dc8cb907c17daa5a88b4442d95",
+                   "hand2/hand2_beta2/body/mjcf/left_with_mount.xml", "LICENSE"),
+    # Dexmate Vega-1P (Apache-2.0): its URDF and the OBJ meshes it references (the GLB visuals are skipped:
+    # MuJoCo cannot read them, and the OBJ collision meshes are detailed enough to draw)
+    "vega_1p": ("dexmate-ai/dexmate-urdf", "d8fc9c4962a5a9559aa2c72b3a55791bee66a2fb",
+                "robots/humanoid/vega_1p/vega_1p.urdf", "LICENSE"),
+    # Dexmate Vega U: fixed pedestal, lift, torso flip, the same head and arms. Its pedestal, lift and torso
+    # meshes exist only as GLB; tactile_sim.assets.glb converts them to OBJ for MuJoCo.
+    "vega_1u": ("dexmate-ai/dexmate-urdf", "d8fc9c4962a5a9559aa2c72b3a55791bee66a2fb",
+                "robots/humanoid/vega_1u/vega_1u.urdf", "LICENSE"),
 }
 
 
@@ -71,7 +81,14 @@ def regen_manifest(hands: list[str]) -> dict:
         if 'meshdir="' in text:
             meshdir = text.split('meshdir="', 1)[1].split('"', 1)[0]
         base = Path(mjcf).parent
-        paths = [mjcf, lic] + [os.path.normpath(str(base / meshdir / f)) for f in referenced_files(text)]
+        refs = referenced_files(text)
+        if mjcf.endswith(".urdf"):
+            # the meshes of the <collision> elements (OBJ, or GLB where Dexmate has no OBJ)
+            import xml.etree.ElementTree as ET
+
+            refs = sorted({m.get("filename") for c in ET.fromstring(text).iter("collision")
+                           for m in c.iter("mesh")})
+        paths = [mjcf, lic] + [os.path.normpath(str(base / meshdir / f)) for f in refs]
         files = []
         dest = Path.home() / ".cache" / "tactile_sim" / "hands" / hand / commit
         for p in paths:

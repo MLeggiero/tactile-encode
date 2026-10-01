@@ -16,6 +16,12 @@ Monitored every physics step (the hardware would stop or be damaged; the sim rec
 - Hard-stop load on the hand's joints: torque the mechanical stops carry, relative to the joint's rating.
   The stop rating is not published; by default a stop may carry the joint's rated torque.
 
+Dexmate Vega-1P (right arm; ratings from Dexmate's URDF): joint torque 150 / 150 / 80 / 80 / 25 / 25 / 25 Nm,
+enforced by the servos' force limits; joint velocity 2.4 rad/s (joints 1-2) and 2.7 rad/s (3-7), monitored;
+payload 4.5 kg per arm (Dexmate's current figure), checked. Its interface takes joint position targets at
+100 Hz (enforced by the scheduler) and a P-gain multiplier in [0.1, 4] (enforced in the config). Dexmate
+publishes no torque-rate limit, so none is applied.
+
 `LimitMonitor.summary()` returns the worst ratio for each limit (1.0 = at the limit) and `violations()` the
 ones above 1.
 """
@@ -53,7 +59,8 @@ class LimitMonitor:
         w = self.world
         m = w.model
         self._prev_tau = None
-        self._jr = m.jnt_range[[m.joint(n).id for n in _arm_joint_names(w)]]
+        self.spec = w.arm_spec
+        self._jr = m.jnt_range[[m.joint(n).id for n in self.spec.joints]]
         hand = w.hand
         self._hand_dofs = getattr(hand, "dofs", None)
         self._hand_tau = getattr(hand, "tau_max", None)
@@ -72,18 +79,19 @@ class LimitMonitor:
     def step(self) -> None:
         w = self.world
         d = w.data
-        tau = d.ctrl[w.arm_act]
-        k = int(np.argmax(np.abs(tau) / FR3_TORQUE))
-        self._note("arm_torque", abs(tau[k]) / FR3_TORQUE[k], f"joint {k + 1}")
-        if self._prev_tau is not None:
+        sp = self.spec
+        tau = w.arm_torque()
+        k = int(np.argmax(np.abs(tau) / sp.torque))
+        self._note("arm_torque", abs(tau[k]) / sp.torque[k], f"joint {k + 1}")
+        if self._prev_tau is not None and sp.torque_rate:
             # commands change once per L1 period, so a step's change is the whole period's change
-            r = np.abs(tau - self._prev_tau) * w.cfg.controller.rate / FR3_TORQUE_RATE
+            r = np.abs(tau - self._prev_tau) * w.cfg.controller.rate / sp.torque_rate
             k = int(np.argmax(r))
             self._note("arm_torque_rate", r[k], f"joint {k + 1}")
         self._prev_tau = tau.copy()
         qd = d.qvel[w.arm_dofs]
-        k = int(np.argmax(np.abs(qd) / FR3_VELOCITY))
-        self._note("arm_velocity", abs(qd[k]) / FR3_VELOCITY[k], f"joint {k + 1}")
+        k = int(np.argmax(np.abs(qd) / sp.velocity))
+        self._note("arm_velocity", abs(qd[k]) / sp.velocity[k], f"joint {k + 1}")
         q = d.qpos[w.arm_qadr]
         span = self._jr[:, 1] - self._jr[:, 0]
         # fraction of each joint's half range used: 1.0 = at a mechanical end
@@ -107,14 +115,8 @@ class LimitMonitor:
         return {k: (v, self.where.get(k, "")) for k, v in self.worst.items() if v > 1.0 + tol}
 
 
-def _arm_joint_names(world) -> list[str]:
-    from tactile_sim import names
-
-    return names.ARM_JOINTS
-
-
 def payload_mass(world) -> float:
-    """Mass carried beyond the FR3 flange: F/T body, hand, and the tool."""
+    """Mass carried beyond the arm's flange: F/T body, hand, and the tool."""
     from tactile_sim import names
 
     m = world.model
@@ -123,7 +125,7 @@ def payload_mass(world) -> float:
 
 
 def check_payload(world) -> float:
-    """Payload as a fraction of the FR3's rating."""
-    return payload_mass(world) / FR3_PAYLOAD
+    """Payload as a fraction of the arm's rating."""
+    return payload_mass(world) / world.arm_spec.payload
 
 

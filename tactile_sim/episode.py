@@ -186,7 +186,7 @@ class Episode:
             elif np.isfinite(rec.t_contact_truth) and t - rec.t_contact_truth < 0.05:
                 self._series_t.append(t)
                 self._series_f.append(0.0)
-            np.maximum(self._peak_tau, np.abs(d.ctrl[w.arm_act]), out=self._peak_tau)
+            np.maximum(self._peak_tau, np.abs(w.arm_torque()), out=self._peak_tau)
             self.strike_limits.step()
             if self._k % 4 == 0:
                 self._grip_samples.append((t, w.grip_truth()))

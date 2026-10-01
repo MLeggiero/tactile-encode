@@ -236,6 +236,20 @@ class WujiHandIO(HandIO):
 
     locked = False  # set once the grasp has settled (World.reset)
 
+    def lock_engaged(self) -> None:
+        self.locked = True
+        self._q_locked = self.world.data.qpos[self.qadr].copy()
+
+    def closed_further(self) -> float:
+        """Mean angle the closing joints have advanced since the drives locked (rad). With self-locking drives
+        a tool can only leave the wrap if the fingers close into the space it vacates."""
+        if getattr(self, "_q_locked", None) is None:
+            return 0.0
+        d = self.synergy.close_dir
+        sel = d != 0
+        dq = (self.world.data.qpos[self.qadr] - self._q_locked) * d
+        return float(np.mean(dq[sel]))
+
     def grip_from_patches(self, forces: np.ndarray) -> float:
         return float(np.sum(forces))
 

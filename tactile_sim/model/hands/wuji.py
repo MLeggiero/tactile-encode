@@ -111,8 +111,13 @@ def load_hand_xml(path: Path) -> ET.Element:
 
 def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, hand_xml_path: Path,
                   hand_pos: tuple[float, float, float], tcp_pos=None, tcp_q=None,
-                  patches: list[PatchSpec] = ()) -> dict:
-    """Attach the hand under `parent` (the F/T body or wrist-flex body). Returns build info."""
+                  patches: list[PatchSpec] = (), body_name: str = names.HAND_BODY, with_tcp: bool = True,
+                  hold_kp: float | None = None) -> dict:
+    """Attach the hand under `parent` (the F/T body or wrist-flex body). Returns build info.
+
+    The working hand gets torque motors (its joint law runs in tactile_sim.control.hand) and the tool frame.
+    A second, idle hand (`with_tcp=False`, `hold_kp` set) gets position servos at `hold_kp` Nm/rad, still
+    limited to each joint's rating, that hold whatever pose they are given."""
     hx = load_hand_xml(hand_xml_path)
     meshdir = (hand_xml_path.parent / hx.find("compiler").get("meshdir", ".")).resolve()
     default_arm = float(hx.find("default").find("joint").get("armature", "0.0002"))
@@ -124,7 +129,7 @@ def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, han
         sub(asset, "mesh", name=f"wuji_{mesh.get('name')}", file=str(meshdir / mesh.get("file")))
 
     src_root = hx.find("worldbody").find("body")  # r_mount
-    hand = sub(parent, "body", name=names.HAND_BODY, pos=hand_pos, quat=mount_quat(g.mount_yaw))
+    hand = sub(parent, "body", name=body_name, pos=hand_pos, quat=mount_quat(g.mount_yaw))
     col_geoms: dict[str, list[str]] = {}
     joints: list[tuple[str, float]] = []
 
@@ -165,6 +170,12 @@ def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, han
                 copy_body(child, nb, child.get("name"))
 
     copy_body(src_root, hand, src_root.get("name"))
+    act = scene_root.find("actuator")
+    if not with_tcp:
+        for jn, lim in joints:
+            sub(act, "position", name=f"m_{jn}", joint=jn, kp=hold_kp, kv=0.05 * hold_kp,
+                forcerange=(-lim, lim), forcelimited="true")
+        return {"joints": joints, "col_geoms": col_geoms, "patches": []}
     # tool frame: the seated hammer pose from the grasp keyframe (nominal placement before synthesis)
     sub(hand, "site", name=names.TCP_SITE, pos=g.wrap_tcp if tcp_pos is None else tcp_pos,
         quat=tcp_quat() if tcp_q is None else tcp_q, size=0.004, rgba=(1, 0, 0, 1), group=4)
@@ -180,7 +191,6 @@ def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, han
         sub(bodies[p.body], "site", name=f"patch_{p.name}", pos=p.center, quat=q,
             size=(p.half[0], p.half[1], 0.0005), type="box", rgba=(0.2, 0.5, 0.9, 0.6), group=4)
 
-    act = scene_root.find("actuator")
     for jn, lim in joints:
         sub(act, "motor", name=f"m_{jn}", joint=jn, ctrlrange=(-lim, lim), ctrllimited="true")
     return {"joints": joints, "col_geoms": col_geoms, "patches": list(patches)}
@@ -191,7 +201,7 @@ def contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], handle_g
     skin = dict(condim=4, friction=(g.hand_friction, g.hand_friction, g.pad_torsion, 0.0001, 0.0001),
                 solref=g.hand_solref, solimp=g.pad_solimp)
     for bname, geoms in col_geoms.items():
-        if bname == "r_mount":
+        if bname.endswith("_mount"):
             continue
         for gm in geoms:
             for hg in handle_geoms:
