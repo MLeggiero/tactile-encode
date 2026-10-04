@@ -121,7 +121,7 @@ class HammerCfg:
 
 @dataclass
 class NailPlantCfg:
-    kind: str = "nail"  # "nail" (Task A) or "drill" (Task B stub)
+    kind: str = "nail"  # "nail" (hammer), "saw" (SawCfg) or "drill" (driver/drill, DrillCfg)
     board_half: tuple[float, float, float] = (0.08, 0.02, 0.12)  # (along handle, thickness, height)
     proud: float = 0.025  # nail head standing proud of the board surface at start
     drive_target: float = 0.020  # "done" depth
@@ -139,6 +139,102 @@ class NailPlantCfg:
     vdr_zeta0: float = 0.3
     vdr_zeta1: float = 0.1
     vdr_zeta_max: float = 1.0
+
+
+@dataclass
+class SawCfg:
+    """Hand saw and workpiece. The saw's grasp frame is the tool frame: x along the handle and blade (the stroke),
+    y toward the teeth (the cut, along the fingers' closing axis), z across the blade (the hand's approach). The
+    hand holds the handle palm-sideways, fingers above and below it, as a person does, so the stroke's pitching
+    moments load the grip as a friction couple about the handle rather than as twist about the pad normal. The
+    workpiece is a board lying on a table under the blade, crosscut through its thickness (a 2x4)."""
+    handle_radius: float = 0.014
+    handle_len: float = 0.11
+    handle_mass: float = 0.15
+    blade_x: tuple[float, float] = (-0.12, 0.16)  # blade extent along the handle axis (tool frame): under the grip
+    blade_depth: float = 0.07  # handle axis to teeth (the blade starts below the lower finger)
+    blade_height: float = 0.03
+    blade_thickness: float = 0.0009
+    blade_mass: float = 0.25
+    kerf_width: float = 0.0016
+    board_width: float = 0.089  # along the stroke
+    board_thickness: float = 0.038  # along the cut
+    board_length: float = 0.30  # across the blade
+    clearance: float = 0.005  # teeth above the board at the hover pose
+    cut_target: float = 0.020
+    # cutting model: normal support k_n, tangential/normal force ratio, removal rate depth += F_n * |ds| / k_cut on the
+    # cutting stroke (push for a western saw), kerf walls k_lat beyond the side clearance, binding friction mu_bind
+    k_normal: float = 2.0e4
+    d_normal: float = 60.0
+    mu_cut: float = 1.1
+    drag: float = 1.0  # N, tooth drag on either stroke while in contact
+    k_cut: float = 1800.0  # N per (m of cut per m of stroke): ~1.9 mm per 0.14 m cutting stroke at 25 N
+    cut_on: str = "push"  # "push" (western) or "pull" (Japanese)
+    k_lateral: float = 3.0e4
+    d_lateral: float = 40.0
+    mu_bind: float = 0.6
+    knot: tuple[float, float, float] = (0.0, 0.0, 1.0)  # (depth from, depth to, removal-resistance multiplier)
+    # scripted stroke (stand-in for L2)
+    stroke_amp: float = 0.07
+    stroke_freq: float = 1.2
+    push_force: float = 25.0
+    approach_time: float = 0.6
+    k_stroke: tuple[float, float, float] = (1500.0, 800.0, 150.0)  # (stroke, across, cut) N/m
+
+
+@dataclass
+class DrillCfg:
+    """Inline cordless driver (or drill), held the way robots hold screwdrivers: the body between the fingers with
+    the bit along the hand's approach axis (tool +z), so the push runs through the arm rather than the wrist. The
+    target is a board lying on a table under the bit: a pre-started wood screw ("screw") or bare wood ("hole")."""
+    mode: str = "screw"
+    handle_radius: float = 0.018
+    body_span: tuple[float, float] = (-0.10, 0.04)  # along the bit, tool frame
+    body_mass: float = 0.8
+    bit_len: float = 0.085  # chuck face (handle front) to bit tip
+    clearance: float = 0.01  # bit tip short of the screw head / board at the hover pose
+    board_thickness: float = 0.038
+    board_half: tuple[float, float] = (0.12, 0.12)
+    # motor and clutch: tau = stall * (trigger - w / w_free), clutch slips above clutch_torque with n_detents per rev
+    stall_torque: float = 8.0
+    free_speed: float = 50.0  # rad/s (~480 rpm: low gear, for driving screws)
+    hole_free_speed: float = 140.0  # rad/s (~1340 rpm: high gear, for drilling)
+    rotor_inertia: float = 2.0e-4
+    trigger_slew: float = 6.0  # per second: the variable-speed trigger's soft start
+    brake_torque: float = 0.4  # Nm: the electronic brake when the trigger is released
+    spindle_drag: float = 1.0e-3
+    clutch_torque: float = 1.8
+    clutch_detents: int = 6
+    # screw (#8 wood screw in pine, pre-started): torque grows with depth, rises steeply once the head seats
+    screw_len: float = 0.022  # head proud of the surface at the start
+    pitch: float = 0.0021
+    screw_torque0: float = 0.25
+    screw_torque_per_m: float = 40.0
+    seat_stiffness: float = 3000.0  # Nm per m past flush
+    engage_radius: float = 0.002  # bit tip within this of the screw axis to engage the recess
+    cam_ratio: float = 0.03  # cam-out when torque > cam_ratio * axial push (Phillips)
+    cam_max_angle: float = 0.26  # rad of bit misalignment at which cam-out needs no torque
+    cam_time: float = 0.015
+    cam_kick: float = 15.0  # N pushing the bit back out of the recess while it cams out
+    strip_after: int = 6  # cam-outs before the recess strips
+    # hole drilling: thrust supports the tip; feed per rev grows with thrust above f0; torque with the feed
+    thrust_f0: float = 20.0
+    feed_stiffness: float = 1.5e5  # N per (m/rev)
+    drill_torque0: float = 0.15
+    drill_torque_per_feed: float = 2500.0  # Nm per (m/rev)
+    exit_len: float = 0.002  # support fades over the last exit_len; the bit grabs (catch) on the way out
+    catch_gain: float = 2.5
+    catch_feed: float = 0.0003  # m/rev: the flutes pull the bit through the last exit_len
+    # contact between the bit and the screw head / hole bottom
+    k_axial: float = 4.0e4
+    d_axial: float = 80.0
+    k_lateral: float = 2.0e4
+    d_lateral: float = 30.0
+    # scripted feed (stand-in for L2)
+    push_force: float = 70.0
+    approach_time: float = 0.5
+    k_feed: tuple[float, float] = (150.0, 2500.0)  # (along the bit, across it) N/m
+    trigger_contact: float = 15.0  # N of axial push before the trigger is pulled
 
 
 @dataclass
@@ -279,6 +375,8 @@ class SimConfig:
     gripper: GripperCfg = field(default_factory=GripperCfg)
     hammer: HammerCfg = field(default_factory=HammerCfg)
     plant: NailPlantCfg = field(default_factory=NailPlantCfg)
+    saw: SawCfg = field(default_factory=SawCfg)
+    drill: DrillCfg = field(default_factory=DrillCfg)
     scene: SceneCfg = field(default_factory=SceneCfg)
     sensors: SensorsCfg = field(default_factory=SensorsCfg)
     controller: ControllerCfg = field(default_factory=ControllerCfg)
@@ -386,6 +484,28 @@ def hand_config(hand: str, base: SimConfig | None = None, robot: str = "fr3",
         cfg = cfg.replace(**VEGA_OVERRIDES[robot])
     elif robot != "fr3":
         raise ValueError(f"unknown robot {robot!r}")
+    return cfg.replace(**sections) if sections else cfg
+
+
+# Saw and driver tasks on the FR3 with the Franka Hand; both work on a board lying on a table.
+TASK_OVERRIDES: dict[str, dict[str, dict[str, Any]]] = {
+    # saw: fingers close vertically (TCP y down), the hand approaches along +y, the stroke runs along +x
+    "saw": {"plant": {"kind": "saw"}, "scene": {"hover_tcp": (0.48, 0.0, 0.30), "strike_dir": (0.0, 0.0, 1.0),
+                                                  "handle_dir": (1.0, 0.0, 0.0)},
+            "controller": {"gate_duration": 0.0, "grip_hold": 60.0}},
+    # driver: the default hand-down grasp frame; the bit points down into a board on a table
+    "drill": {"plant": {"kind": "drill"}, "scene": {"hover_tcp": (0.50, 0.0, 0.30)},
+              "controller": {"gate_duration": 0.0, "grip_hold": 60.0}},
+}
+
+
+def task_config(task: str, base: SimConfig | None = None, **sections: dict[str, Any]) -> SimConfig:
+    """Config for a tool task: "nail" (the hammer default), "saw" or "drill"."""
+    cfg = base or SimConfig()
+    if task != "nail":
+        if task not in TASK_OVERRIDES:
+            raise ValueError(f"unknown task {task!r} (expected 'nail', 'saw' or 'drill')")
+        cfg = cfg.replace(**TASK_OVERRIDES[task])
     return cfg.replace(**sections) if sections else cfg
 
 

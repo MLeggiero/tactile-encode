@@ -27,6 +27,18 @@ learned layers (L2 reactive, L3 World-Action-Model / VLA planner) will train aga
   hammer with the same masses is used.
 - **Plant:** a nail in a board: a vertical board for the FR3, a board lying on a tabletop for the Vega U. The nail resists with Coulomb friction that grows with depth.
   The hammer-nail contact gives a ~4 ms blow at ~500-730 N.
+- **Saw and driver tasks** (FR3 + Franka Hand): the same testbed with a hand saw or an inline cordless driver
+  in place of the hammer, each against a board on a table. MuJoCo cannot remove material, so each workpiece is a
+  small state model whose forces act on the tool (`tactile_sim/model/plants/saw.py`, `drill.py`):
+  - **saw** (crosscut of a 2x4): kerf depth grows with push and stroke length on the cutting stroke; the kerf
+    bottom supports the blade, the teeth resist the stroke, and once the kerf is started its walls push back
+    and bind. The hand holds the handle palm-sideways, fingers above and below it. Loads at the grip are
+    periodic, with binding as the untimed event;
+  - **driver** (pre-started wood screw, or a hole through): motor with soft-start trigger, clutch with detent
+    ripple, screw torque rising as the head seats, Phillips cam-out when torque outgrows the axial push (less
+    with a tilted bit) and stripping after repeated cam-outs; or drilling with thrust-dependent feed, the bit
+    catching at the exit and losing its support at breakthrough. The driver is held along the hand's approach
+    axis so the push runs through the arm, not the wrist. A steady reaction torque with untimed jerks.
 - **Sensors:** wrist F/T at 4 kHz, accelerometers at 8 kHz (+-16 g) under each taxel patch, 8 x 8 pressure
   arrays (64 taxels) at 1 kHz, joint encoders and torques at 1 kHz, and the momentum observer's external
   torque. Each has its own band-limit, latency, noise, bias, quantization and saturation. Contact forces
@@ -67,6 +79,9 @@ python -m tactile_sim.run_strikes --n 10 --fast --dr --seed 3         # 4 kHz, d
 python -m tactile_sim.run_strikes --n 10 --hand wuji2                 # WUJI Hand 2 power wrap
 python -m tactile_sim.run_strikes --n 10 --hand wuji2 --self-locking  # ... with non-backdrivable joints
 python -m tactile_sim.run_strikes --n 10 --hand wuji2 --robot vega_1u # Vega U, WUJI hands on both arms
+python -m tactile_sim.tool_task --task saw                            # crosscut a board with a hand saw
+python -m tactile_sim.tool_task --task drill                          # seat a wood screw with a cordless driver
+python -m tactile_sim.tool_task --task drill --mode hole              # drill through a board
 python -m tactile_sim.calibrate pulse                                 # free-hammer contact sweeps
 python -m tactile_sim.viewer.export --n 6 --preset default --preset wuji2 --preset wuji2-selflock
 python -m tactile_sim.viewer.export --n 6 --preset vega-wuji2 --preset vega-wuji2-selflock --out runs/replay_vega.html
@@ -125,6 +140,17 @@ P multiplier, not single numbers.
 | Arm limits | all held | joint 6 speed 1.14x | joint 6 speed 1.31x | all held | all held | none exceeded |
 | Hand joint loads | within rating | hard stops up to 16x rating | gearboxes up to 32x | hard stops up to 4x | gearboxes up to 20x | |
 
+Saw and driver on the FR3 + Franka Hand (8 kHz, seed 0, scripted behaviors, grip 60 N per pad):
+
+| Metric | Saw, crosscut | Driver, screw | Driver, hole |
+|---|---|---|---|
+| Goal | 20 mm cut | screw seated | 38 mm through |
+| Reached at | 23.1 s (54 strokes) | 2.16 s | 7.14 s |
+| Peak load | 49 N normal, 23 N binding | 1.88 Nm, 87 N push | 2.41 Nm, 90 N push |
+| Net slip in the grasp | 1.0 mm, 4.8 deg (pads flex up to 9 deg per stroke) | 0.2 mm, 2.4 deg | 0.1 mm, 0.6 deg |
+| Untimed events | binding | none (cam-out with a 35 N push) | breakthrough |
+| Arm limits | all held | all held | all held |
+
 ## Findings so far
 
 - **Driving the nail down onto a tabletop with a curved swing, the Vega U with WUJI hands strikes at
@@ -174,6 +200,14 @@ P multiplier, not single numbers.
   grip, and the wrap uses short convex slices along the handle instead of one hull.
 - Only the patch accelerometer meets the 2 ms impact-flag budget; the wrist F/T and the momentum observer
   see the blow 3.4-4.5 ms after contact.
+- **A parallel gripper is weak exactly where saws and drivers load it.** Twist about the pad normal is held
+  only by the pads' torsional friction, so a saw held in the default hand-down grasp spun out of the fingers;
+  held palm-sideways (fingers above and below the handle) the stroke's pitching moments become a friction
+  couple about the handle and it cuts, but the pads still flex up to 9 deg each stroke and the saw creeps
+  4.8 deg over 27 strokes. A driver pushed 70 N horizontally from the hand-down pose saturates the FR3's 12 Nm
+  wrist joints and tilts the bit until it cams out; held along the approach axis and pushed down it seats the
+  screw, but the clutch's ratchet at seating rolls it 2.4 deg in the fingers. These are the periodic and jerk
+  loads a predictive grip must anticipate.
 - MuJoCo needs the noslip solver pass for a static grasp: without it soft friction lets the hammer creep
   ~11 deg/s under its own weight.
 
@@ -190,14 +224,17 @@ P multiplier, not single numbers.
 | M6 | scripted swing, reference spreading, strike loop, replay viewer | done |
 | M7 | HDF5 logging, `run_strikes` CLI | done |
 | M8 | Gymnasium env, domain randomization | done |
-| M9 | drill plant (Task B) | stub only |
+| M9 | saw and driver tasks: tools, saw / screw / hole plants, scripted behaviors, `tool_task` runner, tests | done |
 | D0-D6 | WUJI Hand 2: fetch, import, grasp synthesis, taxel patches, joint control, strikes, viewer | done |
 | D7 | experiments E1-E9 of `docs/dexterous_hand_plan.md` | partly (E2, E3, E7) |
 | V0-V3 | Vega U (and Vega-1P): fetch, URDF import (GLB meshes converted), position-servo interface, WUJI hands on both arms, downward arc strike onto a tabletop, limits, tests, viewer | done |
 | | Sharpa Wave | not started |
 
-Not built: the series-elastic joint mode from the plan (`flex_mode="sea"`), the drill/screw plant, and
-any learned L2/L3 layer.
+Not built: the series-elastic joint mode from the plan (`flex_mode="sea"`), the predictive grip law across
+tools, the saw and driver in the replay viewer, and any learned L2/L3 layer.
+
+The paper draft is in `paper/` (`latexmk -pdf main.tex`); its methods section describes the method and the
+testbed as built so far.
 
 ## Licenses
 

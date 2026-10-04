@@ -1,0 +1,34 @@
+\documentclass[conference]{IEEEtran}
+% Working draft. Build: latexmk -pdf main.tex   (or: pdflatex main && bibtex main && pdflatex main && pdflatex main)
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\sisetup{detect-all, per-mode=symbol}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+
+\title{Anticipate and React: Kilohertz Tactile Control of Held Tools Under Impulsive, Periodic and Jerk Loads}
+\author{\todo{authors}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\todo{abstract, once results are in}
+\end{abstract}
+
+\section{Introduction}
+\todo{introduction}
+
+\input{sections/methods}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

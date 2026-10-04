@@ -6,3 +6,11 @@ __pycache__/
 runs/
 *.h5
 *.npz
+paper/*.aux
+paper/*.log
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.bbl
+paper/*.blg
+paper/*.out
+paper/*.pdf

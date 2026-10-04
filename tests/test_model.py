@@ -33,9 +33,9 @@ def test_unknown_modes_rejected():
         build_scene(fast_config(gripper={"pad_mode": "gel"}))
 
 
-def test_drill_stub_raises():
-    with pytest.raises(NotImplementedError):
-        build_scene(fast_config(plant={"kind": "drill"}))
+def test_unknown_plant_raises():
+    with pytest.raises(ValueError):
+        build_scene(fast_config(plant={"kind": "chisel"}))
 
 
 def test_config_roundtrip():

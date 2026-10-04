@@ -74,6 +74,39 @@ def nail_head_target(cfg: SimConfig) -> np.ndarray:
     return face + cfg.scene.hover_clearance * strike_axis(cfg)
 
 
+def tool_target(cfg: SimConfig) -> tuple[np.ndarray, np.ndarray]:
+    """Where the plant meets the tool and the tool's working direction there: the nail head and the strike axis for
+    the hammer, the board surface under the teeth and the cut direction for the saw, the screw head (or board
+    surface) on the bit axis and the bit direction for the driver."""
+    kind = cfg.plant.kind
+    if kind == "nail":
+        return nail_head_target(cfg), strike_axis(cfg)
+    from tactile_sim.model.tools import bit_tip_local, saw_teeth_local
+
+    R = tcp_rotation(cfg)
+    p = hover_tcp_position(cfg)
+    if kind == "saw":
+        a, b = saw_teeth_local(cfg.saw)
+        return p + R @ (0.5 * (np.array(a) + np.array(b))), R[:, 1]
+    if kind == "drill":
+        return p + R @ np.array(bit_tip_local(cfg.drill)) + cfg.drill.clearance * R[:, 2], R[:, 2]
+    raise ValueError(f"unknown plant kind {kind!r}")
+
+
+def add_tool(wb, cfg: SimConfig, root) -> str:
+    """The held tool for this task (all share the hammer's part names; see tactile_sim.model.tools)."""
+    kind = cfg.plant.kind
+    if kind == "saw":
+        from tactile_sim.model.tools import add_saw
+
+        return add_saw(wb, cfg.saw)
+    if kind == "drill":
+        from tactile_sim.model.tools import add_driver
+
+        return add_driver(wb, cfg.drill)
+    return add_hammer(wb, cfg.hammer, root)
+
+
 def build_scene(cfg: SimConfig) -> SceneSpec:
     if cfg.arm.robot.startswith("vega"):
         from tactile_sim.model.robots import load_vega_tree
@@ -115,13 +148,15 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
     if g.hand == "franka":
         hand_source = add_wrist_and_hand(find_body(root, "fr3_link7"), cfg.arm, g, root)
         add_grip_actuation(root, g)
-        hammer_source = add_hammer(wb, cfg.hammer, root)
+        hammer_source = add_tool(wb, cfg, root)
         pad_solref = g.pad_solref if g.pad_mode == "explicit" else g.soft_pad_solref
         for pad in names.PAD_GEOMS:
             sub(contact, "pair", name=f"pair_{pad}_handle", geom1=pad, geom2=names.HAMMER_HANDLE_GEOM, condim=4,
                 friction=(g.pad_friction, g.pad_friction, g.pad_torsion, 0.0001, 0.0001), solref=pad_solref,
                 solimp=g.pad_solimp)
     elif g.hand == "wuji2":
+        if cfg.plant.kind != "nail":
+            raise ValueError("the saw and driver tasks are modelled with the Franka Hand only")
         hand_info = _add_wuji(root, cfg, contact)
         hand_source = "wuji2"
         hammer_source = hand_info["hammer_source"]
@@ -131,7 +166,7 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
     add_grasp_weld(root)
 
     plant = make_plant(cfg)
-    plant.add_mjcf(root, wb, nail_head_target(cfg), strike_axis(cfg))
+    plant.add_mjcf(root, wb, *tool_target(cfg))
     sensors = add_sensors(root, pad_sites)
     ET.indent(root)
     return SceneSpec(xml=ET.tostring(root, encoding="unicode"), arm_source=source, plant=plant,

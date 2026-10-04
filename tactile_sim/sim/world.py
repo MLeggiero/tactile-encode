@@ -97,7 +97,8 @@ class World:
         self.hand_body = m.body(names.HAND_BODY).id
         self.weld_id = m.equality(names.GRASP_WELD).id
         self.site = {n: m.site(n).id for n in (names.TCP_SITE, names.FT_SITE, names.HAMMER_REF_SITE,
-                                                names.HAMMER_FACE_SITE, names.HAMMER_IMU_SITE, names.NAIL_HEAD_SITE)}
+                                                names.HAMMER_FACE_SITE, names.HAMMER_IMU_SITE, names.NAIL_HEAD_SITE)
+                     if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_SITE, n) >= 0}
         self.tcp_site = self.site[names.TCP_SITE]
         self.wrist_dofs = np.array([m.joint(n).dofadr[0] for n in names.WRIST_FLEX_JOINTS
                                     if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n) >= 0], dtype=int)
