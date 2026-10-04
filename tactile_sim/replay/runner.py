@@ -134,6 +134,10 @@ class ReplayEpisode:
                  lead_in: float = 1.5, hold: float = 0.0, frame_hz: float | None = None, **plan_kw):
         self.cfg = cfg
         self.tb = Testbed(cfg, seed=seed)
+        if plan is None:
+            # a position-interface arm (Vega) lags its 100 Hz targets more than the FR3's torque loop follows its
+            # path, so each recorded contact is aimed deeper past the nail head (else ~half its blows fall short)
+            plan_kw.setdefault("engage", 0.008 if self.tb.world.arm_spec.interface == "position" else 0.004)
         self.plan = plan if plan is not None else plan_replay(motion, self.tb.world, **plan_kw)
         self.lead_in = lead_in
         self.hold = hold
@@ -308,7 +312,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--seq", default="s1/hammer_use_1",
                     help="grab: subject/sequence (manual download, $TACTILE_SIM_GRAB)")
     ap.add_argument("--speed", type=float, default=1.0, help="play faster than recorded before the limits apply")
-    ap.add_argument("--engage", type=float, default=0.004, help="m the recorded contact reaches past the nail head")
+    ap.add_argument("--engage", type=float, default=None,
+                    help="m the recorded contact reaches past the nail head (default 4 mm, 8 mm on a position arm)")
     ap.add_argument("--no-align", action="store_true", help="keep the recorded face angle at contact")
     ap.add_argument("--robot", choices=["fr3", "vega_1u"], default="fr3",
                     help="fr3 (Franka Hand unless --hand) or vega_1u (WUJI Hand 2, position-only arm)")
@@ -320,7 +325,8 @@ def main(argv: list[str] | None = None) -> int:
     kw = {"adroit": {"demo": args.demo}, "dextoolbench": {"task": args.task}, "grab": {"seq": args.seq}}[args.source]
     motion = load(args.source, **kw)
     cfg = robot_config(args.robot, args.hand, args.fast)
-    ep = ReplayEpisode(cfg, motion=motion, seed=args.seed, speed=args.speed, engage=args.engage,
+    ep = ReplayEpisode(cfg, motion=motion, seed=args.seed, speed=args.speed,
+                       **({} if args.engage is None else {"engage": args.engage}),
                        align_face=not args.no_align)
     res = ep.run()
     for k, v in res.summary.items():
