@@ -179,16 +179,18 @@ push, and stops when the tool's own telemetry reports the screw seated or the bi
 \paragraph{Replaying recorded motions} No public dataset records impact or grip forces in tool use, so recorded
 motions supply kinematics and the testbed supplies the contact. Human hammering from the Adroit/DAPG demonstrations
 (VR and data glove, \SI{100}{\hertz}) and tool trajectories tracked from human videos in DexToolBench
-(\SI{3}{\hertz}) are retargeted face-first: the recorded strike is placed on our nail along our strike axis, the face
-is turned square, each recorded contact is aimed at the nail, and the grasp pose follows from our hammer's face
-offset. A time warp slows the path only where it exceeds the arm's speed or acceleration caps (ignoring the
-deceleration within \SI{40}{\milli\second} of a recorded contact, which the nail produces), and damped
-least-squares IK along the path checks reach and joint speeds. The 22 Adroit demonstrations that contain blows replay
-on the FR3 within all limits and track to \SIrange{3}{5}{\milli\metre} RMS, but need 2.2--4.6$\times$ the
-recorded time: a human hand accelerates far beyond what the arm can, so the replayed blows land at
-\SIrange{0.05}{0.7}{\metre\per\second}. On the Vega U, 17 of the 22 replay (the others leave its reach or cross a
-wrist singularity) with 175--\SI{341}{\newton} blows; in every one the WUJI wrap's finger joints hit their stops at
-1.2--5.8$\times$ their rating, and in three the hammer turned 14--\SI{24}{\degree} in the hand.
+(\SI{3}{\hertz}) are retargeted face-first, so every recorded contact becomes a square blow on our nail head: the
+recorded strike is placed on our nail along our strike axis, each contact is aimed at the head, the motion across the
+nail axis is blended out within \SI{80}{\milli\second} of a contact, the face is turned square at every contact, a
+soft clamp keeps the face \SI{3}{\milli\metre} short of the head between blows, and the grasp pose follows from our
+hammer's face offset. A time warp slows the path only where it exceeds the arm's speed or acceleration caps (ignoring
+the deceleration within \SI{40}{\milli\second} of a recorded contact, which the nail produces), and damped
+least-squares IK along the path checks reach and joint speeds. On the FR3 the 22 Adroit demonstrations that contain
+blows replay within all limits and track to \SIrange{2.5}{4.4}{\milli\metre} RMS; 79 blows land for 75 recorded
+contacts, one off-centre and none against the shank. But they need 2.2--4.6$\times$ the recorded time: a human hand
+accelerates far beyond what the arm can, so the replayed blows land at \SIrange{0.07}{0.61}{\metre\per\second}. On
+the Vega U, 21 of the 22 replay (73 blows for 72 contacts, \SIrange{155}{370}{\newton}); its position interface lags,
+so 18 blows end with the tool resting on the nail for a moment.
 
 \subsection{Preliminary testbed results}
 Table~\ref{tab:hammer} summarizes ten-strike hammer episodes at \SI{8}{\kilo\hertz}, and Table~\ref{tab:tools}

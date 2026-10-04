@@ -181,24 +181,43 @@ blows. Sources, pinned and hash-verified (`tactile_sim/assets/REPLAY_MANIFEST.js
   ~0.6-2 m/s at the face).
 - **DexToolBench** (SimToolReal, MIT): hammer poses tracked from human RGB-D videos by FoundationPose, ~3 Hz.
   These are slow tracked swings; their "strikes" are presses under 0.06 m/s.
+- **GRAB** (MPI, non-commercial research licence, manual sign-up download at grab.is.tue.mpg.de): 120 Hz full-body
+  motion capture with real hammers, including "use" sequences. The swings are in the air (there is no nail), so the
+  loader takes each swing's deepest reach as its contact; the face is found from the object mesh. Unpack GRAB and
+  point `$TACTILE_SIM_GRAB` at the folder holding `grab/` and `tools/`, then `--source grab --seq s1/hammer_use_1`.
+  It is the best other source found: real hammer motion at a usable rate. TACO (bimanual tool use, 30 Hz video
+  capture) may include hammering but is not yet checked.
 
-The motion is retargeted face-first: the recorded strike is placed on our nail along our strike axis, the face is
-turned square, every recorded contact is aimed at our 9 mm nail head (Adroit's is 70 mm across), and the TCP
-follows from our hammer's face offset. A time warp then slows the path only where it is too fast for the arm, and
-damped least-squares IK along it checks reach and joint speeds.
+The motion is retargeted face-first, so that every recorded contact becomes a square blow on the nail head, not a
+touch on its side:
+- the recorded strike is placed on our nail along our strike axis, and the TCP follows from our hammer's face offset;
+- every recorded contact is aimed at our 9 mm nail head (Adroit's is 70 mm across), 4 mm past it (8 mm on the Vega,
+  whose 100 Hz position targets lag);
+- within 80 ms of each contact the motion across the nail axis is blended out, so the face arrives along the axis
+  instead of sweeping across the head into the shank;
+- the face is turned square at every contact (the human's blows land up to ~45 deg off square);
+- between blows the face is held 3 mm short of the head (a soft clamp), so the hammer neither rests on the nail nor
+  rebounds into a second hit;
+- the reference carries the path's velocity and acceleration as feedforward, so the arm does not lag into the head.
 
-All 22 Adroit replays on the FR3 + Franka Hand (4 kHz) held every arm limit and tracked to 3-5 mm RMS. But a human
-hand accelerates far beyond the FR3 (peaks ~200 m/s^2 in the wrist snap between blows), so the arm needs 2.2-4.6x
-the recorded time and the blows land at 0.05-0.7 m/s (100-330 N), too slow to move the default nail. 78 blows
-landed against 75 recorded (rebounds count as blows). Tool rotation in the grasp stayed under 3 deg in 19 of 22
-replays and reached 9-11 deg in three, where the human's blows arrived far off square.
+A time warp then slows the path only where it is too fast for the arm, and damped least-squares IK along it checks
+reach and joint speeds. Each contact is classified from the truth: a blow (a pulse under 20 ms), a press (the tool
+resting on the nail), off-centre (the face's centre outside the head) or through the nail (the head reaching the
+shank).
 
-On the **Vega U** (WUJI hands, position-only arm, downward strike onto the tabletop), 17 of the 22 demos replay; 3
-leave its reach and 2 cross a wrist singularity, and none of the DexToolBench swings can be followed (the IK jumps,
-a wrist flip). The 17 track to 1.4-5.5 mm RMS at 2.2-4.6x the recorded time with blows of 0.04-0.74 m/s and
-175-341 N (83 landed, 56 recorded). The arm's limits held except one joint range at 1.01x (demo 23). In every replay
-the wrap's finger joints hit their stops at 1.2-5.8x their rating, and the hammer turned 3-8 deg in the hand, 14-24 deg
-in three demos: blows that arrive off square twist a backdrivable wrap, as in the scripted strikes.
+All 22 Adroit replays with blows on the FR3 + Franka Hand (4 kHz) held every arm limit and tracked to 2.5-4.4 mm RMS.
+79 blows landed for 75 recorded contacts (rebounds count as blows), with 2 presses, 1 off-centre blow and none
+through the nail; the tool turned at most 1.4 deg in the grasp. But a human hand accelerates far beyond the FR3
+(peaks ~200 m/s^2 in the wrist snap between blows), so the arm needs 2.2-4.6x the recorded time and the blows land
+at 0.07-0.61 m/s (90-210 N), too slow to move the default nail.
+
+On the **Vega U** (WUJI hands with the TaxelScan skins, position-only arm, downward strike onto the tabletop), 21 of
+the 22 demos replay (one crosses a wrist singularity), and none of the DexToolBench swings can be followed (the IK
+jumps, a wrist flip). The 21 track to 1.2-5.4 mm RMS at 2.2-4.6x the recorded time: 73 blows for 72 recorded
+contacts at 0.09-0.76 m/s and 155-370 N, 3 off-centre and 2 through the nail. 18 contacts also left the hammer
+resting on the nail for a moment after the blow: the arm lags its targets. The arm's joint range reached 1.0x its
+limit in three demos. The wrap's finger joints hit their stops in every replay, and the hammer turned 2-6 deg in the
+hand.
 
 ## Findings so far
 
