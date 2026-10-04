@@ -71,6 +71,7 @@ def test_wuji_scene_and_patches_export():
     w = World(hand_config("wuji2", fast_config()))
     bodies, geoms, meshes = scene_geometry(w.model)
     assert any(m.startswith("wuji_") for m in meshes)  # the vendor's hand meshes are drawn
-    patches = [g for g in geoms if g["name"].startswith("patch_")]
-    assert sorted(g["name"] for g in patches) == ["patch_palm", "patch_thumb"]
+    # TaxelScan skins: every taxel drawn where it sits on the hand, no flat plates
+    assert not any(g["name"].startswith("patch_") for g in geoms)
+    assert sum(g["name"].startswith("taxel_") for g in geoms) == 448
     assert not any(g["name"].startswith("wuji_col") for g in geoms)  # collision hulls are not

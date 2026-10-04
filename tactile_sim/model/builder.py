@@ -160,7 +160,7 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
         hand_info = _add_wuji(root, cfg, contact)
         hand_source = "wuji2"
         hammer_source = hand_info["hammer_source"]
-        pad_sites = {p.name: f"patch_{p.name}" for p in hand_info["patches"]}
+        pad_sites = {p.name: f"patch_{p.name}" for p in hand_info["patches"] if getattr(p, "accel", True)}
     else:
         raise ValueError(f"unknown hand {g.hand!r} (expected 'franka' or 'wuji2')")
     add_grasp_weld(root)
@@ -184,7 +184,13 @@ def _add_wuji(root, cfg: SimConfig, contact) -> dict:
         raise FileNotFoundError("WUJI Hand 2 not cached; run `python -m tactile_sim.assets.fetch_hands`")
     g = cfg.gripper
     grasp = wrap_grasp(cfg, path)
-    patches = wuji.patches_from_grasp(grasp.contact_frames, grasp.contact_force, g.patch_layout)
+    if g.patch_layout == "taxelscan":
+        from tactile_sim.model.hands.taxel_layout import conforming_layout
+
+        s = cfg.sensors
+        patches = list(conforming_layout(str(path), tuple(s.ts_palm_grid), tuple(s.ts_finger_grid)))
+    else:
+        patches = wuji.patches_from_grasp(grasp.contact_frames, grasp.contact_force, g.patch_layout)
     from tactile_sim.model.robots import arm_spec
 
     spec = arm_spec(cfg.arm)

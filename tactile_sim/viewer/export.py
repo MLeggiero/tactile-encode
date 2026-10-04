@@ -113,9 +113,15 @@ def scene_geometry(model: mujoco.MjModel, cell: float = 0.002) -> tuple[list[str
         if rec["type"] == "mesh" and rec["mesh"] not in meshes:
             meshes[rec["mesh"]] = export_mesh(model, int(model.geom_dataid[g]), cell)
         geoms.append(rec)
+    skins = {model.site(sid).name.rsplit("_", 1)[0][len("taxel_"):] for sid in range(model.nsite)
+             if model.site(sid).name.startswith("taxel_")}
     for sid in range(model.nsite):
         name = model.site(sid).name
-        if name.startswith("patch_"):  # taxel patches, drawn as thin plates on the hand
+        if name.startswith("taxel_"):  # a conforming skin's taxel, a small square on the surface
+            geoms.append({"body": model.body(int(model.site_bodyid[sid])).name, "type": "sphere",
+                          "size": [0.0007, 0.0007, 0.0007], "pos": np.round(model.site_pos[sid], 5).tolist(),
+                          "quat": [1.0, 0.0, 0.0, 0.0], "rgba": [0.16, 0.47, 0.84, 0.95], "name": name})
+        if name.startswith("patch_") and name[len("patch_"):] not in skins:  # flat patches, drawn as thin plates
             sz = model.site_size[sid]
             geoms.append({"body": model.body(int(model.site_bodyid[sid])).name, "type": "box",
                           "size": np.round([sz[0], sz[1], 0.0006], 5).tolist(),
@@ -255,20 +261,45 @@ def export_tactile(tb, cfg, contacts: list[float], base_dt: float = 0.005, windo
     vals = np.concatenate([h["value"][:n][keep] for h in hs], axis=1)
     q = np.clip(np.round(vals / rng * 255.0), 0, 255).astype(np.uint8)
     nr, nc = cfg.sensors.taxel_grid
-    patches = []
+    patches, off = [], 0
+    skin = any(p.taxel_pos is not None for p in hand.patches)
+    view = None
+    if skin:
+        from tactile_sim.assets.fetch_hands import hand_xml
+        from tactile_sim.model.hands.taxel_layout import palm_view
+
+        view = palm_view(str(hand_xml("wuji2")), tuple(tb.world.spec.hand_info["patches"]))
     for k, p in enumerate(hand.patches):
+        pr, pc = hand.grid(k)
         if hand.kind == "franka":
             # viewed from the handle: hammer head to the left, fingertip up; the right finger mirrored
-            label, view = ("Left pad", "L") if p.name == "L" else ("Right pad", "R")
+            label, v = ("Left pad", "L") if p.name == "L" else ("Right pad", "R")
         else:
-            label, view = {"palm": "Palm", "thumb": "Thumb"}.get(p.name, p.name.title()), "uv"
-        patches.append({"name": p.name, "label": label, "view": view,
-                        "mm": [round(2e3 * p.half[0], 1), round(2e3 * p.half[1], 1)], "col": k})
-    note = ("Viewed from the handle: hammer head to the left, fingertip up." if hand.kind == "franka" else
-            "Rows run along the handle (hammer head to the left), columns across it; each patch sits where "
-            "the wrap loads that part of the hand.")
+            label = {"palm": "Palm", "thumb": "Thumb"}.get(p.name, p.name.replace("_", " ").capitalize())
+            v = "uv"
+        rec = {"name": p.name, "label": label, "view": v, "rows": pr, "cols": pc, "off": off,
+               "mm": [round(2e3 * p.half[0], 1), round(2e3 * p.half[1], 1)], "col": k}
+        if view is not None:
+            rec["xy"] = _r(view[k]["xy"].reshape(-1), 2)
+            rec["cell"] = list(view[k]["cell"])
+            rec["angle"] = view[k]["angle"]
+        patches.append(rec)
+        off += pr * pc
+    if skin:
+        s = cfg.sensors
+        note = ("TaxelScan Rev3 skins on the open hand seen from the palm (thumb to the right), each patch unrolled "
+                f"flat at its true taxel pitch where it sits: a {s.ts_palm_grid[0]} x "
+                f"{s.ts_palm_grid[1]} palm sheet and {s.ts_finger_grid[0]} x {s.ts_finger_grid[1]} patches on each "
+                "finger's middle segment and fingertip, rows running along the link toward its tip. Values are the "
+                "RP2350 boards' calibrated output (12-bit SAR, sequential scan).")
+        rate, noise = s.ts_rate, "ADC"
+    else:
+        note = ("Viewed from the handle: hammer head to the left, fingertip up." if hand.kind == "franka" else
+                "Rows run along the handle (hammer head to the left), columns across it; each patch sits where "
+                "the wrap loads that part of the hand.")
+        rate, noise = cfg.sensors.pressure_rate, cfg.sensors.pressure_noise
     return {"t": _r(t[keep], 5), "data": _b64(q), "rows": nr, "cols": nc, "range": rng, "patches": patches,
-            "rate": cfg.sensors.pressure_rate, "noise": cfg.sensors.pressure_noise, "note": note}
+            "rate": rate, "noise": noise, "note": note, "layout": "hand" if skin else "pads"}
 
 
 def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False) -> dict:
@@ -313,7 +344,8 @@ def export_replays(specs: list[str], fast: bool = False, seed: int = 0, robot: s
         if "@" in arg:
             arg, sp = arg.split("@")
             speed = float(sp)
-        motion = load(src, **({"demo": int(arg or 0)} if src == "adroit" else {"task": arg}))
+        kw = {"adroit": {"demo": int(arg or 0)}, "dextoolbench": {"task": arg}, "grab": {"seq": arg}}[src]
+        motion = load(src, **kw)
         cfg = robot_config(robot, None, fast)
         try:
             ep = ReplayEpisode(cfg, motion=motion, seed=seed, frame_hz=2000.0, speed=speed)
@@ -328,8 +360,9 @@ def export_replays(specs: list[str], fast: bool = False, seed: int = 0, robot: s
             _, geoms, meshes = scene_geometry(res.testbed.world.model)
             for rec in geoms:
                 rec["scene"] = 0
-        who = (f"Adroit human demonstration {arg} (VR + data glove)" if src == "adroit"
-               else f"DexToolBench {arg} (tracked from human video)")
+        who = {"adroit": f"Adroit human demonstration {arg} (VR + data glove)",
+               "dextoolbench": f"DexToolBench {arg} (tracked from human video)",
+               "grab": f"GRAB {arg} (motion capture)"}[src]
         rig = "the Vega U + WUJI Hand 2" if robot.startswith("vega") else "the FR3 + Franka Hand"
         label = f"{who}, replayed on {rig} at {res.summary['time_scale']:.1f}x the recorded time"
         exp = export_episode(ep, res, label, spec, base_dt=0.010)  # slow replays: frames every 10 ms between blows

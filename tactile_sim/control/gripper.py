@@ -47,7 +47,7 @@ class GripForceLoop:
         samples = [self.sensors[n].latest() for n in names]
         if samples[0].seq < 0:
             return self.world.grip_truth()
-        floor = 2.0 * self.cfg.sensors.pressure_noise
+        floor = getattr(self.sensors[names[0]], "floor", 2.0 * self.cfg.sensors.pressure_noise)
         return hand.grip_from_patches(np.array([grip_force(s.value, floor) for s in samples]))
 
     def tick(self, t: float, setpoint: float, l1=None) -> float:

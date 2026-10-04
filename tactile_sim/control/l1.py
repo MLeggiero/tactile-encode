@@ -66,6 +66,18 @@ class L1Controller:
         self.do_log = log
         self.log = L1Log()
 
+    def velocity_guard(self, qd: np.ndarray) -> np.ndarray:
+        """Joint damping that engages above `vel_guard_onset` of each joint's velocity limit and reaches the joint's
+        torque limit at the velocity limit. Active after an impact and on hold only: a rebound flung back by the
+        impedance must not overspeed a joint (the FR3 would stop with a reflex), while the swing keeps all of its
+        speed."""
+        sp = self.world.arm_spec
+        on = self.cfg.controller.vel_guard_onset
+        lim = np.asarray(sp.velocity)
+        over = np.abs(qd) - on * lim
+        k = np.asarray(sp.torque) / ((1.0 - on) * lim)
+        return np.where(over > 0, -k * over * np.sign(qd), 0.0)
+
     def reset(self) -> None:
         self.impedance.q_null = self.world.q_hover.copy() if self.world.q_hover is not None else self.impedance.q_null
         self.impedance.reset()
@@ -140,6 +152,8 @@ class L1Controller:
         else:
             out = self.impedance.compute(s, cmd, xd_used, payload)
         tau_cmd = out.tau
+        if cmd.mode in (Mode.POST, Mode.HOLD):
+            tau_cmd = tau_cmd + self.velocity_guard(s.qd)
         rate = self.cfg.arm.torque_rate_limit
         if rate > 0:  # the FR3 rejects torque steps faster than 1000 Nm/s (libfranka rate limiter)
             tau_cmd = rate_limit(tau_cmd, w.data.ctrl[w.arm_act], rate, self.dt)

@@ -101,7 +101,9 @@ class GripperCfg:
     # not backdrive: a joint closes under its motor but external load cannot open it (nor move a shaping
     # joint); the gearbox then carries the load, reported as hand_stop_load.
     lock_mode: str = "backdrivable"
-    patch_layout: str = "palm_thumb"  # taxel patches: "palm_thumb" (2 x 64, 128 taxels) or "palm"
+    # taxel patches: "taxelscan" (TaxelScan Rev3 skins conforming to the palm and to every finger's distal pad and
+    # middle segment: 128 + 10 x 32 = 448 taxels), "palm_thumb" (2 flat 8 x 8 patches) or "palm"
+    patch_layout: str = "palm_thumb"
 
 
 @dataclass
@@ -276,6 +278,27 @@ class SensorsCfg:
     pressure_bandwidth: float = 300.0
     pressure_noise: float = 0.1  # N per taxel
     pressure_range: float = 20.0  # N per taxel
+    # --- TaxelScan Rev3 (patch_layout "taxelscan"): piezoresistive skins read by RP2350 boards. Each board
+    # scans its taxels one at a time through its 12-bit SAR ADC (500 ksps rated), one full frame per 1 ms; a
+    # taxel's value is the force at the instant the ADC sampled it, so a frame is skewed by the scan.
+    ts_palm_grid: tuple[int, int] = (8, 16)  # rows along the fingers, columns across the palm
+    ts_finger_grid: tuple[int, int] = (8, 4)  # rows along the segment, columns across it
+    ts_rate: float = 1000.0  # frames per second, every board
+    ts_boards: str = "per_patch"  # "per_patch" (11 boards) or "hand" (one board scans all 448 taxels)
+    ts_adc_rate: float = 500e3  # RP2350 ADC conversions per second
+    ts_adc_bits: int = 12
+    ts_enob: float = 9.2  # RP2350 datasheet effective bits
+    ts_oversample: int = 1  # conversions averaged per taxel
+    ts_settle: float = 1e-6  # mux + RC settling before each taxel's first conversion (s)
+    ts_f_half: float = 5.0  # N at which a taxel's divider reads half scale: counts ~ F / (F + f_half)
+    ts_gain_mismatch: float = 0.05  # per-taxel sensitivity error left after calibration (1 sigma)
+    ts_offset_lsb: float = 2.0  # per-taxel offset left after taring (1 sigma, LSB)
+    ts_latency: float = 0.001  # frame done -> host (USB full-speed 1 ms polling)
+    ts_bandwidth: float = 300.0  # elastomer skin (Hz)
+    ts_spread: float = 0.0015  # sigma of a contact's spreading when the foundation model finds no tool (m)
+    ts_skin_depth: float = 0.002  # compressible skin depth: taxels within this of the deepest press carry load (m)
+    ts_shape_dt: float = 0.0005  # load shape refresh period (s); the total follows the contacts every step
+    ts_shape_radius: float = 0.04  # taxels this close to a contact are tested against the tool (m)
     joint_rate: float = 1000.0
     joint_latency: float = 0.0
     joint_pos_quant: float = 2.0**-14
@@ -301,6 +324,7 @@ class ControllerCfg:
     d_null: float = 2.0
     osc_inertia: bool = True
     gate_duration: float = 0.050
+    vel_guard_onset: float = 0.6  # post-impact / hold: joint damping above this fraction of the velocity limit
     stale_timeout: float = 0.020
     observer_gain: float = 400.0
     impact_force_thresh: float = 30.0
@@ -427,13 +451,15 @@ def _from_dict(tp, d):
 
 WUJI2_OVERRIDES: dict[str, dict[str, Any]] = {
     "gripper": {"hand": "wuji2", "wrap_tcp": (0.004, 0.0315, -0.078), "thumb_close": (1, 0, 1, 1),
-                "thumb_preshape": (0.0, -0.8, 0.0, 0.0), "mount_yaw": 3.141592653589793},
+                "thumb_preshape": (0.0, -0.8, 0.0, 0.0), "mount_yaw": 3.141592653589793,
+                "patch_layout": "taxelscan"},
     # the hand points along the strike axis. At this hover pose the FR3's joint velocity limits allow 2.6 m/s
     # along it (1.3 m/s at the Franka Hand's hover pose, where the strike is an elbow extension) and every
     # joint is >= 0.94 rad from its limits
     "arm": {"q_seed": (0.74, 0.14, -0.58, -1.8, 1.48, 1.49, -0.24)},
     "scene": {"hover_tcp": (0.52, 0.30, 0.50)},
-    # grip force = summed normal force on the palm and thumb patches
+    # grip force = summed normal force on the taxel patches (TaxelScan: palm + fingertips carry the load in this
+    # wrap, ~89 N at the keyframe, close to the 95 N the palm + thumb patches saw, so the setpoints carry over)
     # two patches see only part of a wrap's load, and the share moves when the tool shifts a few degrees or the
     # swing loads the fingers: a drop is the patches going empty, not falling below a fraction of the setpoint
     "controller": {"grip_hold": 40.0, "drop_impact_holdoff": 0.05, "drop_force_frac": 0.0},

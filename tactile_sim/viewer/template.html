@@ -298,10 +298,15 @@ function tactile() {
   return T;
 }
 const tHover = {};
+function patchDims(T, p, k) {  // older exports: one grid for every patch
+  const nr = p.rows || T.rows, nc = p.cols || T.cols;
+  return { nr, nc, n: nr * nc, off: p.off != null ? p.off : k * nr * nc };
+}
 function tactileFrame(T, t) {
-  const i = bsearch(T.t, t), n = T.rows * T.cols, np = T.patches.length, bytes = tactileCache[S.ep.key];
-  const scale = T.range / 255, row = bytes.subarray(i * np * n, (i + 1) * np * n);
-  const out = T.patches.map((p, k) => { const v = new Float32Array(n); for (let j = 0; j < n; j++) v[j] = row[k * n + j] * scale; return v; });
+  const i = bsearch(T.t, t), bytes = tactileCache[S.ep.key];
+  const dims = T.patches.map((p, k) => patchDims(T, p, k)), N = dims.reduce((a, d) => a + d.n, 0);
+  const scale = T.range / 255, row = bytes.subarray(i * N, (i + 1) * N);
+  const out = dims.map((d) => { const v = new Float32Array(d.n); for (let j = 0; j < d.n; j++) v[j] = row[d.off + j] * scale; return v; });
   return { vals: out, t: T.t[i] };
 }
 // grid cell (col across, row down) of taxel (r along the first axis, c along the second) for each patch view
@@ -309,10 +314,64 @@ function cellOf(view, r, c, nr, nc) {
   const col = view === "R" ? nr - 1 - r : r;  // the Franka's right pad is mirrored so both read from the handle
   return [col, nc - 1 - c];
 }
+// TaxelScan skins: one hand-shaped map, every taxel drawn where it sits on the open hand seen from the palm
+let handHover = null;
+function handBox(T) {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of T.patches) for (let j = 0; j < p.xy.length; j += 2) {
+    x0 = Math.min(x0, p.xy[j] - p.cell[0]); x1 = Math.max(x1, p.xy[j] + p.cell[0]);
+    y0 = Math.min(y0, p.xy[j + 1] - p.cell[1]); y1 = Math.max(y1, p.xy[j + 1] + p.cell[1]);
+  }
+  return { x0, x1, y0, y1 };
+}
+function buildHand(T, box) {
+  box.style.gridTemplateColumns = "1fr";
+  box.insertAdjacentHTML("beforeend", `<figure><canvas id="hand-map" aria-label="Hand pressure map"></canvas><figcaption id="hand-cap"></figcaption></figure>`);
+  const cv = $("hand-map"), b = handBox(T);
+  cv.style.aspectRatio = `${b.x1 - b.x0} / ${b.y1 - b.y0}`;
+  cv.addEventListener("mousemove", (ev) => {
+    const s = cv.clientWidth / (b.x1 - b.x0), x = b.x0 + ev.offsetX / s, y = b.y1 - ev.offsetY / s;
+    let best = null, bd = Infinity;
+    T.patches.forEach((p, k) => { for (let j = 0; j < p.xy.length / 2; j++) {
+      const d = (p.xy[2 * j] - x) ** 2 + (p.xy[2 * j + 1] - y) ** 2; if (d < bd) { bd = d; best = { k, j }; } } });
+    handHover = bd < 9 ? best : null; drawTactile();
+  });
+  cv.addEventListener("mouseleave", () => { handHover = null; drawTactile(); });
+}
+function drawHand(vals, T) {
+  const cv = $("hand-map"); if (!cv) return;
+  const W = cv.clientWidth, b = handBox(T), s = W / (b.x1 - b.x0), H = (b.y1 - b.y0) * s; if (!W) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = css("--panel"); g.fillRect(0, 0, W, H);
+  let tot = 0, peak = 0;
+  T.patches.forEach((p, k) => {
+    const w = Math.max(p.cell[0] * s - 1, 1), h = Math.max(p.cell[1] * s - 1, 1);
+    for (let j = 0; j < p.xy.length / 2; j++) {
+      const v = vals[k][j], X = (p.xy[2 * j] - b.x0) * s, Y = (b.y1 - p.xy[2 * j + 1]) * s;
+      g.save(); g.translate(X, Y); g.rotate(p.angle || 0);  // cells turned with the patch's rows
+      g.fillStyle = rampColor(v / T.range); g.fillRect(-w / 2, -h / 2, w, h);
+      if (handHover && handHover.k === k && handHover.j === j) {
+        g.strokeStyle = css("--accent"); g.lineWidth = 2; g.strokeRect(-w / 2 - 1, -h / 2 - 1, w + 2, h + 2);
+      }
+      g.restore();
+      tot += v; peak = Math.max(peak, v);
+    }
+  });
+  if (handHover) {
+    const p = T.patches[handHover.k], nc = p.cols, j = handHover.j;
+    const sum = vals[handHover.k].reduce((a, v) => a + v, 0);
+    $("hand-cap").innerHTML = `${p.label} (${p.rows} × ${p.cols}) · taxel ${Math.floor(j / nc) + 1},${(j % nc) + 1}: <b>${vals[handHover.k][j].toFixed(2)} N</b> · patch ${sum.toFixed(1)} N`;
+  } else {
+    $("hand-cap").innerHTML = `Whole hand · <b>${tot.toFixed(1)} N</b> total · peak ${peak.toFixed(1)} N · hover a taxel`;
+  }
+}
 function buildPads() {
   const T = S.ep.tactile, box = $("pads");
   box.innerHTML = "";
   if (!T) return;
+  if (T.layout === "hand") { buildHand(T, box); return; }
   box.style.gridTemplateColumns = `repeat(${Math.min(T.patches.length, 2)}, 1fr)`;
   T.patches.forEach((p, k) => {
     box.insertAdjacentHTML("beforeend", `<figure><canvas id="pad-${k}" aria-label="${p.label} pressure heatmap"></canvas><figcaption id="cap-${k}">${p.label}</figcaption></figure>`);
@@ -358,7 +417,7 @@ function drawTactile() {
   const T = tactile(), card = $("tactile-card");
   card.hidden = !T; if (!T) return;
   const f = tactileFrame(T, S.t);
-  f.vals.forEach((v, k) => drawPad(k, v, T));
+  if (T.layout === "hand") drawHand(f.vals, T); else f.vals.forEach((v, k) => drawPad(k, v, T));
   const rc = $("ramp"), W = rc.clientWidth;
   if (W) {
     rc.width = W; rc.height = 10; const g = rc.getContext("2d");
@@ -366,7 +425,12 @@ function drawTactile() {
   }
   $("ramp-ticks").innerHTML = [0, 0.25, 0.5, 0.75, 1].map((q) => `<span>${(q * T.range).toFixed(0)}${q === 1 ? " N" : ""}</span>`).join("");
   const sizes = [...new Set(T.patches.map((p) => `${p.mm[0]} × ${p.mm[1]} mm`))].join(" / ");
-  $("tnote").textContent = `Sensor model output: ${T.rows} × ${T.cols} taxels per ${sizes} patch at ${Math.round(T.rate)} Hz, ${T.noise} N noise, ${T.range} N per taxel. ${T.note || ""} The ring is the centre of pressure.`;
+  if (T.layout === "hand") {
+    const n = T.patches.reduce((a, p) => a + p.rows * p.cols, 0);
+    $("tnote").textContent = `${n} taxels in ${T.patches.length} patches at ${Math.round(T.rate)} Hz, colour scale to ${T.range} N per taxel. ${T.note || ""}`;
+  } else {
+    $("tnote").textContent = `Sensor model output: ${T.rows} × ${T.cols} taxels per ${sizes} patch at ${Math.round(T.rate)} Hz, ${T.noise} N noise, ${T.range} N per taxel. ${T.note || ""} The ring is the centre of pressure.`;
+  }
 }
 new ResizeObserver(() => { if (S.ep) drawTactile(); }).observe($("tactile-card"));
 

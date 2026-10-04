@@ -61,7 +61,9 @@ def world():
 def test_plan_slows_only_what_the_arm_cannot_follow(world):
     from tactile_sim.replay.retarget import plan_replay
 
-    slow = plan_replay(synthetic_motion(speed=0.3), world, check_joints=False)
+    # the time warp alone: no lift-off between blows (this motion rests on the target at each turnaround) and no
+    # squaring of the approach (its 1 cm wobble would be blended out in 80 ms)
+    slow = plan_replay(synthetic_motion(speed=0.3), world, check_joints=False, standoff=0.0, square=0.0)
     assert slow.time_scale == pytest.approx(1.0, abs=0.02)  # feasible as recorded: untouched
     fast = plan_replay(synthetic_motion(speed=3.0, period=0.4), world, v_max=1.0, check_joints=False)
     assert fast.time_scale > 1.1
@@ -95,6 +97,8 @@ def test_adroit_replay_on_the_fr3():
     res = ReplayEpisode(fast_config(), motion=load("adroit", demo=22)).run()
     s = res.summary
     assert s["blows"] >= 2 and s["peak_force"] > 20.0
+    # every recorded contact lands face-on: no rests on the nail, no glancing blows on the head's rim or the shank
+    assert s["presses"] == 0 and s["off_centre_blows"] == 0 and s["through_nail"] == 0
     assert s["tracking_rms"] < 0.01 and s["limit_violations"] == ""
     assert "pressure_L" in res.sensors or any(k.startswith("pressure") for k in res.sensors)
     assert s["time_scale"] > 1.5  # the FR3 cannot match a human's hand accelerations
@@ -111,3 +115,55 @@ def test_adroit_replay_on_the_vega_u():
     assert s["blows"] >= 1 and s["tracking_rms"] < 0.01
     assert s["limit_arm_velocity"] <= 1.0 and s["limit_arm_torque"] <= 1.0
     assert any(np.isfinite(r.t_flag) for r in res.strikes)  # the detector is armed around recorded contacts
+
+
+def _synthetic_hammer(rng) -> np.ndarray:
+    """A hammer point cloud in its own frame: handle along +x, head across it along y at the far end, a flat
+    face at +y and a tapered claw at -y."""
+    handle = np.column_stack([rng.uniform(0.0, 0.28, 12000), 0.012 * rng.uniform(-1, 1, (12000, 2))])
+    face = np.column_stack([0.30 + 0.0125 * rng.uniform(-1, 1, 1500), rng.uniform(0.0, 0.05, 1500),
+                            0.0125 * rng.uniform(-1, 1, 1500)])
+    s = rng.uniform(0.0, 1.0, 1500)  # the claw narrows to an edge
+    claw = np.column_stack([0.30 + 0.0125 * (1 - s) * rng.uniform(-1, 1, 1500), -0.07 * s,
+                            0.0125 * (1 - s) * rng.uniform(-1, 1, 1500)])
+    return np.concatenate([handle, face, claw])
+
+
+def test_tool_geometry_from_vertices_finds_the_face():
+    from tactile_sim.replay.sources import tool_geometry_from_vertices
+
+    v = _synthetic_hammer(np.random.default_rng(0))
+    g = tool_geometry_from_vertices(v)
+    x_o, y_o, _ = (np.array(a) for a in g["axes"])
+    assert np.array(g["face_local"]) == pytest.approx([0.30, 0.05, 0.0], abs=0.006)
+    assert y_o @ [0, -1, 0] > 0.99  # y points into the face
+    assert x_o @ [-1, 0, 0] > 0.99  # x runs down the handle, away from the head
+
+
+def test_grab_loader_on_a_synthetic_sequence(tmp_path, monkeypatch):
+    from tactile_sim.replay.sources import load_grab, read_ply_vertices
+
+    rng = np.random.default_rng(1)
+    v = _synthetic_hammer(rng).astype(np.float32)
+    mesh = tmp_path / "tools" / "object_meshes" / "contact_meshes"
+    mesh.mkdir(parents=True)
+    header = (f"ply\nformat binary_little_endian 1.0\nelement vertex {len(v)}\nproperty float x\n"
+              "property float y\nproperty float z\nelement face 0\nproperty list uchar int vertex_indices\n"
+              "end_header\n").encode()
+    (mesh / "hammer.ply").write_bytes(header + v.tobytes())
+    assert read_ply_vertices(mesh / "hammer.ply") == pytest.approx(v.astype(float))
+    # three swings: the face (+y in the tool frame) reaches 0.1 m down and back, at 120 Hz
+    fps, n = 120.0, 360
+    t = np.arange(n) / fps
+    transl = np.zeros((n, 3))
+    transl[:, 1] = 0.05 * (1 - np.cos(2 * np.pi * t / 1.0))
+    seq = tmp_path / "grab" / "s1"
+    seq.mkdir(parents=True)
+    obj = {"params": {"transl": transl, "global_orient": np.zeros((n, 3))}}
+    np.savez(seq / "hammer_use_1.npz", object=np.array(obj, dtype=object), framerate=np.array(fps),
+             obj_name=np.array("hammer"))
+    monkeypatch.setenv("TACTILE_SIM_GRAB", str(tmp_path))
+    m = load_grab("s1/hammer_use_1")
+    assert len(m.contacts) == 3
+    assert m.axis @ [0, 1, 0] > 0.99
+    assert np.diff(m.t).mean() == pytest.approx(1 / fps)

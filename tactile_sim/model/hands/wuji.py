@@ -9,8 +9,10 @@ joint ranges, armature, visual meshes and convex-hull collision meshes. Changes:
 - All contacts come from explicit pairs: every hand link against short convex slices of the hammer
   handle (the handle is curved, one hull would bridge the curve), plus thumb-on-finger and
   finger-on-palm pairs so the wrap cannot pass through itself.
-- Taxel patches (the user's 8 x 8 arrays) are frames on the palm and the thumb's distal segment; the
-  pressure model bins the contacts that fall inside each patch.
+- Taxel patches: either the TaxelScan Rev3 skins (`patch_layout="taxelscan"`, tactile_sim.model.hands.taxel_layout:
+  a 128-taxel palm sheet and 32-taxel patches on every finger's distal pad and middle segment, each taxel on the
+  link's curved palmar surface), or flat 8 x 8 frames where the grasp loads the palm and thumb. The pressure model
+  spreads each contact's force over the taxels near it.
 
 Hand frame (= WUJI mount frame): fingers extend along -z, the palm faces +y, the thumb is on +x.
 """
@@ -190,6 +192,9 @@ def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, han
         mujoco.mju_mat2Quat(q, R.reshape(-1))
         sub(bodies[p.body], "site", name=f"patch_{p.name}", pos=p.center, quat=q,
             size=(p.half[0], p.half[1], 0.0005), type="box", rgba=(0.2, 0.5, 0.9, 0.6), group=4)
+        for i, x in enumerate(getattr(p, "pos", ())):  # conforming skins: one marker per taxel
+            sub(bodies[p.body], "site", name=f"taxel_{p.name}_{i}", pos=x, size=0.0006, rgba=(0.9, 0.6, 0.1, 1),
+                group=5)
 
     for jn, lim in joints:
         sub(act, "motor", name=f"m_{jn}", joint=jn, ctrlrange=(-lim, lim), ctrllimited="true")

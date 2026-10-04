@@ -57,17 +57,32 @@ def test_grasp_keyframe_is_a_seated_wrap(wuji_tb):
 
 
 @requires_wuji
-def test_taxel_patches_sit_where_the_grasp_loads_the_hand(wuji_tb):
+def test_taxelscan_skins_load_where_the_grasp_loads_the_hand(wuji_tb):
     w = wuji_tb.world
     names = [p.name for p in w.hand.patches]
-    assert names == ["palm", "thumb"]
-    assert w.hand.pressure_names == ["pressure_palm", "pressure_thumb"]
+    assert names[0] == "palm" and len(names) == 11
+    assert w.hand.accel_names == ["pad_acc_palm"]
+    forces = w.pad_normal_forces()
+    for k, p in enumerate(w.hand.patches):
+        tax = w.pad_taxels(k)
+        assert tax.shape == (128 if p.name == "palm" else 32,)
+        assert tax.sum() == pytest.approx(forces[k], rel=1e-6)
+    # the handle bears on the palm and the fingertips
+    assert forces[names.index("palm")] > 10
+    assert sum(forces[names.index(f"{f}_distal")] > 1 for f in ("index", "middle", "ring", "pinky")) >= 3
+    assert "pad_acc_palm" in wuji_tb.sensors and "pressure_index_distal" in wuji_tb.sensors
+
+
+@requires_wuji
+def test_flat_patch_layout_still_available():
+    tb = Testbed(wuji_cfg(gripper={"patch_layout": "palm_thumb"}))
+    w = tb.world
+    assert [p.name for p in w.hand.patches] == ["palm", "thumb"]
     for k in range(2):
         tax = w.pad_taxels(k)
         assert tax.shape == (64,)
         assert tax.sum() == pytest.approx(w.pad_normal_forces()[k], rel=1e-6)
         assert tax.sum() > 2.0
-    assert "pad_acc_palm" in wuji_tb.sensors and "pressure_thumb" in wuji_tb.sensors
 
 
 @requires_wuji

@@ -85,14 +85,30 @@ def _rot_between(u: np.ndarray, v: np.ndarray) -> np.ndarray:
     return Rotation.from_rotvec(ax / s * np.arctan2(s, c)).as_matrix()
 
 
+def _smoothstep(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, 0.0, 1.0)
+    return x * x * (3 - 2 * x)
+
+
 def map_motion(motion: ToolMotion, cfg: SimConfig, engage: float = 0.004, align_face: bool = True,
-               nail: np.ndarray | None = None, cutoff: float = 12.0, aim_each: bool = True
+               nail: np.ndarray | None = None, cutoff: float = 12.0, aim_each: bool = True,
+               square: float = 0.08, standoff: float = 0.003, window: float = 0.03, window_after: float = 0.004
                ) -> tuple[np.ndarray, np.ndarray]:
     """The source face path and tool orientations carried into our scene: (face (N,3), R (N,3,3)).
 
-    With `aim_each`, every recorded contact (not only the first) is moved onto the nail by a smooth offset
-    interpolated between contacts: the source's target can be far larger than our 9 mm nail head (Adroit's is
-    70 mm across), so the recorded scatter of blows would otherwise miss it. This is the aiming a robot would do."""
+    - `aim_each`: every recorded contact (not only the first) is moved onto the nail by a smooth offset
+      interpolated between contacts. The source's target can be far larger than our 9 mm nail head (Adroit's is
+      70 mm across), so the recorded scatter of blows would otherwise miss it. This is the aiming a robot would do.
+    - `align_face`: the face is turned square to the strike axis at every recorded contact (a rotation per
+      contact, interpolated between contacts); human blows land up to ~45 deg off square on Adroit's big nail.
+    - `square` (s): over this long before (and after) each recorded contact, the motion across the strike axis is
+      blended into the contact point's, so the face arrives along the nail axis instead of sweeping across it.
+    - `standoff` (m): outside `window` (s) before to `window_after` (s) after a recorded contact the face is kept
+      this far short of the nail head (soft clamp), so the replay neither rests the hammer on the nail between
+      blows nor drives it back in for a second hit as it rebounds.
+    """
+    from scipy.interpolate import PchipInterpolator
+
     from tactile_sim.model.builder import tcp_rotation
 
     k = motion.contact_index
@@ -101,23 +117,47 @@ def map_motion(motion: ToolMotion, cfg: SimConfig, engage: float = 0.004, align_
     G = task_frame(a_t, tcp_rotation(cfg)[:, 0]) @ task_frame(motion.axis, motion.R[k, :, 0]).T
     face_src = lowpass(motion.t, motion.face, cutoff)
     face = p_t + engage * a_t + (face_src - face_src[k]) @ G.T
-    if aim_each and len(motion.contacts) > 1:
-        from scipy.interpolate import PchipInterpolator
-
-        idx = sorted(set(motion.contacts))
-        off = np.array([p_t + engage * a_t - face[i] for i in idx])
-        tc = motion.t[idx]
+    idx = sorted(set(motion.contacts)) or [k]
+    tc = motion.t[idx]
+    target = p_t + engage * a_t
+    if aim_each and len(idx) > 1:
+        off = np.array([target - face[i] for i in idx])
         corr = PchipInterpolator(tc, off, axis=0, extrapolate=False)(motion.t)
         corr[motion.t < tc[0]] = off[0]
         corr[motion.t > tc[-1]] = off[-1]
         face = face + corr
+    if square > 0:
+        # blend the across-axis motion into the contact point's within `square` of each contact
+        lat = face - np.outer(face @ a_t, a_t)
+        lat_target = target - (target @ a_t) * a_t
+        wgt = np.zeros(len(face))
+        for t_k in tc:
+            wgt = np.maximum(wgt, _smoothstep(1.0 - np.abs(motion.t - t_k) / square))
+        face = face + wgt[:, None] * (lat_target - lat)
+    if standoff > 0:
+        # outside the contact windows stay `standoff` short of the nail head (soft minimum, 1 mm wide)
+        along = (face - p_t) @ a_t
+        near = np.zeros(len(face), dtype=bool)
+        after = max(window_after, 1.01 * float(np.median(np.diff(motion.t))))  # at least one sample past contact
+        for t_k in tc:
+            near |= (motion.t >= t_k - window) & (motion.t <= t_k + after)
+        # inside a window there is no limit (a margin well past the aim point, so the soft clamp is not felt)
+        lim = np.where(near, engage + 0.003, -standoff)
+        lim = lowpass(motion.t, lim, 20.0) if len(lim) > 16 else lim
+        excess = along - lim
+        soft = 0.001 * np.logaddexp(0.0, excess / 0.001)  # softplus: ~max(excess, 0)
+        face = face - np.outer(soft, a_t)
     q = Rotation.from_matrix(motion.R).as_quat()
     q *= np.where(np.cumsum(np.r_[0, np.einsum("ij,ij->i", q[1:], q[:-1]) < 0]) % 2 == 1, -1.0, 1.0)[:, None]
     q = lowpass(motion.t, q, cutoff)  # sign-continuous quaternions, filtered like the positions
     R = np.einsum("ij,njk->nik", G, Rotation.from_quat(q / np.linalg.norm(q, axis=1, keepdims=True)).as_matrix())
     if align_face:
-        C = _rot_between(-R[k, :, 1], a_t)
-        R = np.einsum("ij,njk->nik", C, R)
+        corrs = Rotation.from_matrix(np.stack([_rot_between(-R[i, :, 1], a_t) for i in idx]))
+        if len(idx) > 1:
+            C = Slerp(tc, corrs)(np.clip(motion.t, tc[0], tc[-1]))
+        else:
+            C = Rotation.from_matrix(np.repeat(corrs.as_matrix(), len(motion.t), axis=0))
+        R = np.einsum("nij,njk->nik", C.as_matrix(), R)
     return face, R
 
 
@@ -179,13 +219,14 @@ def ik_along(world, tcp: np.ndarray, R: np.ndarray, every: int = 10, iters: int 
 
 def plan_replay(motion: ToolMotion, world, engage: float = 0.004, align_face: bool = True, speed: float = 1.0,
                 v_max: float = 1.5, w_max: float = 4.0, a_max: float = 25.0, rate: float = 1000.0,
-                max_residual: float = 0.01, check_joints: bool = True, max_slowdown: float = 10.0) -> ReplayPlan:
+                max_residual: float = 0.01, check_joints: bool = True, max_slowdown: float = 10.0,
+                **map_kw) -> ReplayPlan:
     """Map a motion onto `world`'s nail and make it trackable: returns the 1 kHz TCP path and its time scale.
 
     `speed` > 1 plays the motion faster than recorded (e.g. DexToolBench's slow tracked swings) before the limits
-    slow it again if needed."""
+    slow it again if needed. `map_kw` go to map_motion."""
     cfg = world.cfg
-    face_s, R_s = map_motion(motion, cfg, engage, align_face)
+    face_s, R_s = map_motion(motion, cfg, engage, align_face, **map_kw)
     fo = np.asarray(face_offset(cfg.hammer), float)
     from scipy.ndimage import maximum_filter1d, uniform_filter1d
 

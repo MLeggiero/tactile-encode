@@ -39,12 +39,25 @@ learned layers (L2 reactive, L3 World-Action-Model / VLA planner) will train aga
     with a tilted bit) and stripping after repeated cam-outs; or drilling with thrust-dependent feed, the bit
     catching at the exit and losing its support at breakthrough. The driver is held along the hand's approach
     axis so the push runs through the arm, not the wrist. A steady reaction torque with untimed jerks.
-- **Sensors:** wrist F/T at 4 kHz, accelerometers at 8 kHz (+-16 g) under each taxel patch, 8 x 8 pressure
-  arrays (64 taxels) at 1 kHz, joint encoders and torques at 1 kHz, and the momentum observer's external
-  torque. Each has its own band-limit, latency, noise, bias, quantization and saturation. Contact forces
-  are spread over the taxels with a 3 mm kernel, the way a rubber layer spreads load. The Franka Hand has a
-  patch on each pad; the WUJI hand has two (128 taxels), placed where the wrap loads it: the palm and the
-  thumb segment that carries the handle.
+- **Sensors:** wrist F/T at 4 kHz, accelerometers at 8 kHz (+-16 g) under the pads / the palm, pressure
+  arrays at 1 kHz, joint encoders and torques at 1 kHz, and the momentum observer's external torque. Each
+  has its own band-limit, latency, noise, bias, quantization and saturation. The Franka Hand has an 8 x 8
+  array on each pad (contact forces spread with a 3 mm kernel, the way a rubber layer spreads load).
+- **TaxelScan skins on the WUJI hand** (`patch_layout="taxelscan"`, the WUJI default): a 128-taxel sheet
+  on the palm (8 x 16) and a 32-taxel patch (8 x 4) on every finger's fingertip pad and middle segment,
+  thumb included: 448 taxels, each read at 1 kHz by a TaxelScan Rev3 board. The patches conform to the
+  hand: every taxel is ray-cast onto the vendor's detailed mesh of its link at the palmar side (the side
+  that meets a tool) and keeps that surface point and normal; patch extents are the largest rectangle the
+  link's front face fully covers (`tactile_sim/model/hands/taxel_layout.py`). Load reaches the taxels as on
+  an elastic foundation: from the taxels near a contact, rays along their normals find the gap to the
+  touching tool, and each carries load in proportion to how much it is compressed (2 mm skin), scaled so the
+  patch's taxels share exactly the contacts' force. A handle across the palm loads a band, not the one or
+  two points MuJoCo reduces the contact to. The readout (`tactile_sim/sensors/taxelscan.py`) models an
+  RP2350 board: a piezoresistive divider (counts ~ F / (F + 5 N)), the 12-bit SAR ADC at its rated
+  500 ksps with ENOB 9.2, a sequential scan (a frame's taxels are sampled 3 us apart, so a 128-taxel frame
+  spans 0.38 ms), per-taxel gain (5 %) and offset (2 LSB) residuals after calibration, the firmware's
+  counts-to-newtons curve, and 1 ms USB latency. One board per patch is the default; one board for all
+  448 taxels at 1 kHz does not fit the ADC's rate once mux settling is counted (`ts_boards="hand"` raises).
 - **Control:** on the FR3, a 1 kHz Cartesian impedance law with a reference limiter, stiffness slew limit,
   payload compensation and 50 ms velocity gating after impact, and a momentum observer. On Vega, a host
   loop that detects impacts at 1 kHz and every 10 ms sends joint targets from differential IK, offset by

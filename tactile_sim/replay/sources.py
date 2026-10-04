@@ -212,11 +212,139 @@ def load_dextoolbench(task: str = "hammer/claw_hammer/swing_down") -> ToolMotion
                       {"source": "dextoolbench", "task": task, "dt": DEXTOOLBENCH_DT})
 
 
+# ----------------------------------------------------------------- tool geometry from a mesh
+def tool_geometry_from_vertices(v: np.ndarray, end_frac: float = 0.25, face_band: float = 0.006) -> dict:
+    """A hammer's striking face and our tool axes from its mesh vertices (tool frame), for sources that come with a
+    mesh but no annotation (GRAB). The handle is the longest principal axis; the head is the end whose cross-section
+    is wider; the head axis is the head's longest extent across the handle; the face is the head end with the larger
+    flat area (a claw or a peen tapers). Returns {"face_local", "axes"} like SOURCE_TOOLS."""
+    v = np.asarray(v, float)
+    c = v.mean(axis=0)
+    _, _, vt = np.linalg.svd(v - c, full_matrices=False)
+    e1 = vt[0]
+    s1 = (v - c) @ e1
+    lo, hi = np.quantile(s1, [end_frac, 1.0 - end_frac])
+    width = []
+    for sel in (s1 <= lo, s1 >= hi):
+        p = v[sel] - c
+        p = p - np.outer(p @ e1, e1)
+        width.append(np.ptp(np.linalg.norm(p, axis=1)) + np.linalg.norm(p, axis=1).max())
+    head_sign = 1.0 if width[1] > width[0] else -1.0
+    head = v[(s1 >= hi) if head_sign > 0 else (s1 <= lo)]
+    hc = head.mean(axis=0)
+    ph = (head - hc) - np.outer((head - hc) @ e1, e1)
+    _, _, vh = np.linalg.svd(ph, full_matrices=False)
+    e2 = vh[0] - (vh[0] @ e1) * e1
+    e2 /= np.linalg.norm(e2)
+    e3 = np.cross(e1, e2)
+    s2 = (head - hc) @ e2
+    best = None
+    for sign in (1.0, -1.0):
+        band = head[sign * s2 >= sign * (s2.max() if sign > 0 else s2.min()) - face_band]
+        area = np.ptp((band - hc) @ e1) * np.ptp((band - hc) @ e3)
+        if best is None or area > best[0]:
+            best = (area, sign, band)
+    _, sign, band = best
+    n_out = sign * e2
+    face = band.mean(axis=0)
+    face = face - ((face - hc) @ n_out - (band - hc).dot(n_out).max()) * n_out  # on the face plane
+    x_o = -head_sign * e1  # along the handle, away from the head
+    y_o = -n_out
+    z_o = np.cross(x_o, y_o)
+    return {"face_local": tuple(float(x) for x in face), "axes": (tuple(x_o), tuple(y_o), tuple(z_o))}
+
+
+def read_ply_vertices(path: Path) -> np.ndarray:
+    """Vertex positions of a PLY mesh (ascii or binary little/big endian; float or double x, y, z)."""
+    data = Path(path).read_bytes()
+    end = data.index(b"end_header") + len(b"end_header")
+    end += 2 if data[end:end + 2] == b"\r\n" else 1
+    header = data[:end].decode("ascii", "replace").splitlines()
+    fmt = next(line.split()[1] for line in header if line.startswith("format"))
+    n, props, in_vertex = 0, [], False
+    for line in header:
+        w = line.split()
+        if w[:2] == ["element", "vertex"]:
+            n, in_vertex = int(w[2]), True
+        elif w and w[0] == "element":
+            in_vertex = False
+        elif w and w[0] == "property" and in_vertex:
+            props.append((w[2], w[1]))
+    if fmt == "ascii":
+        rows = data[end:].decode().split("\n")[:n]
+        arr = np.array([[float(x) for x in r.split()[:len(props)]] for r in rows])
+        names_ = [p[0] for p in props]
+        return arr[:, [names_.index("x"), names_.index("y"), names_.index("z")]]
+    np_types = {"float": "f4", "float32": "f4", "double": "f8", "float64": "f8", "uchar": "u1", "uint8": "u1",
+                "char": "i1", "int8": "i1", "ushort": "u2", "uint16": "u2", "short": "i2", "int16": "i2",
+                "uint": "u4", "uint32": "u4", "int": "i4", "int32": "i4"}
+    endian = "<" if fmt == "binary_little_endian" else ">"
+    dt = np.dtype([(name, endian + np_types[t]) for name, t in props])
+    rec = np.frombuffer(data, dtype=dt, count=n, offset=end)
+    return np.column_stack([rec["x"], rec["y"], rec["z"]]).astype(float)
+
+
+# ----------------------------------------------------------------- GRAB (manual download)
+GRAB_ENV = "TACTILE_SIM_GRAB"
+
+
+def grab_root() -> Path:
+    """Where the user unpacked GRAB (grab.is.tue.mpg.de; non-commercial research licence, sign-up required):
+    $TACTILE_SIM_GRAB, else ~/.cache/tactile_sim/replay/grab. Expected: grab/s*/<object>_<intent>_*.npz and
+    tools/object_meshes/contact_meshes/<object>.ply."""
+    env = os.environ.get(GRAB_ENV)
+    return Path(env) if env else Path.home() / ".cache" / "tactile_sim" / "replay" / "grab"
+
+
+def grab_sequences(obj: str = "hammer", intent: str = "use") -> list[str]:
+    root = grab_root() / "grab"
+    return sorted(str(p.relative_to(root))[:-4] for p in root.glob(f"s*/{obj}_{intent}_*.npz"))
+
+
+def _unbox(x):
+    return x.item() if isinstance(x, np.ndarray) and x.dtype == object and x.shape == () else x
+
+
+def load_grab(seq: str = "s1/hammer_use_1", prominence: float = 0.03) -> ToolMotion:
+    """A GRAB sequence (120 Hz motion capture, MoSh++). The hammer swings in the air (there is no nail): strikes are
+    the peaks of the face's reach along its mean outward normal, at least `prominence` m deep."""
+    from scipy.signal import find_peaks
+
+    root = grab_root()
+    path = root / "grab" / f"{seq}.npz"
+    if not path.exists():
+        raise FileNotFoundError(f"GRAB sequence {path} not found; download GRAB from grab.is.tue.mpg.de and set "
+                                f"${GRAB_ENV} to the folder holding grab/ and tools/")
+    raw = np.load(path, allow_pickle=True)
+    data = {k: _unbox(raw[k]) for k in raw.files}
+    params = _unbox(data["object"])["params"]
+    transl = np.asarray(params["transl"], float)
+    R_src = Rotation.from_rotvec(np.asarray(params["global_orient"], float)).as_matrix()
+    fps = float(_unbox(data.get("framerate", 120.0)))
+    obj = str(_unbox(data.get("obj_name", seq.split("/")[-1].split("_")[0])))
+    mesh = root / "tools" / "object_meshes" / "contact_meshes" / f"{obj}.ply"
+    spec = tool_geometry_from_vertices(read_ply_vertices(mesh))
+    face = transl + R_src @ np.asarray(spec["face_local"])
+    R = _tool_rotation(spec, R_src)
+    n_mean = (-R[:, :, 1]).mean(axis=0)
+    n_mean /= np.linalg.norm(n_mean)
+    reach = face @ n_mean
+    peaks, _ = find_peaks(reach, prominence=prominence, distance=int(0.15 * fps))
+    if len(peaks) == 0:
+        raise ValueError(f"GRAB {seq}: no swing found")
+    k = int(peaks[np.argmax(reach[peaks])])
+    t = np.arange(len(face)) / fps
+    return ToolMotion(f"grab/{seq}", t, face, R, k, n_mean, [int(i) for i in peaks],
+                      {"source": "grab", "seq": seq, "dt": 1.0 / fps})
+
+
 def load(source: str, **kw) -> ToolMotion:
     if source == "adroit":
         return load_adroit(**kw)
     if source == "dextoolbench":
         return load_dextoolbench(**kw)
+    if source == "grab":
+        return load_grab(**kw)
     raise ValueError(f"unknown replay source {source!r}")
 
 

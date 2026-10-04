@@ -110,11 +110,20 @@ and the residual between predicted and measured grip wrench updates $\hat{\vect 
 update indexed by phase. Slip is never rescued within a blow; it changes the next cycle.
 
 \subsection{Sensing}
-The wrist carries a 6-axis force/torque sensor at \SI{4}{\kilo\hertz}. Each grip pad carries an $8\times8$ pressure
-array (\SI{17}{\milli\metre} pads on the parallel gripper, \SI{30}{\milli\metre} patches at the palm and thumb on the
-dexterous hand) at \SI{1}{\kilo\hertz}, with \SI{0.1}{\newton} noise and a \SI{20}{\newton} per-taxel range, and a
-3-axis accelerometer at \SI{8}{\kilo\hertz} ($\pm16\,g$). Joint encoders and torques run at \SI{1}{\kilo\hertz}.
-Each sensor model applies a bandwidth filter, decimation, latency, bias, noise, quantization and saturation.
+The wrist carries a 6-axis force/torque sensor at \SI{4}{\kilo\hertz}. Each pad of the parallel gripper carries an
+$8\times8$ pressure array (\SI{17}{\milli\metre}) at \SI{1}{\kilo\hertz}, with \SI{0.1}{\newton} noise and a
+\SI{20}{\newton} per-taxel range, and a 3-axis accelerometer at \SI{8}{\kilo\hertz} ($\pm16\,g$). Joint encoders and
+torques run at \SI{1}{\kilo\hertz}. Each sensor model applies a bandwidth filter, decimation, latency, bias, noise,
+quantization and saturation.
+
+The dexterous hand wears TaxelScan skins: a 128-taxel sheet on the palm and 32-taxel patches on each finger's
+fingertip pad and middle segment, 448 taxels in all, each patch scanned at \SI{1}{\kilo\hertz} by its own RP2350
+board. Every taxel is ray-cast onto the palmar surface of its link's detailed mesh, so the patches follow the
+fingers' curvature. A contact's normal force is distributed over the taxels as on an elastic foundation (load in
+proportion to the skin's compression, found by rays from the taxels to the touching tool), so a handle across the
+palm loads a band. The readout models the board: a piezoresistive divider, the 12-bit SAR ADC at
+\SI{500}{ksps} (ENOB 9.2), a sequential scan whose per-taxel time skew is kept, calibration residuals, and USB
+latency.
 
 \subsection{Simulation testbed}
 \label{sec:testbed}

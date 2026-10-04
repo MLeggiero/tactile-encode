@@ -1,5 +1,6 @@
 """Pressure arrays: an 8 x 8 grid (64 taxels) per taxel patch at 1 kHz by default, normal force per taxel.
-The Franka Hand has one patch per pad (L, R); a dexterous hand has the patches of its layout."""
+The Franka Hand has one patch per pad (L, R); a dexterous hand has the patches of its layout. TaxelScan skins
+(conforming patches) are read by tactile_sim.sensors.taxelscan instead."""
 
 from __future__ import annotations
 
@@ -10,9 +11,13 @@ from tactile_sim.sensors.base import RateLimitedSensor, SensorSpec
 
 def make_pressure(world, cfg, rng) -> list[RateLimitedSensor]:
     s = cfg.sensors
-    nr, nc = cfg.sensors.taxel_grid
+    if any(p.taxel_pos is not None for p in world.hand.patches):
+        from tactile_sim.sensors.taxelscan import make_taxelscan
+
+        return make_taxelscan(world, cfg, rng)
     out = []
     for side, name in enumerate(world.hand.pressure_names):
+        nr, nc = world.hand.grid(side)
         spec = SensorSpec(name, s.pressure_rate, nr * nc, bandwidth_hz=s.pressure_bandwidth,
                           latency_s=s.pressure_latency, noise_std=s.pressure_noise, saturation=(0.0, s.pressure_range),
                           decimation="mean")
