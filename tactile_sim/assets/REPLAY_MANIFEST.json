@@ -1,0 +1,49 @@
+{
+  "adroit": {
+    "repo": "aravindr93/hand_dapg",
+    "commit": "9a1de23df6574e1b94e1da742e3326eb1f61c013",
+    "files": [
+      {
+        "path": "LICENSE",
+        "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4",
+        "size": 11357
+      },
+      {
+        "path": "dapg/demonstrations/hammer-v0_demos.pickle",
+        "sha256": "d3e517e717b1939696af5a599bec6554888ef9438a7214388fbd7c250895fd3f",
+        "size": 6629868
+      }
+    ]
+  },
+  "dextoolbench": {
+    "repo": "tylerlum/simtoolreal",
+    "commit": "313d5aea1f507c6cfe097b672b62945d7b0bbff5",
+    "files": [
+      {
+        "path": "LICENSE",
+        "sha256": "5bda4ec49c4eae5228f2857ee5cfc2ad1765b61e91c4bf731c2a2540a597ab3a",
+        "size": 1066
+      },
+      {
+        "path": "dextoolbench/trajectories/hammer/claw_hammer/swing_down.json",
+        "sha256": "2e111660e6de31d27c31590b2e1db436486a061646eedc010b8310a494af8550",
+        "size": 9538
+      },
+      {
+        "path": "dextoolbench/trajectories/hammer/claw_hammer/swing_side.json",
+        "sha256": "7930b9fcad79a01ac14e551d85f6df8beb7d1f540c1b8db3682273d36aa58cf1",
+        "size": 10269
+      },
+      {
+        "path": "dextoolbench/trajectories/hammer/mallet_hammer/swing_down.json",
+        "sha256": "a74c08fb7ff3aa60640cdcbc21e2ab470598c34fe88dd7fcf031fb10550657dc",
+        "size": 9293
+      },
+      {
+        "path": "dextoolbench/trajectories/hammer/mallet_hammer/swing_side.json",
+        "sha256": "cabf3babf1607710f4f4921c55ec1e03817507c3c3aaf150d8a9c977b75965db",
+        "size": 8268
+      }
+    ]
+  }
+}

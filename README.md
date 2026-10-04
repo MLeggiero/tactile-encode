@@ -82,6 +82,9 @@ python -m tactile_sim.run_strikes --n 10 --hand wuji2 --robot vega_1u # Vega U, 
 python -m tactile_sim.tool_task --task saw                            # crosscut a board with a hand saw
 python -m tactile_sim.tool_task --task drill                          # seat a wood screw with a cordless driver
 python -m tactile_sim.tool_task --task drill --mode hole              # drill through a board
+python -m tactile_sim.replay.sources                                 # fetch recorded motions (Adroit, DexToolBench)
+python -m tactile_sim.replay --source adroit --demo 0 --out runs/replay_adroit0.npz   # human blows, retargeted
+python -m tactile_sim.replay --source dextoolbench --task hammer/claw_hammer/swing_side --speed 3
 python -m tactile_sim.calibrate pulse                                 # free-hammer contact sweeps
 python -m tactile_sim.viewer.export --n 6 --preset default --preset wuji2 --preset wuji2-selflock
 python -m tactile_sim.viewer.export --n 6 --preset vega-wuji2 --preset vega-wuji2-selflock --out runs/replay_vega.html
@@ -150,6 +153,29 @@ Saw and driver on the FR3 + Franka Hand (8 kHz, seed 0, scripted behaviors, grip
 | Net slip in the grasp | 1.0 mm, 4.8 deg (pads flex up to 9 deg per stroke) | 0.2 mm, 2.4 deg | 0.1 mm, 0.6 deg |
 | Untimed events | binding | none (cam-out with a 35 N push) | breakthrough |
 | Arm limits | all held | all held | all held |
+
+### Replaying recorded tool motions
+
+`tactile_sim.replay` plays recorded hammer motions on the testbed and records what the sensors feel. No public
+dataset has impact or grip forces, so the recording supplies only the motion and the testbed's nail produces the
+blows. Sources, pinned and hash-verified (`tactile_sim/assets/REPLAY_MANIFEST.json`):
+
+- **Adroit / DAPG hammer-human** (Apache-2.0): 25 human demonstrations recorded in VR with a CyberGlove driving the
+  Adroit hand in MuJoCo, 100 Hz hammer poses and a nail touch sensor; 22 of them contain blows (75 in all,
+  ~0.6-2 m/s at the face).
+- **DexToolBench** (SimToolReal, MIT): hammer poses tracked from human RGB-D videos by FoundationPose, ~3 Hz.
+  These are slow tracked swings; their "strikes" are presses under 0.06 m/s.
+
+The motion is retargeted face-first: the recorded strike is placed on our nail along our strike axis, the face is
+turned square, every recorded contact is aimed at our 9 mm nail head (Adroit's is 70 mm across), and the TCP
+follows from our hammer's face offset. A time warp then slows the path only where it is too fast for the arm, and
+damped least-squares IK along it checks reach and joint speeds.
+
+All 22 Adroit replays on the FR3 + Franka Hand (4 kHz) held every arm limit and tracked to 3-5 mm RMS. But a human
+hand accelerates far beyond the FR3 (peaks ~200 m/s^2 in the wrist snap between blows), so the arm needs 2.2-4.6x
+the recorded time and the blows land at 0.05-0.7 m/s (100-330 N), too slow to move the default nail. 78 blows
+landed against 75 recorded (rebounds count as blows). Tool rotation in the grasp stayed under 3 deg in 19 of 22
+replays and reached 9-11 deg in three, where the human's blows arrived far off square.
 
 ## Findings so far
 
@@ -225,6 +251,7 @@ Saw and driver on the FR3 + Franka Hand (8 kHz, seed 0, scripted behaviors, grip
 | M7 | HDF5 logging, `run_strikes` CLI | done |
 | M8 | Gymnasium env, domain randomization | done |
 | M9 | saw and driver tasks: tools, saw / screw / hole plants, scripted behaviors, `tool_task` runner, tests | done |
+| R0 | replay of recorded motions (Adroit, DexToolBench): sources, retargeting, time warp, IK check, runner, tests | done |
 | D0-D6 | WUJI Hand 2: fetch, import, grasp synthesis, taxel patches, joint control, strikes, viewer | done |
 | D7 | experiments E1-E9 of `docs/dexterous_hand_plan.md` | partly (E2, E3, E7) |
 | V0-V3 | Vega U (and Vega-1P): fetch, URDF import (GLB meshes converted), position-servo interface, WUJI hands on both arms, downward arc strike onto a tabletop, limits, tests, viewer | done |
