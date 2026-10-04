@@ -1,0 +1,182 @@
+<title>Anticipate and React</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a swimlane timeline. Time runs down the middle; the robot's physical actions on the left, the algorithm acting on the right. */
+:root {
+  --bg: #f3f5f6;
+  --panel: #ffffff;
+  --ink: #18222a;
+  --ink-2: #4a5761;
+  --ink-3: #8794a0;
+  --rule: #d6dde2;
+  --steel: #2f6f8f;          /* robot / physical lane */
+  --steel-soft: #e3eef4;
+  --l3: #6b4fa3;             /* VLA */
+  --l2: #c2571a;             /* learned 1 kHz reactive layer */
+  --l1: #2c7a4b;             /* hand-designed safety controller */
+  --l0: #8a6d12;             /* estimator */
+  --blow: #b3261e;
+  --blow-soft: #fbe9e7;
+  --f-display: "Barlow Semi Condensed", "Arial Narrow", system-ui, sans-serif;
+  --f-body: "Barlow", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11171c; --panel: #182129; --ink: #e6ecef; --ink-2: #aab7c1; --ink-3: #6f7d88; --rule: #2a3640;
+  --steel: #7cb8d6; --steel-soft: #1a2c37; --l3: #b39ce6; --l2: #f0935a; --l1: #6cc493; --l0: #d9b74a;
+  --blow: #ff7a70; --blow-soft: #3a1d1b; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11171c; --panel: #182129; --ink: #e6ecef; --ink-2: #aab7c1; --ink-3: #6f7d88; --rule: #2a3640;
+  --steel: #7cb8d6; --steel-soft: #1a2c37; --l3: #b39ce6; --l2: #f0935a; --l1: #6cc493; --l0: #d9b74a;
+  --blow: #ff7a70; --blow-soft: #3a1d1b; color-scheme: dark }
+
+body { background: var(--bg); color: var(--ink); font-family: var(--f-body); font-size: 15px; line-height: 1.45; }
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 48px; }
+h1 { font-family: var(--f-display); font-weight: 700; font-size: 2rem; letter-spacing: 0.01em; margin: 0 0 4px; text-wrap: balance; }
+.lede { color: var(--ink-2); margin: 0 0 20px; max-width: 70ch; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 22px; font-size: 13px; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+
+.lanes-head, .row { display: grid; grid-template-columns: minmax(0, 1fr) 112px minmax(0, 1fr); gap: 0 14px; }
+.lanes-head { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 2; background: var(--bg); padding-block: 8px; border-bottom: 1px solid var(--rule); }
+.lanes-head div { font-family: var(--f-display); font-weight: 600; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+.lanes-head .c { text-align: center; }
+
+.row { position: relative; padding-block: 10px; align-items: stretch; }
+/* the time spine */
+.spine { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; }
+.spine::before { content: ""; position: absolute; top: -10px; bottom: -10px; left: 50%; width: 2px; transform: translateX(-1px); background: var(--rule); }
+.row:first-of-type .spine::before { top: 50%; }
+.t { position: relative; margin-top: 14px; background: var(--bg); padding: 3px 6px; border: 1px solid var(--rule); border-radius: 4px;
+     font-family: var(--f-mono); font-size: 11.5px; color: var(--ink-2); text-align: center; font-variant-numeric: tabular-nums; line-height: 1.3; }
+.phase { position: relative; margin-top: 6px; background: var(--bg); padding: 0 4px; font-family: var(--f-display); font-weight: 600; font-size: 13px; text-align: center; color: var(--ink); }
+
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; min-width: 0; position: relative; }
+.act { border-left: 4px solid var(--steel); }
+.act h3, .alg h3 { margin: 0 0 6px; font-family: var(--f-display); font-weight: 600; font-size: 1.05rem; }
+.card ul { margin: 0; padding-left: 18px; color: var(--ink-2); }
+.card li + li { margin-top: 3px; }
+.card b { color: var(--ink); font-weight: 600; }
+/* arrows from the action lane into the algorithm lane */
+.act::after { content: ""; position: absolute; right: -15px; top: 22px; width: 0; height: 0;
+  border-top: 6px solid transparent; border-bottom: 6px solid transparent; border-left: 8px solid var(--steel); }
+
+.alg { display: flex; flex-direction: column; gap: 8px; }
+.step { display: grid; grid-template-columns: 54px minmax(0, 1fr); gap: 10px; align-items: start; }
+.tag { font-family: var(--f-mono); font-size: 11px; font-weight: 500; padding: 2px 0; border-radius: 3px; text-align: center; color: var(--panel); }
+.tag.l3 { background: var(--l3); } .tag.l2 { background: var(--l2); } .tag.l1 { background: var(--l1); } .tag.l0 { background: var(--l0); }
+.step p { margin: 0; color: var(--ink-2); }
+.step p b { color: var(--ink); }
+
+.blow .act { border-left-color: var(--blow); background: var(--blow-soft); }
+.blow .act::after { border-left-color: var(--blow); }
+.blow .t { border-color: var(--blow); color: var(--blow); }
+
+.loop { margin-top: 14px; display: grid; grid-template-columns: minmax(0, 1fr) 112px minmax(0, 1fr); gap: 0 14px; }
+.loop .box { grid-column: 1 / -1; border: 1.5px dashed var(--ink-3); border-radius: 6px; padding: 10px 14px; color: var(--ink-2); display: flex; gap: 10px; align-items: center; }
+.loop .arrow { font-family: var(--f-mono); color: var(--ink); font-size: 18px; }
+
+.notes { margin-top: 26px; display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+.notes div { min-width: 0; }
+.notes h4 { margin: 0 0 4px; font-family: var(--f-display); font-weight: 600; font-size: 0.95rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-3); }
+.notes p { margin: 0; color: var(--ink-2); font-size: 14px; }
+
+@media (max-width: 760px) {
+  .lanes-head { display: none; }
+  .row, .loop { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .spine { order: -1; flex-direction: row; gap: 8px; align-items: center; }
+  .spine::before { display: none; }
+  .t, .phase { margin-top: 0; }
+  .act::after { right: auto; left: 24px; top: auto; bottom: -11px; border-left: 6px solid transparent; border-right: 6px solid transparent; border-top: 8px solid var(--steel); border-bottom: 0; }
+  .blow .act::after { border-top-color: var(--blow); border-left-color: transparent; }
+  .act::before { content: "Robot"; display: block; font-family: var(--f-display); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); margin-bottom: 2px; }
+  .alg::before { content: "Algorithm"; display: block; font-family: var(--f-display); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-3); }
+}
+</style>
+
+<div class="wrap">
+  <h1>Anticipate and React: one hammer strike</h1>
+  <p class="lede">The VLA predicts the blow, the grip and arm are set before contact, and a learned 1 kHz layer reacts in the milliseconds after it. Times are relative to contact (t = 0). The cycle repeats until the nail is driven.</p>
+
+  <div class="legend" aria-label="Layers">
+    <span><i class="dot" style="background:var(--steel)"></i>Robot and tool</span>
+    <span><i class="dot" style="background:var(--l3)"></i>L3 VLA, 1–10 Hz</span>
+    <span><i class="dot" style="background:var(--l2)"></i>L2 learned reactive layer, 1 kHz</span>
+    <span><i class="dot" style="background:var(--l1)"></i>L1 safety controller, 1 kHz</span>
+    <span><i class="dot" style="background:var(--l0)"></i>L0 tool–target estimator</span>
+  </div>
+
+  <div class="lanes-head"><div>Actions taken</div><div class="c">Time</div><div>Algorithm acting</div></div>
+
+  <div class="row">
+    <div class="card act"><h3>Look and pick up the hammer</h3><ul>
+      <li>Camera sees hammer, nail, board</li><li>Command: <b>“drive it flush”</b> or <b>“tap it in”</b></li><li>Grasp the handle, seat it in the palm</li></ul></div>
+    <div class="spine"><div class="t">before<br>strike 1</div><div class="phase">Plan</div></div>
+    <div class="card alg">
+      <div class="step"><span class="tag l3">L3</span><p><b>Predict the blow:</b> expected load, contact time, tool mass; choose target, strike speed and the per-phase grip/stiffness schedule</p></div>
+      <div class="step"><span class="tag l2">L2</span><p>Check the grasp is seated from the pressure arrays</p></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card act"><h3>Wind up and swing</h3><ul>
+      <li>Hammer rises, then swings down on an arc</li><li>Hand compliant, holding grip</li></ul></div>
+    <div class="spine"><div class="t">−400 to<br>−150 ms</div><div class="phase">Swing</div></div>
+    <div class="card alg">
+      <div class="step"><span class="tag l1">L1</span><p>Track the swing within joint speed, torque and torque-rate limits; plan to arrive braking</p></div>
+      <div class="step"><span class="tag l2">L2</span><p>Refine contact-time estimate from arm and tool motion</p></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card act"><h3>Brace for the blow</h3><ul>
+      <li><b>Grip ramps up</b></li><li>Arm and fingers stiffen</li><li>Dexterous hand: <b>arm the finger lock</b></li></ul></div>
+    <div class="spine"><div class="t">−150 to<br>0 ms</div><div class="phase">Anticipate</div></div>
+    <div class="card alg">
+      <div class="step"><span class="tag l2">L2</span><p><b>Feedforward:</b> grip and stiffness from the VLA prediction (no sensing needed)</p></div>
+      <div class="step"><span class="tag l1">L1</span><p>Switch to the interim mode around contact; limit stiffness changes for passivity</p></div>
+    </div>
+  </div>
+
+  <div class="row blow">
+    <div class="card act"><h3>Hammer hits the nail</h3><ul>
+      <li>~4 ms, 500–700 N</li><li>Grasp holds by <b>pre-set stiffness, lock and pad compliance</b></li><li>Nail advances</li></ul></div>
+    <div class="spine"><div class="t">0 to<br>4 ms</div><div class="phase">Impact</div></div>
+    <div class="card alg">
+      <div class="step"><span class="tag l2">L2</span><p><b>Detect the blow in &lt; 1–2 ms</b> from pad accelerometers and wrist F/T</p></div>
+      <div class="step"><span class="tag l1">L1</span><p>Switch to the post-impact reference; momentum observer as fallback detector</p></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card act"><h3>Absorb the rebound</h3><ul>
+      <li>Arm brakes the bounce</li><li>Tool and fingers ring, then settle</li><li>Grip peaks ~50–70 ms after impact</li></ul></div>
+    <div class="spine"><div class="t">5 to<br>60 ms</div><div class="phase">React</div></div>
+    <div class="card alg">
+      <div class="step"><span class="tag l2">L2</span><p><b>Fast reaction, every 1 ms:</b> brake the rebound, damp ringing, detect slip or a jerk (bent nail, knot) and correct grip and stiffness</p></div>
+      <div class="step"><span class="tag l1">L1</span><p>Gate joint-velocity feedback during ringing; clip and slew-limit the learned outputs</p></div>
+    </div>
+  </div>
+
+  <div class="row">
+    <div class="card act"><h3>Recover and re-seat</h3><ul>
+      <li>Hammer lifts off</li><li>Grip relaxes to holding force</li><li>Re-seat or regrasp if the tool twisted</li></ul></div>
+    <div class="spine"><div class="t">60 ms to<br>next swing</div><div class="phase">Adapt</div></div>
+    <div class="card alg">
+      <div class="step"><span class="tag l0">L0</span><p>Estimate nail depth, wood resistance and slip from this strike</p></div>
+      <div class="step"><span class="tag l2">L2</span><p>Raise or lower next strike's grip margin</p></div>
+      <div class="step"><span class="tag l3">L3</span><p>Decide: strike again, regrasp, change speed, or stop</p></div>
+    </div>
+  </div>
+
+  <div class="loop"><div class="box"><span class="arrow" aria-hidden="true">↺</span>Back to <b>&nbsp;Wind up and swing&nbsp;</b> with the updated prediction, until the nail is flush.</div></div>
+
+  <div class="notes">
+    <div><h4>Why anticipate</h4><p>The blow lasts ~4 ms. Grip actuators need 50–185 ms, so the grasp must be set before contact.</p></div>
+    <div><h4>Why react fast</h4><p>Rebound, ringing, slip and jerks happen in the 5–60 ms after contact. Human grip reflexes take ~60–80 ms; the robot loop reacts in ~1–2 ms.</p></div>
+    <div><h4>What stays hand-designed</h4><p>L1 keeps limits, passivity and a fallback impact detector, so a learned 1 kHz output cannot destabilize the arm.</p></div>
+  </div>
+</div>
