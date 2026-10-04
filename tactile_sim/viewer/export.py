@@ -258,6 +258,8 @@ def export_tactile(tb, cfg, contacts: list[float], base_dt: float = 0.005, windo
     for tc in contacts:
         keep |= (t >= tc + window[0]) & (t <= tc + window[1])
     rng = float(cfg.sensors.pressure_range)
+    if any(p.taxel_pos is not None for p in hand.patches):
+        rng = 10.0  # skins: a load spreads over many small taxels, so a finer colour scale
     vals = np.concatenate([h["value"][:n][keep] for h in hs], axis=1)
     q = np.clip(np.round(vals / rng * 255.0), 0, 255).astype(np.uint8)
     nr, nc = cfg.sensors.taxel_grid
