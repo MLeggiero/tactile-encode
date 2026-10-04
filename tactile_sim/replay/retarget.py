@@ -138,11 +138,12 @@ def map_motion(motion: ToolMotion, cfg: SimConfig, engage: float = 0.004, align_
         # outside the contact windows stay `standoff` short of the nail head (soft minimum, 1 mm wide)
         along = (face - p_t) @ a_t
         near = np.zeros(len(face), dtype=bool)
-        after = max(window_after, 1.01 * float(np.median(np.diff(motion.t))))  # at least one sample past contact
+        after = window_after
         for t_k in tc:
             near |= (motion.t >= t_k - window) & (motion.t <= t_k + after)
-        # inside a window there is no limit (a margin well past the aim point, so the soft clamp is not felt)
-        lim = np.where(near, engage + 0.003, -standoff)
+        # inside a window the limit is the aim point itself: the soft clamp then starts the face back ~2 mm before it
+        # (at 100 Hz) and the arm, lagging, still strikes but does not stay on the nail to bounce into a second blow
+        lim = np.where(near, engage, -standoff)
         lim = lowpass(motion.t, lim, 20.0) if len(lim) > 16 else lim
         excess = along - lim
         soft = 0.001 * np.logaddexp(0.0, excess / 0.001)  # softplus: ~max(excess, 0)

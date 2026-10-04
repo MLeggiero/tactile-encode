@@ -40,8 +40,9 @@ def test_map_motion_puts_every_blow_on_the_nail_square():
     m = synthetic_motion()
     face, R = map_motion(m, cfg, engage=0.004)
     nail, a = nail_head_target(cfg), strike_axis(cfg)
-    for i in m.contacts:
-        assert np.allclose(face[i], nail + 0.004 * a, atol=1e-3)  # every recorded contact aimed at our nail
+    for i in m.contacts:  # every recorded contact aimed at our nail: on centre, and along the axis up to the
+        d = face[i] - (nail + 0.004 * a)  # aim point less the lift-off clamp's ~2 mm pull-back
+        assert np.linalg.norm(d - (d @ a) * a) < 1e-3 and -2.5e-3 < d @ a <= 1e-4
     assert -R[m.contact_index, :, 1] @ a == pytest.approx(1.0, abs=1e-9)  # face square to the strike axis
     h = tcp_rotation(cfg)[:, 0]
     assert R[m.contact_index, :, 0] @ h > 0.85  # the handle keeps our grasp's side
