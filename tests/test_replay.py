@@ -98,3 +98,16 @@ def test_adroit_replay_on_the_fr3():
     assert s["tracking_rms"] < 0.01 and s["limit_violations"] == ""
     assert "pressure_L" in res.sensors or any(k.startswith("pressure") for k in res.sensors)
     assert s["time_scale"] > 1.5  # the FR3 cannot match a human's hand accelerations
+
+
+@requires_adroit
+@pytest.mark.skipif(not __import__("tactile_sim.assets.fetch_hands", fromlist=["hand_available"]).hand_available(
+    "vega_1u"), reason="Vega U not cached")
+def test_adroit_replay_on_the_vega_u():
+    from tactile_sim.replay.runner import ReplayEpisode, robot_config
+
+    res = ReplayEpisode(robot_config("vega_1u", None, True), motion=load("adroit", demo=12)).run()
+    s = res.summary
+    assert s["blows"] >= 1 and s["tracking_rms"] < 0.01
+    assert s["limit_arm_velocity"] <= 1.0 and s["limit_arm_torque"] <= 1.0
+    assert any(np.isfinite(r.t_flag) for r in res.strikes)  # the detector is armed around recorded contacts

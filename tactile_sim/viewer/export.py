@@ -150,7 +150,7 @@ def _r(a, nd=4) -> list:
     return np.round(np.asarray(a, dtype=float), nd).tolist()
 
 
-def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dict:
+def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str, base_dt: float = 0.005) -> dict:
     tb, w = res.testbed, res.testbed.world
     m = w.model
     bodies, _, _ = scene_geometry(m)
@@ -158,7 +158,7 @@ def export_episode(ep: Episode, res: EpisodeResult, label: str, key: str) -> dic
     ft = np.asarray(ep.frames_t)
     contacts = [r.t_contact_truth for r in res.strikes if np.isfinite(r.t_contact_truth)]
     keep = np.zeros(len(ft), dtype=bool)
-    step = max(1, int(round(0.005 / (ft[1] - ft[0])))) if len(ft) > 1 else 1
+    step = max(1, int(round(base_dt / (ft[1] - ft[0])))) if len(ft) > 1 else 1
     keep[::step] = True
     for tc in contacts:
         keep |= (ft >= tc - 0.02) & (ft <= tc + 0.04)
@@ -299,10 +299,11 @@ def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False
     return {"geoms": geoms, "meshes": meshes, "episodes": episodes}
 
 
-def export_replays(specs: list[str], fast: bool = False, seed: int = 0) -> dict:
-    """Recorded motions replayed on the FR3 + Franka Hand (tactile_sim.replay), one episode each.
-    A spec is "adroit:<demo>" or "dextoolbench:<category/object/task>[@speed]"."""
-    from tactile_sim.replay.runner import ReplayEpisode
+def export_replays(specs: list[str], fast: bool = False, seed: int = 0, robot: str = "fr3") -> dict:
+    """Recorded motions replayed on a testbed robot (tactile_sim.replay), one episode each.
+    A spec is "adroit:<demo>" or "dextoolbench:<category/object/task>[@speed]"; demos the robot cannot reach are
+    skipped."""
+    from tactile_sim.replay.runner import ReplayEpisode, robot_config
     from tactile_sim.replay.sources import load
 
     episodes, geoms, meshes = [], [], {}
@@ -313,8 +314,12 @@ def export_replays(specs: list[str], fast: bool = False, seed: int = 0) -> dict:
             arg, sp = arg.split("@")
             speed = float(sp)
         motion = load(src, **({"demo": int(arg or 0)} if src == "adroit" else {"task": arg}))
-        cfg = fast_config() if fast else SimConfig()
-        ep = ReplayEpisode(cfg, motion=motion, seed=seed, frame_hz=2000.0, speed=speed)
+        cfg = robot_config(robot, None, fast)
+        try:
+            ep = ReplayEpisode(cfg, motion=motion, seed=seed, frame_hz=2000.0, speed=speed)
+        except ValueError as e:
+            print(f"{spec}: skipped ({e})")
+            continue
         res = ep.run()
         res.summary.update(n_strikes=len(res.strikes), hit_rate=1.0 if res.strikes else 0.0,
                            total_depth=res.summary["nail_depth"],
@@ -325,8 +330,9 @@ def export_replays(specs: list[str], fast: bool = False, seed: int = 0) -> dict:
                 rec["scene"] = 0
         who = (f"Adroit human demonstration {arg} (VR + data glove)" if src == "adroit"
                else f"DexToolBench {arg} (tracked from human video)")
-        label = f"{who}, replayed on the FR3 + Franka Hand at {res.summary['time_scale']:.1f}x the recorded time"
-        exp = export_episode(ep, res, label, spec)
+        rig = "the Vega U + WUJI Hand 2" if robot.startswith("vega") else "the FR3 + Franka Hand"
+        label = f"{who}, replayed on {rig} at {res.summary['time_scale']:.1f}x the recorded time"
+        exp = export_episode(ep, res, label, spec, base_dt=0.010)  # slow replays: frames every 10 ms between blows
         exp["scene"] = 0
         episodes.append(exp)
         print(f"{spec}: {len(res.strikes)} blows ({res.summary['recorded_contacts']} recorded), "
@@ -353,9 +359,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--replay", action="append", default=None,
                     help='replay a recorded motion instead of the presets: "adroit:<demo>" or '
                          '"dextoolbench:<category/object/task>[@speed]" (repeatable)')
+    ap.add_argument("--replay-robot", choices=["fr3", "vega_1u"], default="fr3")
     args = ap.parse_args(argv)
     if args.replay:
-        data = export_replays(args.replay, args.fast, args.seed)
+        data = export_replays(args.replay, args.fast, args.seed, args.replay_robot)
     else:
         data = run_and_export(args.preset or ["default"], args.n, args.seed, args.fast)
     if args.json:

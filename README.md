@@ -86,6 +86,8 @@ python -m tactile_sim.replay.sources                                 # fetch rec
 python -m tactile_sim.replay --source adroit --demo 0 --out runs/replay_adroit0.npz   # human blows, retargeted
 python -m tactile_sim.replay --source dextoolbench --task hammer/claw_hammer/swing_side --speed 3
 python -m tactile_sim.viewer.export --replay adroit:2 --replay adroit:22 --out runs/replay_human.html  # 3D viewer
+python -m tactile_sim.replay --source adroit --demo 22 --robot vega_1u        # on the Vega U (WUJI hands)
+python -m tactile_sim.viewer.export --replay-robot vega_1u --replay adroit:9 --replay adroit:21 --out runs/replay_human_vega.html
 python -m tactile_sim.calibrate pulse                                 # free-hammer contact sweeps
 python -m tactile_sim.viewer.export --n 6 --preset default --preset wuji2 --preset wuji2-selflock
 python -m tactile_sim.viewer.export --n 6 --preset vega-wuji2 --preset vega-wuji2-selflock --out runs/replay_vega.html
@@ -178,6 +180,13 @@ the recorded time and the blows land at 0.05-0.7 m/s (100-330 N), too slow to mo
 landed against 75 recorded (rebounds count as blows). Tool rotation in the grasp stayed under 3 deg in 19 of 22
 replays and reached 9-11 deg in three, where the human's blows arrived far off square.
 
+On the **Vega U** (WUJI hands, position-only arm, downward strike onto the tabletop), 17 of the 22 demos replay; 3
+leave its reach and 2 cross a wrist singularity, and none of the DexToolBench swings can be followed (the IK jumps,
+a wrist flip). The 17 track to 1.4-5.5 mm RMS at 2.2-4.6x the recorded time with blows of 0.04-0.74 m/s and
+175-341 N (83 landed, 56 recorded). The arm's limits held except one joint range at 1.01x (demo 23). In every replay
+the wrap's finger joints hit their stops at 1.2-5.8x their rating, and the hammer turned 3-8 deg in the hand, 14-24 deg
+in three demos: blows that arrive off square twist a backdrivable wrap, as in the scripted strikes.
+
 ## Findings so far
 
 - **Driving the nail down onto a tabletop with a curved swing, the Vega U with WUJI hands strikes at
@@ -252,7 +261,7 @@ replays and reached 9-11 deg in three, where the human's blows arrived far off s
 | M7 | HDF5 logging, `run_strikes` CLI | done |
 | M8 | Gymnasium env, domain randomization | done |
 | M9 | saw and driver tasks: tools, saw / screw / hole plants, scripted behaviors, `tool_task` runner, tests | done |
-| R0 | replay of recorded motions (Adroit, DexToolBench): sources, retargeting, time warp, IK check, runner, tests | done |
+| R0 | replay of recorded motions (Adroit, DexToolBench) on the FR3 and the Vega U: sources, retargeting, time warp, IK check, runner, viewer, tests | done |
 | D0-D6 | WUJI Hand 2: fetch, import, grasp synthesis, taxel patches, joint control, strikes, viewer | done |
 | D7 | experiments E1-E9 of `docs/dexterous_hand_plan.md` | partly (E2, E3, E7) |
 | V0-V3 | Vega U (and Vega-1P): fetch, URDF import (GLB meshes converted), position-servo interface, WUJI hands on both arms, downward arc strike onto a tabletop, limits, tests, viewer | done |

@@ -179,7 +179,7 @@ def ik_along(world, tcp: np.ndarray, R: np.ndarray, every: int = 10, iters: int 
 
 def plan_replay(motion: ToolMotion, world, engage: float = 0.004, align_face: bool = True, speed: float = 1.0,
                 v_max: float = 1.5, w_max: float = 4.0, a_max: float = 25.0, rate: float = 1000.0,
-                max_residual: float = 0.01, check_joints: bool = True) -> ReplayPlan:
+                max_residual: float = 0.01, check_joints: bool = True, max_slowdown: float = 10.0) -> ReplayPlan:
     """Map a motion onto `world`'s nail and make it trackable: returns the 1 kHz TCP path and its time scale.
 
     `speed` > 1 plays the motion faster than recorded (e.g. DexToolBench's slow tracked swings) before the limits
@@ -214,7 +214,7 @@ def plan_replay(motion: ToolMotion, world, engage: float = 0.004, align_face: bo
             notes["joint_speed_ratio"] = ratio
             if ratio <= 1.0:
                 break
-            if _ == 3:
+            if _ == 3 or W[-1] * ratio / motion.t[-1] > max_slowdown:
                 raise ValueError(f"{motion.name}: the arm cannot follow this path smoothly (joint speed "
                                  f"{ratio:.1f}x the limit after slowing {W[-1] / motion.t[-1]:.1f}x: a singularity "
                                  "or a wrist flip)")

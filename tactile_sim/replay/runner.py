@@ -2,7 +2,8 @@
 
 The plan's TCP path becomes the L1 reference (a chunk the 1 kHz controller evaluates itself): a min-jerk move from
 the hover pose to the path's start, the path, then a hold. The nail is the testbed's plant, so the blows are produced
-by our contact model; the recorded motion only shapes how the hammer arrives. When the impact detector flags a blow,
+by our contact model; the recorded motion only shapes how the hammer arrives. The impact detector is armed around
+each recorded contact (as the swing layer arms it ahead of a predicted one). When it flags a blow,
 the reference pauses for `hold` (the blow's force comes from the plant, not from the arm chasing a reference into the
 nail) and then resumes. Everything else (grip loop, limits, sensor models) is the testbed as configured.
 
@@ -20,7 +21,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation, Slerp
 
 from tactile_sim import names
-from tactile_sim.config import SimConfig, fast_config
+from tactile_sim.config import SimConfig, fast_config, hand_config
 from tactile_sim.control.interface import L2Command, Mode
 from tactile_sim.limits import LimitMonitor
 from tactile_sim.logging.strike_metrics import rotvec_diff
@@ -129,9 +130,17 @@ class ReplayEpisode:
                         ref=ref)
         tb.l1.set_command(cmd)
 
+        armed_for: set[int] = set()
+
         def keep_alive(t):
             cmd.t = t
             tb.l1.grip_setpoint = c.grip_hold
+            # arm the impact detector around each recorded contact, as the swing layer does ahead of a predicted one
+            if t - ref.t0 > ref.lead_in:
+                for j, tc in enumerate(self.plan.t_contacts):
+                    if j not in armed_for and tc - 0.05 <= ref.tau <= tc + 0.15:
+                        tb.l1.detector.arm(True)
+                        armed_for.add(j)
 
         tb.l2_callbacks.append(keep_alive)
         limits = LimitMonitor(w)
@@ -161,7 +170,7 @@ class ReplayEpisode:
             p, r = w.hammer_in_hand()
             T["t"].append(tb.t)
             T["contact_force"].append(f)
-            T["nail_depth"].append(w.plant.depth)
+            T["nail_depth"].append(max(w.plant.depth, 0.0))  # the nail rebounds by microns at its stop
             T["slip_trans"].append(float(np.linalg.norm(p - p0)))
             T["slip_rot"].append(rotvec_diff(r0, r))
             T["grip"].append(tb.grip.measured)
@@ -223,6 +232,13 @@ class ReplayEpisode:
         return recs
 
 
+def robot_config(robot: str = "fr3", hand: str | None = None, fast: bool = False) -> SimConfig:
+    """Testbed config for a replay: the FR3 with the Franka Hand (or a WUJI hand), or the Vega U with WUJI hands."""
+    base = fast_config() if fast else SimConfig()
+    hand = hand or ("wuji2" if robot.startswith("vega") else "franka")
+    return hand_config(hand, base, robot=robot)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--source", choices=["adroit", "dextoolbench"], required=True)
@@ -231,12 +247,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--speed", type=float, default=1.0, help="play faster than recorded before the limits apply")
     ap.add_argument("--engage", type=float, default=0.004, help="m the recorded contact reaches past the nail head")
     ap.add_argument("--no-align", action="store_true", help="keep the recorded face angle at contact")
+    ap.add_argument("--robot", choices=["fr3", "vega_1u"], default="fr3",
+                    help="fr3 (Franka Hand unless --hand) or vega_1u (WUJI Hand 2, position-only arm)")
+    ap.add_argument("--hand", choices=["franka", "wuji2"], default=None)
     ap.add_argument("--fast", action="store_true", help="4 kHz physics instead of 8 kHz")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out", type=Path, default=None, help="save truth and sensor streams (.npz)")
     args = ap.parse_args(argv)
     motion = load(args.source, **({"demo": args.demo} if args.source == "adroit" else {"task": args.task}))
-    cfg = fast_config() if args.fast else SimConfig()
+    cfg = robot_config(args.robot, args.hand, args.fast)
     ep = ReplayEpisode(cfg, motion=motion, seed=args.seed, speed=args.speed, engage=args.engage,
                        align_face=not args.no_align)
     res = ep.run()
