@@ -92,6 +92,8 @@ class ReplayResult:
     summary: dict
     truth: dict[str, np.ndarray]
     sensors: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    strikes: list = field(default_factory=list)  # StrikeRecord per landed blow (for the replay viewer)
+    testbed: Testbed | None = None
 
     def save(self, path: Path) -> None:
         path = Path(path)
@@ -106,12 +108,17 @@ class ReplayResult:
 
 class ReplayEpisode:
     def __init__(self, cfg: SimConfig, plan: ReplayPlan | None = None, motion=None, seed: int = 0,
-                 lead_in: float = 1.5, hold: float = 0.05, **plan_kw):
+                 lead_in: float = 1.5, hold: float = 0.05, frame_hz: float | None = None, **plan_kw):
         self.cfg = cfg
         self.tb = Testbed(cfg, seed=seed)
         self.plan = plan if plan is not None else plan_replay(motion, self.tb.world, **plan_kw)
         self.lead_in = lead_in
         self.hold = hold
+        w = self.tb.world
+        self.frame_decim = None if not frame_hz else max(1, int(round(1.0 / (frame_hz * w.dt))))
+        self.frames_t: list[float] = []
+        self.frames_pos: list[np.ndarray] = []
+        self.frames_quat: list[np.ndarray] = []
 
     def run(self, tail: float = 0.4) -> ReplayResult:
         tb, w = self.tb, self.tb.world
@@ -132,13 +139,22 @@ class ReplayEpisode:
         g_nail = w.model.geom(names.NAIL_HEAD_GEOM).id
         p0, r0 = w.hammer_in_hand()
         T: dict[str, list] = {k: [] for k in ("t", "contact_force", "nail_depth", "slip_trans", "slip_rot", "grip",
-                                               "tcp", "tcp_ref", "face_speed")}
+                                               "tcp", "tcp_ref", "face_speed", "pad_forces",
+                                               "hammer_in_hand_rotvec", "face_pos")}
         every = max(1, int(round(0.001 / w.dt)))
         k = 0
+        flags: list[tuple[float, str]] = []
         while tb.t < ref.finished_at + tail:
             tb.step()
             limits.step()
+            ev = tb.l1.last_event
+            if ev is not None and (not flags or ev.t_flag > flags[-1][0]):
+                flags.append((ev.t_flag, ev.source))
             k += 1
+            if self.frame_decim and k % self.frame_decim == 0:
+                self.frames_t.append(tb.t)
+                self.frames_pos.append(w.data.xpos.copy())
+                self.frames_quat.append(w.data.xquat.copy())
             if k % every:
                 continue
             f, _ = pair_force(w.model, w.data, g_face, g_nail)
@@ -152,6 +168,9 @@ class ReplayEpisode:
             T["tcp"].append(w.tcp_pose()[0])
             T["tcp_ref"].append(tb.l1.cmd.x_eq.copy() if tb.l1.cmd is not None else np.full(3, np.nan))
             T["face_speed"].append(float(np.linalg.norm(w.plant.face_velocity())))
+            T["pad_forces"].append(np.asarray(w.pad_normal_forces(), dtype=float))
+            T["hammer_in_hand_rotvec"].append(r.copy())
+            T["face_pos"].append(w.data.site_xpos[w.site[names.HAMMER_FACE_SITE]].copy())
         truth = {k: np.asarray(v, dtype=float) for k, v in T.items()}
         f = truth["contact_force"]
         on = np.flatnonzero((f > 5.0) & ~np.r_[False, f[:-1] > 5.0])
@@ -168,7 +187,40 @@ class ReplayEpisode:
         s.update({f"limit_{k}": v for k, v in limits.summary().items()})
         s["limit_violations"] = ",".join(sorted(limits.violations()))
         sensors = {name: tb.sensors[name].history() for name in tb.sensors.names()}
-        return ReplayResult(s, truth, sensors)
+        return ReplayResult(s, truth, sensors, self._strikes(truth, blows, flags), tb)
+
+    def _strikes(self, T: dict, blows: list[int], flags: list[tuple[float, str]]) -> list:
+        """One StrikeRecord per landed blow, with the fields the replay viewer shows."""
+        from tactile_sim.logging.strike_metrics import StrikeRecord
+        from tactile_sim.sim.truth import pulse_stats
+
+        t, f = T["t"], T["contact_force"]
+        recs = []
+        for j, i in enumerate(blows):
+            t_c = float(t[i])
+            nxt = blows[j + 1] if j + 1 < len(blows) else len(t)
+            w0, w1 = max(i - 5, 0), min(i + 40, nxt)
+            st = pulse_stats(t[w0:w1], f[w0:w1])
+            before = max(i - 60, 0)
+            after = min(nxt - 1, i + 200)
+            fl = [(tf, src) for tf, src in flags if t_c - 0.002 <= tf <= t_c + 0.02]
+            r = StrikeRecord(idx=j, t_swing_start=float(t[before]))
+            r.t_c_pred = t_c
+            r.t_contact_truth = t_c
+            r.hit = True
+            r.peak_force_truth = float(st["peak"])
+            r.impulse = float(st["impulse"])
+            r.pulse_width = float(st["width"])
+            r.depth_before = float(T["nail_depth"][before])
+            r.depth_after = float(T["nail_depth"][after])
+            r.v_strike_actual = float(T["face_speed"][max(i - 2, 0)])
+            r.slip_trans = float(abs(T["slip_trans"][after] - T["slip_trans"][before]))
+            r.slip_rot = float(abs(T["slip_rot"][after] - T["slip_rot"][before]))
+            r.grip_at_contact = float(T["grip"][i])
+            if fl:
+                r.t_flag, r.flag_source = float(fl[0][0]), fl[0][1]
+            recs.append(r)
+        return recs
 
 
 def main(argv: list[str] | None = None) -> int:

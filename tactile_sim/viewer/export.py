@@ -299,6 +299,41 @@ def run_and_export(presets: list[str], n: int, seed: int = 0, fast: bool = False
     return {"geoms": geoms, "meshes": meshes, "episodes": episodes}
 
 
+def export_replays(specs: list[str], fast: bool = False, seed: int = 0) -> dict:
+    """Recorded motions replayed on the FR3 + Franka Hand (tactile_sim.replay), one episode each.
+    A spec is "adroit:<demo>" or "dextoolbench:<category/object/task>[@speed]"."""
+    from tactile_sim.replay.runner import ReplayEpisode
+    from tactile_sim.replay.sources import load
+
+    episodes, geoms, meshes = [], [], {}
+    for spec in specs:
+        src, _, arg = spec.partition(":")
+        speed = 1.0
+        if "@" in arg:
+            arg, sp = arg.split("@")
+            speed = float(sp)
+        motion = load(src, **({"demo": int(arg or 0)} if src == "adroit" else {"task": arg}))
+        cfg = fast_config() if fast else SimConfig()
+        ep = ReplayEpisode(cfg, motion=motion, seed=seed, frame_hz=2000.0, speed=speed)
+        res = ep.run()
+        res.summary.update(n_strikes=len(res.strikes), hit_rate=1.0 if res.strikes else 0.0,
+                           total_depth=res.summary["nail_depth"],
+                           mean_depth_inc=res.summary["nail_depth"] / max(len(res.strikes), 1))
+        if not geoms:
+            _, geoms, meshes = scene_geometry(res.testbed.world.model)
+            for rec in geoms:
+                rec["scene"] = 0
+        who = (f"Adroit human demonstration {arg} (VR + data glove)" if src == "adroit"
+               else f"DexToolBench {arg} (tracked from human video)")
+        label = f"{who}, replayed on the FR3 + Franka Hand at {res.summary['time_scale']:.1f}x the recorded time"
+        exp = export_episode(ep, res, label, spec)
+        exp["scene"] = 0
+        episodes.append(exp)
+        print(f"{spec}: {len(res.strikes)} blows ({res.summary['recorded_contacts']} recorded), "
+              f"peak {res.summary['peak_force']:.0f} N, slowed {res.summary['time_scale']:.1f}x")
+    return {"geoms": geoms, "meshes": meshes, "episodes": episodes}
+
+
 def build_html(data: dict, out: Path) -> Path:
     html = TEMPLATE.read_text()
     payload = json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
@@ -315,8 +350,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--fast", action="store_true", help="4 kHz physics instead of 8 kHz")
     ap.add_argument("--out", type=Path, default=Path("runs/replay.html"))
     ap.add_argument("--json", type=Path, default=None, help="also write the raw data as JSON")
+    ap.add_argument("--replay", action="append", default=None,
+                    help='replay a recorded motion instead of the presets: "adroit:<demo>" or '
+                         '"dextoolbench:<category/object/task>[@speed]" (repeatable)')
     args = ap.parse_args(argv)
-    data = run_and_export(args.preset or ["default"], args.n, args.seed, args.fast)
+    if args.replay:
+        data = export_replays(args.replay, args.fast, args.seed)
+    else:
+        data = run_and_export(args.preset or ["default"], args.n, args.seed, args.fast)
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
         args.json.write_text(json.dumps(data, separators=(",", ":")))

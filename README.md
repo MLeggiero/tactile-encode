@@ -85,6 +85,7 @@ python -m tactile_sim.tool_task --task drill --mode hole              # drill th
 python -m tactile_sim.replay.sources                                 # fetch recorded motions (Adroit, DexToolBench)
 python -m tactile_sim.replay --source adroit --demo 0 --out runs/replay_adroit0.npz   # human blows, retargeted
 python -m tactile_sim.replay --source dextoolbench --task hammer/claw_hammer/swing_side --speed 3
+python -m tactile_sim.viewer.export --replay adroit:2 --replay adroit:22 --out runs/replay_human.html  # 3D viewer
 python -m tactile_sim.calibrate pulse                                 # free-hammer contact sweeps
 python -m tactile_sim.viewer.export --n 6 --preset default --preset wuji2 --preset wuji2-selflock
 python -m tactile_sim.viewer.export --n 6 --preset vega-wuji2 --preset vega-wuji2-selflock --out runs/replay_vega.html
