@@ -15,7 +15,8 @@ learned layers (L2 reactive, L3 World-Action-Model / VLA planner) will train aga
   - the **Dexmate Vega U** (Dexmate's URDF, Apache-2.0): a fixed pedestal with a lift and a torso flip under a
     head and two 7-joint arms, with a WUJI Hand 2 on each arm. Dexmate's Vega U interface drives only the
     upper body, so the lift (0 m: shoulders 1.24 m up) and flip (upright) are set before a run. The right arm
-    strikes down on a nail in a board lying on a table in front of it; the left arm and hand hold a pose.
+    strikes down on a nail in a board lying on a table in front of it; the idle left arm hangs at its side,
+    palm toward the thigh.
     Vega's arms take joint position targets at 100 Hz (Dexmate's `dexcontrol` exposes no torque mode), tracked
     by the drives' own torque-limited PD servos. The wheeled Vega-1P (same arms, torso, locked base) is also
     available (`--robot vega_1p`, with a forward strike into a vertical board).
@@ -220,6 +221,17 @@ limit in three demos. The wrap's finger joints hit their stops in every replay, 
 hand.
 
 ## Findings so far
+
+- **In the WUJI power wrap the middle-segment skins stay almost unloaded, and a human-like closing does not fix
+  it on this hand.** With every finger joint closing at its full rating (the default), the knuckles and fingertip
+  joints reach their 90 deg stops: the handle is clamped against the palm by the proximal segments and the
+  fingertips, and each middle segment bridges it 9-10 mm away. Closing in the human flexor-tendon ratio instead
+  (MCP : PIP : DIP = 1 : 0.73 : 0.25, the fingertip joint following the middle joint; `finger_synergy="tendon"`)
+  gives a human posture (knuckle 79, middle 74, fingertip 51 deg) and loads the middle-segment skins (the middle
+  finger's 56 % of the time, up to 66 N), but the WUJI's 0.3 Nm middle joints then cap the whole grip near a fifth
+  of the knuckle's strength: the handle hangs 6 mm off the palm, the palm sheet reads nothing, and the blows drive
+  far less (FR3 5.9 vs 8.7 mm in 5 strikes; Vega U 0 vs 3.4 mm in 3). Adding the intrinsic muscles' knuckle torque
+  brings the palm back but takes the middle-segment contact away again.
 
 - **Driving the nail down onto a tabletop with a curved swing, the Vega U with WUJI hands strikes at
   ~1.1 m/s and drives ~1 mm per blow (10.2 mm in 10; 13.9 mm with self-locking drives).** A forward,

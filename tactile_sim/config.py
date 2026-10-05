@@ -49,7 +49,10 @@ class ArmCfg:
     vega_lift: float = 0.2  # m, Vega U lift (0-0.4); set before a run, not part of Dexmate's motion interface
     vega_flip: float = 0.0  # rad, Vega U torso flip (0-1), likewise
     head_pose: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    left_arm_pose: tuple[float, ...] = (0.064, 0.3, 0.0, -1.556, 1.271, 0.0, 0.0)  # Dexmate "L_shape" pose
+    # idle left arm hanging at the side: shoulder pitched 90 deg down, 10 deg out from the hip, elbow bent 20 deg,
+    # palm toward the thigh (49 mm clear of the body). Dexmate's raised "L_shape" pose is
+    # (0.064, 0.3, 0.0, -1.556, 1.271, 0.0, 0.0).
+    left_arm_pose: tuple[float, ...] = (1.5708, 0.1745, 0.0, -0.3491, 0.0, 0.0, 0.0)
     left_hand: bool = True  # an idle WUJI Hand 2 on the left arm
     # joint-space hold used only while settling at reset
     hold_kp: tuple[float, ...] = (600, 600, 600, 600, 250, 150, 50)
@@ -101,6 +104,12 @@ class GripperCfg:
     # not backdrive: a joint closes under its motor but external load cannot open it (nor move a shaping
     # joint); the gearbox then carries the load, reported as hand_stop_load.
     lock_mode: str = "backdrivable"
+    # finger closing torques: "rated" (every joint at its full rating: the fingers fold at the knuckle, the handle is
+    # clamped against the palm by the proximal segments and fingertips, the middle segments bridge it) or "tendon"
+    # (the human flexor-tendon ratio MCP : PIP : DIP = 1 : 0.73 : 0.25 with the fingertip joint following the
+    # middle joint: a human-like wrap that loads the middle segments, but capped by the WUJI's 0.3 Nm PIP it is too
+    # weak to hold the handle in the palm, and the blows drive far less); see tactile_sim.control.hand
+    finger_synergy: str = "rated"
     # taxel patches: "taxelscan" (TaxelScan Rev3 skins conforming to the palm and to every finger's distal pad and
     # middle segment: 128 + 10 x 32 = 448 taxels), "palm_thumb" (2 flat 8 x 8 patches) or "palm"
     patch_layout: str = "palm_thumb"

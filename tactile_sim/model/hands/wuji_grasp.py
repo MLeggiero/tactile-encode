@@ -78,6 +78,7 @@ def _gravity_in_tool(cfg: SimConfig) -> list[float]:
 def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
     g, h = cfg.gripper, cfg.hammer
     blob = json.dumps({"v": VERSION, "tcp": g.wrap_tcp, "thumb": g.thumb_close, "pre": g.thumb_preshape,
+                       "syn": g.finger_synergy,
                        "sol": g.hand_solref,
                        "mu": g.hand_friction, "tors": g.pad_torsion, "damp": g.hand_joint_damping,
                        "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "hammer": h.model,
@@ -145,7 +146,8 @@ def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_ti
     qadr = np.array([m.joint(j).qposadr[0] for j, _ in joints])
     dadr = np.array([m.joint(j).dofadr[0] for j, _ in joints])
     act = np.array([m.actuator(f"m_{j}").id for j, _ in joints])
-    syn = WrapSynergy.for_wuji(joints, cfg.gripper.thumb_close, cfg.gripper.thumb_preshape)
+    syn = WrapSynergy.for_wuji(joints, cfg.gripper.thumb_close, cfg.gripper.thumb_preshape,
+                               cfg.gripper.finger_synergy)
     hand, hb = m.body(names.HAND_BODY).id, m.body(names.HAMMER_BODY).id
     tcp = m.site(names.TCP_SITE).id
     hq = m.joint("hammer_free").qposadr[0]

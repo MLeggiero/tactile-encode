@@ -166,3 +166,20 @@ def test_hand_config_rejects_unknown_hand():
 def test_hand_asset_is_pinned():
     p = hand_xml("wuji2")
     assert p is not None and p.name == "right_with_mount.xml"
+
+
+def test_tendon_synergy_closes_in_the_human_ratio():
+    from tactile_sim.control.hand import WrapSynergy
+
+    joints = [("r_index_finger_mcp_flex", 2.0), ("r_index_finger_mcp_abd", 0.2), ("r_index_finger_pip", 0.3),
+              ("r_index_finger_dip", 0.3)]
+    syn = WrapSynergy.for_wuji(joints, (1, 0, 1, 1), synergy="tendon")
+    tau = syn.torque(1.0, np.zeros(4), np.zeros(4))
+    assert tau[2] == pytest.approx(0.3)  # the PIP's rating binds
+    assert tau[0] / tau[2] == pytest.approx(1 / 0.725, rel=1e-3)
+    assert tau[3] / tau[2] == pytest.approx(0.25 / 0.725, rel=1e-3)
+    # the fingertip joint is pulled toward 2/3 of the middle joint's flexion
+    q = np.array([0.5, 0.0, 0.9, 0.0])
+    assert syn.torque(0.0, q, np.zeros(4))[3] > 0
+    rated = WrapSynergy.for_wuji(joints, (1, 0, 1, 1), synergy="rated").torque(1.0, np.zeros(4), np.zeros(4))
+    assert rated[0] == pytest.approx(2.0)
