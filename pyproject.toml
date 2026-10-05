@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tactile-sim"
+version = "0.1.0"
+description = "MuJoCo simulation of the tactile + World-Action-Model testbed (Task A: hammer to nail)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["mujoco>=3.2,<4", "numpy", "scipy", "h5py"]
+
+[project.optional-dependencies]
+gym = ["gymnasium>=1.0"]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+include = ["tactile_sim*"]
+
+[tool.setuptools.package-data]
+"tactile_sim.assets" = ["*.xml", "*.json"]
+"tactile_sim.viewer" = ["*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "network: needs outbound HTTPS to raw.githubusercontent.com",
+  "slow: full strike episodes (tens of seconds)",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E741"]

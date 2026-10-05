@@ -1,0 +1,325 @@
+# tactile-encode
+
+Research and simulation for a tactile, force-aware control stack for dynamic tool use
+(hammering, power drilling). The research lives in `reports/`, `research_notes/` and
+`docs/control_flowchart.html`. The simulation plan is `docs/simulation_plan.md`.
+
+`tactile_sim` is a headless MuJoCo simulation of the testbed for **Task A: a hammer driving a
+pre-started nail**. It provides the plant, the sensor models and the 1 kHz L1 controller that the
+learned layers (L2 reactive, L3 World-Action-Model / VLA planner) will train against.
+
+- **Robot:** one of two arms, each from its maker's published model at a pinned commit:
+  - the **Franka FR3** (MuJoCo Menagerie) with torque-controlled joints and a wrist F/T sensor body, holding
+    either the **Franka Hand** (Menagerie; the default), with compliant rubber layers on its real 17 x 17 mm
+    pads, or a WUJI Hand 2;
+  - the **Dexmate Vega U** (Dexmate's URDF, Apache-2.0): a fixed pedestal with a lift and a torso flip under a
+    head and two 7-joint arms, with a WUJI Hand 2 on each arm. Dexmate's Vega U interface drives only the
+    upper body, so the lift (0 m: shoulders 1.24 m up) and flip (upright) are set before a run. The right arm
+    strikes down on a nail in a board lying on a table in front of it; the idle left arm hangs at its side,
+    palm toward the thigh.
+    Vega's arms take joint position targets at 100 Hz (Dexmate's `dexcontrol` exposes no torque mode), tracked
+    by the drives' own torque-limited PD servos. The wheeled Vega-1P (same arms, torso, locked base) is also
+    available (`--robot vega_1p`, with a forward strike into a vertical board).
+  - The **WUJI Hand 2** (WUJI's published MJCF, Beta 2, MIT license) holds the hammer in a power wrap. Its 20
+    joints are torque motors limited to WUJI's per-joint ratings and run a 1 kHz joint law (MIT mode).
+- **Tool:** the YCB 048_hammer scan (steel claw hammer, wooden handle, 665 g, CC BY 4.0), gripped
+  190 mm from its head on the flat, widest part of the handle. The full scan is drawn; contacts use convex
+  hulls cut from the scan (gripped handle section, striking face, whole head). Offline, a primitive
+  hammer with the same masses is used.
+- **Plant:** a nail in a board: a vertical board for the FR3, a board lying on a tabletop for the Vega U. The nail resists with Coulomb friction that grows with depth.
+  The hammer-nail contact gives a ~4 ms blow at ~500-730 N.
+- **Saw and driver tasks** (FR3 + Franka Hand): the same testbed with a hand saw or an inline cordless driver
+  in place of the hammer, each against a board on a table. MuJoCo cannot remove material, so each workpiece is a
+  small state model whose forces act on the tool (`tactile_sim/model/plants/saw.py`, `drill.py`):
+  - **saw** (crosscut of a 2x4): kerf depth grows with push and stroke length on the cutting stroke; the kerf
+    bottom supports the blade, the teeth resist the stroke, and once the kerf is started its walls push back
+    and bind. The hand holds the handle palm-sideways, fingers above and below it. Loads at the grip are
+    periodic, with binding as the untimed event;
+  - **driver** (pre-started wood screw, or a hole through): motor with soft-start trigger, clutch with detent
+    ripple, screw torque rising as the head seats, Phillips cam-out when torque outgrows the axial push (less
+    with a tilted bit) and stripping after repeated cam-outs; or drilling with thrust-dependent feed, the bit
+    catching at the exit and losing its support at breakthrough. The driver is held along the hand's approach
+    axis so the push runs through the arm, not the wrist. A steady reaction torque with untimed jerks.
+- **Sensors:** wrist F/T at 4 kHz, accelerometers at 8 kHz (+-16 g) under the pads / the palm, pressure
+  arrays at 1 kHz, joint encoders and torques at 1 kHz, and the momentum observer's external torque. Each
+  has its own band-limit, latency, noise, bias, quantization and saturation. The Franka Hand has an 8 x 8
+  array on each pad (contact forces spread with a 3 mm kernel, the way a rubber layer spreads load).
+- **TaxelScan skins on the WUJI hand** (`patch_layout="taxelscan"`, the WUJI default): a 128-taxel sheet
+  on the palm (8 x 16) and a 32-taxel patch (8 x 4) on every finger's fingertip pad and middle segment,
+  thumb included: 448 taxels, each read at 1 kHz by a TaxelScan Rev3 board. The patches conform to the
+  hand: every taxel is ray-cast onto the vendor's detailed mesh of its link at the palmar side (the side
+  that meets a tool) and keeps that surface point and normal; patch extents are the largest rectangle the
+  link's front face fully covers (`tactile_sim/model/hands/taxel_layout.py`). Load reaches the taxels as on
+  an elastic foundation: from the taxels near a contact, rays along their normals find the gap to the
+  touching tool, and each carries load in proportion to how much it is compressed (2 mm skin), scaled so the
+  patch's taxels share exactly the contacts' force. A handle across the palm loads a band, not the one or
+  two points MuJoCo reduces the contact to. The readout (`tactile_sim/sensors/taxelscan.py`) models an
+  RP2350 board: a piezoresistive divider (counts ~ F / (F + 5 N)), the 12-bit SAR ADC at its rated
+  500 ksps with ENOB 9.2, a sequential scan (a frame's taxels are sampled 3 us apart, so a 128-taxel frame
+  spans 0.38 ms), per-taxel gain (5 %) and offset (2 LSB) residuals after calibration, the firmware's
+  counts-to-newtons curve, and 1 ms USB latency. One board per patch is the default; one board for all
+  448 taxels at 1 kHz does not fit the ADC's rate once mux settling is counted (`ts_boards="hand"` raises).
+- **Control:** on the FR3, a 1 kHz Cartesian impedance law with a reference limiter, stiffness slew limit,
+  payload compensation and 50 ms velocity gating after impact, and a momentum observer. On Vega, a host
+  loop that detects impacts at 1 kHz and every 10 ms sends joint targets from differential IK, offset by
+  the gravity droop and rate-limited to the joint velocity limits. Both: an impact detector (wrist F/T,
+  patch accelerometer), reference spreading around the strike, and a 500 Hz grasp-force loop with drop
+  detection.
+- **Behavior:** a scripted swing that stands in for L2/L3, with a human-template grip profile (ramp
+  150 ms before contact, peak 60 ms after), a setting tap, and iterative re-aiming between strikes. The
+  swing is planned inside the arm's limits (below).
+- **Hardware limits** are enforced where the real system enforces them and monitored everywhere else
+  (`tactile_sim/limits.py`); every episode reports its worst ratio per limit and the tests fail when one
+  is exceeded.
+
+## Install
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -e .[dev,gym]
+make assets        # fetch the pinned Menagerie FR3 + Franka Hand, the WUJI Hand 2 and the YCB hammer into ~/.cache
+make test          # full suite, ~2 min
+```
+
+Without the caches everything still runs on stand-ins with identical kinematics and inertias
+(capsule arm, box hand, primitive hammer); the WUJI hand needs its cache. Set `TACTILE_SIM_ASSETS=/path` to
+use a different asset cache.
+
+## Run
+
+```bash
+python -m tactile_sim.run_strikes --n 10 --out runs/demo.h5          # 8 kHz episode + HDF5 force-truth log
+python -m tactile_sim.run_strikes --n 10 --fast --dr --seed 3         # 4 kHz, domain randomized
+python -m tactile_sim.run_strikes --n 10 --hand wuji2                 # WUJI Hand 2 power wrap
+python -m tactile_sim.run_strikes --n 10 --hand wuji2 --self-locking  # ... with non-backdrivable joints
+python -m tactile_sim.run_strikes --n 10 --hand wuji2 --robot vega_1u # Vega U, WUJI hands on both arms
+python -m tactile_sim.tool_task --task saw                            # crosscut a board with a hand saw
+python -m tactile_sim.tool_task --task drill                          # seat a wood screw with a cordless driver
+python -m tactile_sim.tool_task --task drill --mode hole              # drill through a board
+python -m tactile_sim.replay.sources                                 # fetch recorded motions (Adroit, DexToolBench)
+python -m tactile_sim.replay --source adroit --demo 0 --out runs/replay_adroit0.npz   # human blows, retargeted
+python -m tactile_sim.replay --source dextoolbench --task hammer/claw_hammer/swing_side --speed 3
+python -m tactile_sim.viewer.export --replay adroit:2 --replay adroit:22 --out runs/replay_human.html  # 3D viewer
+python -m tactile_sim.replay --source adroit --demo 22 --robot vega_1u        # on the Vega U (WUJI hands)
+python -m tactile_sim.viewer.export --replay-robot vega_1u --replay adroit:9 --replay adroit:21 --out runs/replay_human_vega.html
+python -m tactile_sim.calibrate pulse                                 # free-hammer contact sweeps
+python -m tactile_sim.viewer.export --n 6 --preset default --preset wuji2 --preset wuji2-selflock
+python -m tactile_sim.viewer.export --n 6 --preset vega-wuji2 --preset vega-wuji2-selflock --out runs/replay_vega.html
+python -m tactile_sim.viewer.live --n 5 --slowdown 20                 # native MuJoCo window (needs a display)
+```
+
+`runs/replay.html` is a standalone 3D replay (three.js, loaded from a CDN) of the exported episodes with
+the real robot meshes, per-strike records, time-aligned traces, a live pressure heatmap per taxel patch and
+the episode's hardware-limit verdict. `gymnasium.make("TactileHammer-v0")`
+exposes the L2 -> L1 interface (TCP offset, stiffness scale, strike-axis feedforward, grasp force) at 200 Hz.
+
+On a machine with an NVIDIA GPU, set `MUJOCO_GL=egl` before starting Python to enable the optional
+cameras (`sensors.cameras = True`).
+
+## Hardware limits
+
+| Limit | Value | How |
+|---|---|---|
+| FR3 joint torque | 87 Nm (joints 1-4), 12 Nm (5-7) | enforced: command clip |
+| FR3 torque rate | 1000 Nm/s per joint (libfranka `kMaxTorqueRate`) | enforced: L1 rate-limits every command |
+| FR3 joint velocity | 2.62 rad/s (1-4), 5.26 / 4.18 / 5.26 rad/s (5-7) | monitored (a velocity reflex on the real arm) |
+| FR3 joint range | Menagerie joint ranges | monitored |
+| FR3 payload | 3 kg beyond the flange | checked |
+| Franka Hand | 140 N peak, 70 N continuous per finger | enforced |
+| WUJI Hand 2 joint torque | MCP flexion 2.0, abduction 0.2, PIP/DIP 0.3, thumb CMC 0.6, thumb MCP/IP 0.3 Nm | enforced |
+| WUJI hard stops / gearbox | torque carried by the stops (self-locking: the gearbox), relative to the joint's rating | monitored; WUJI publishes no stop rating, so the joint rating is used |
+| Vega joint torque | 150 / 150 / 80 / 80 / 25 / 25 / 25 Nm (Dexmate URDF) | enforced: servo force limits |
+| Vega joint velocity | 2.4 rad/s (1-2), 2.7 rad/s (3-7) | monitored; host commands capped at 90 % |
+| Vega interface | joint position targets at 100 Hz, P-gain multiplier 0.1-4 (`dexcontrol`) | enforced |
+| Vega payload | 4.5 kg per arm (Dexmate's current figure) | checked |
+| Vega torque rate | not published | not applied |
+
+The swing is planned to fit: strike speed is capped at 80 % of what the joint velocity limits allow along
+the strike axis at the hover pose, swing acceleration at 60 % of what the joint torque limits can push
+there, and the swing peaks just before the nail and arrives braking. A 1000 Nm/s torque-rate limit needs
+~170 ms to reverse a saturated joint, so a swing still accelerating at contact keeps driving the arm into
+the nail and the tool through the grasp. Each arm and hand has a hover pose (and strike direction) chosen for these
+caps. The strike may be a straight line with the tool's orientation held (the FR3) or a curve: an arc about a
+pivot behind the grip (Vega U: 0.6 m behind the face, the tool turning ~25 deg over a 0.20 m windup),
+which meets the nail square. The replay viewer draws the face's path for each swing.
+
+Vega's factory servo gains, drive inertia and torque-rate limit are not published. The sim assumes stiff
+harmonic-drive servos (`ArmCfg.servo_kp/kd`, `vega_armature`); results should be read as a sweep over the
+P multiplier, not single numbers.
+
+## Results (8 kHz, seed 0, 10 strikes)
+
+| Metric | FR3 + Franka Hand | FR3 + WUJI | FR3 + WUJI, self-locking | Vega U + WUJI | Vega U + WUJI, self-locking | Target |
+|---|---|---|---|---|---|---|
+| Strikes on the nail | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 | 10 / 10 | >= 90 % |
+| Nail driven | 13.8 mm | 12.3 mm | 15.6 mm | 10.2 mm | 13.9 mm | 20 mm in <= 10 |
+| Face speed at contact | 1.3-1.8 m/s | 1.2-2.2 m/s | 1.2-1.8 m/s | 1.08-1.13 m/s | 1.09-1.12 m/s | |
+| Impact flag after contact | 0.4-1.1 ms | 0.25-1.1 ms | 0.25-1.1 ms | 0.6-1.75 ms | 0.4-1.5 ms | <= 2 ms |
+| Tool tilt in the grasp per strike | 0.5-2.9 deg (> 1.4 on 3) | 1.9-30.7 deg | 0.1-0.5 deg | 0.3-2.8 deg (> 1.4 on 5) | 0.3-2.2 deg (> 1.4 on 1) | <= 1.4 deg |
+| Tool slip per strike | 0.6-1.0 mm | 2.3-8.2 mm | 0.2-0.9 mm | 0.3-1.0 mm | 0.1-0.8 mm | <= 7 mm |
+| Arm limits | all held | joint 6 speed 1.14x | joint 6 speed 1.31x | all held | all held | none exceeded |
+| Hand joint loads | within rating | hard stops up to 16x rating | gearboxes up to 32x | hard stops up to 4x | gearboxes up to 20x | |
+
+Saw and driver on the FR3 + Franka Hand (8 kHz, seed 0, scripted behaviors, grip 60 N per pad):
+
+| Metric | Saw, crosscut | Driver, screw | Driver, hole |
+|---|---|---|---|
+| Goal | 20 mm cut | screw seated | 38 mm through |
+| Reached at | 23.1 s (54 strokes) | 2.16 s | 7.14 s |
+| Peak load | 49 N normal, 23 N binding | 1.88 Nm, 87 N push | 2.41 Nm, 90 N push |
+| Net slip in the grasp | 1.0 mm, 4.8 deg (pads flex up to 9 deg per stroke) | 0.2 mm, 2.4 deg | 0.1 mm, 0.6 deg |
+| Untimed events | binding | none (cam-out with a 35 N push) | breakthrough |
+| Arm limits | all held | all held | all held |
+
+### Replaying recorded tool motions
+
+`tactile_sim.replay` plays recorded hammer motions on the testbed and records what the sensors feel. No public
+dataset has impact or grip forces, so the recording supplies only the motion and the testbed's nail produces the
+blows. Sources, pinned and hash-verified (`tactile_sim/assets/REPLAY_MANIFEST.json`):
+
+- **Adroit / DAPG hammer-human** (Apache-2.0): 25 human demonstrations recorded in VR with a CyberGlove driving the
+  Adroit hand in MuJoCo, 100 Hz hammer poses and a nail touch sensor; 22 of them contain blows (75 in all,
+  ~0.6-2 m/s at the face).
+- **DexToolBench** (SimToolReal, MIT): hammer poses tracked from human RGB-D videos by FoundationPose, ~3 Hz.
+  These are slow tracked swings; their "strikes" are presses under 0.06 m/s.
+- **GRAB** (MPI, non-commercial research licence, manual sign-up download at grab.is.tue.mpg.de): 120 Hz full-body
+  motion capture with real hammers, including "use" sequences. The swings are in the air (there is no nail), so the
+  loader takes each swing's deepest reach as its contact; the face is found from the object mesh. Unpack GRAB and
+  point `$TACTILE_SIM_GRAB` at the folder holding `grab/` and `tools/`, then `--source grab --seq s1/hammer_use_1`.
+  It is the best other source found: real hammer motion at a usable rate. TACO (bimanual tool use, 30 Hz video
+  capture) may include hammering but is not yet checked.
+
+The motion is retargeted face-first, so that every recorded contact becomes a square blow on the nail head, not a
+touch on its side:
+- the recorded strike is placed on our nail along our strike axis, and the TCP follows from our hammer's face offset;
+- every recorded contact is aimed at our 9 mm nail head (Adroit's is 70 mm across), 4 mm past it (8 mm on the Vega,
+  whose 100 Hz position targets lag);
+- within 80 ms of each contact the motion across the nail axis is blended out, so the face arrives along the axis
+  instead of sweeping across the head into the shank;
+- the face is turned square at every contact (the human's blows land up to ~45 deg off square);
+- between blows the face is held 3 mm short of the head (a soft clamp), so the hammer neither rests on the nail nor
+  rebounds into a second hit;
+- the reference carries the path's velocity and acceleration as feedforward, so the arm does not lag into the head.
+
+A time warp then slows the path only where it is too fast for the arm, and damped least-squares IK along it checks
+reach and joint speeds. Each contact is classified from the truth: a blow (a pulse under 20 ms), a press (the tool
+resting on the nail), off-centre (the face's centre outside the head) or through the nail (the head reaching the
+shank).
+
+All 22 Adroit replays with blows on the FR3 + Franka Hand (4 kHz) held every arm limit and tracked to 2.5-4.4 mm RMS.
+79 blows landed for 75 recorded contacts (rebounds count as blows), with 2 presses, 1 off-centre blow and none
+through the nail; the tool turned at most 1.4 deg in the grasp. But a human hand accelerates far beyond the FR3
+(peaks ~200 m/s^2 in the wrist snap between blows), so the arm needs 2.2-4.6x the recorded time and the blows land
+at 0.07-0.61 m/s (90-210 N), too slow to move the default nail.
+
+On the **Vega U** (WUJI hands with the TaxelScan skins, position-only arm, downward strike onto the tabletop), 21 of
+the 22 demos replay (one crosses a wrist singularity), and none of the DexToolBench swings can be followed (the IK
+jumps, a wrist flip). The 21 track to 1.2-5.4 mm RMS at 2.2-4.6x the recorded time: 73 blows for 72 recorded
+contacts at 0.09-0.76 m/s and 155-370 N, 3 off-centre and 2 through the nail. 18 contacts also left the hammer
+resting on the nail for a moment after the blow: the arm lags its targets. The arm's joint range reached 1.0x its
+limit in three demos. The wrap's finger joints hit their stops in every replay, and the hammer turned 2-6 deg in the
+hand.
+
+## Findings so far
+
+- **In the WUJI power wrap the middle-segment skins stay almost unloaded, and a human-like closing does not fix
+  it on this hand.** With every finger joint closing at its full rating (the default), the knuckles and fingertip
+  joints reach their 90 deg stops: the handle is clamped against the palm by the proximal segments and the
+  fingertips, and each middle segment bridges it 9-10 mm away. Closing in the human flexor-tendon ratio instead
+  (MCP : PIP : DIP = 1 : 0.73 : 0.25, the fingertip joint following the middle joint; `finger_synergy="tendon"`)
+  gives a human posture (knuckle 79, middle 74, fingertip 51 deg) and loads the middle-segment skins (the middle
+  finger's 56 % of the time, up to 66 N), but the WUJI's 0.3 Nm middle joints then cap the whole grip near a fifth
+  of the knuckle's strength: the handle hangs 6 mm off the palm, the palm sheet reads nothing, and the blows drive
+  far less (FR3 5.9 vs 8.7 mm in 5 strikes; Vega U 0 vs 3.4 mm in 3). Adding the intrinsic muscles' knuckle torque
+  brings the palm back but takes the middle-segment contact away again.
+
+- **Driving the nail down onto a tabletop with a curved swing, the Vega U with WUJI hands strikes at
+  ~1.1 m/s and drives ~1 mm per blow (10.2 mm in 10; 13.9 mm with self-locking drives).** A forward,
+  horizontal strike managed only ~0.85 m/s and 0.3 mm per blow. Vega is not short of joint speed in
+  principle: if every joint ran at its limit together, the face could reach 3.7 m/s. But to strike with the
+  hand pointing along the strike axis (the WUJI wrap's geometry) a straight push manages ~1.0-1.4 m/s at best
+  anywhere in reach, against 2.6 m/s for the FR3. Swinging down in an arc lets the shoulder and elbow turn the
+  tool instead: the longer the arc's radius, the faster (0.6 m allows ~1.5 m/s, 0.8 m ~1.9 m/s), until
+  joint 7's range limits the windup. The blows stay easy on the grasp (tilt at most 2.8 deg, 4x a joint's
+  rating at worst on a hard stop) and on the arm (every Vega limit held).
+- With Vega's position interface the servo stiffness matters most where it is too high: at a P multiplier of
+  4 the arm rings against its 100 Hz stepwise targets, trips the impact detector before contact and hits
+  5 of 10, driving nothing. At 0.25 the nail goes 12.2 mm in 10 strikes, about as far as at 1 (10.2 mm);
+  softer servos let the tool tilt a little more.
+- Two taxel patches see only part of a wrap's load. When the tool turns a few degrees in the hand, or the
+  swing loads the fingers, the palm and thumb patches can unload while the fingers still hold it; a drop
+  check that compares the patches with the grip setpoint then fires falsely. In the downward strike, the
+  windup's deceleration lifts the hammer off the palm and onto the bare fingers for a moment. The WUJI drop
+  check requires the patches to go empty and the fingers to close into the space a lost tool would leave
+  (joint encoders).
+- **The earlier results were not achievable on a real FR3.** Before the limits were enforced, the
+  controller stepped joint torques at up to 43x libfranka's 1000 Nm/s limit and the wrist spun past its
+  velocity limit after each blow; the arm would have stopped with a reflex. Within the limits the FR3 hits
+  at ~1.8 m/s (not 2.2), drives ~1.4 mm per blow against the default nail, and needs ~14 strikes for 20 mm.
+- The strike pose matters as much as the controller. With the Franka Hand pointing down, the wrist joints'
+  12 Nm limit caps the swing's acceleration (6.5 m/s^2 at the original hover pose, 11.6 m/s^2 at the
+  current one, where the joints can push 123 N along the strike axis). With the WUJI hand pointing along
+  the strike axis, the strike becomes an elbow extension and the joint velocity limits cap it at 1.3 m/s
+  unless the hover pose is moved (2.6 m/s at the current one).
+- **On the FR3, a power wrap with WUJI's rated torques does not hold a hammer blow on its own.** At rest the
+  wrap holds (0.01 mm drift in 0.5 s at 40 N). A blow at 1.8 m/s puts 500-800 N on the face, 0.19 m from the
+  grip: a moment of ~100 Nm for a few milliseconds, against a wrap whose 2 Nm finger joints resist a few Nm,
+  so the handle turns 2-31 deg in the hand per blow. More squeeze, grippier skin and gripping farther from
+  the head did not change this. The blows also drive finger and thumb joints into their hard stops at up to 16x
+  their rated torque.
+- **If WUJI's joints really are self-locking, the wrap is the best grasp tested:** tilt 0.1-0.5 deg per
+  blow, 10/10 hits, on either arm. The price is load: the gearboxes hold up to 32-40x the joints' rated
+  torque during blows,
+  and the now-rigid grasp passes the blow into the arm, spinning FR3 joint 6 to 1.3x its velocity limit.
+  Whether WUJI's drives are self-locking, and what their gearboxes and stops can hold, decides this;
+  neither is in WUJI's published model or specifications.
+- The Franka Hand's 17 mm pads hold the real 665 g claw hammer poorly: the tool twists in the pads on
+  every blow, over the 1.4 deg target on 3 of 10 strikes at 55 N.
+- The wooden handle is curved (its centreline drifts ~1.3 mm per cm). Pads aligned with the whole
+  handle's axis load only one edge; the Franka grasp frame follows the handle's local direction at the
+  grip, and the wrap uses short convex slices along the handle instead of one hull.
+- Only the patch accelerometer meets the 2 ms impact-flag budget; the wrist F/T and the momentum observer
+  see the blow 3.4-4.5 ms after contact.
+- **A parallel gripper is weak exactly where saws and drivers load it.** Twist about the pad normal is held
+  only by the pads' torsional friction, so a saw held in the default hand-down grasp spun out of the fingers;
+  held palm-sideways (fingers above and below the handle) the stroke's pitching moments become a friction
+  couple about the handle and it cuts, but the pads still flex up to 9 deg each stroke and the saw creeps
+  4.8 deg over 27 strokes. A driver pushed 70 N horizontally from the hand-down pose saturates the FR3's 12 Nm
+  wrist joints and tilts the bit until it cams out; held along the approach axis and pushed down it seats the
+  screw, but the clutch's ratchet at seating rolls it 2.4 deg in the fingers. These are the periodic and jerk
+  loads a predictive grip must anticipate.
+- MuJoCo needs the noslip solver pass for a static grasp: without it soft friction lets the hammer creep
+  ~11 deg/s under its own weight.
+
+## Status
+
+| Milestone | Scope | Status |
+|---|---|---|
+| M0 | packaging, Menagerie fetch + manifest, fallback arm | done |
+| M1 | scene composition, `World`, grasp settle | done |
+| M2 | hammer-nail contact calibration | done |
+| M3 | rate-limited sensor models, scheduler | done |
+| M4 | impedance controller, momentum observer, impact detector | done |
+| M5 | grip force loop, drop detection, slip metrics | done |
+| M6 | scripted swing, reference spreading, strike loop, replay viewer | done |
+| M7 | HDF5 logging, `run_strikes` CLI | done |
+| M8 | Gymnasium env, domain randomization | done |
+| M9 | saw and driver tasks: tools, saw / screw / hole plants, scripted behaviors, `tool_task` runner, tests | done |
+| R0 | replay of recorded motions (Adroit, DexToolBench) on the FR3 and the Vega U: sources, retargeting, time warp, IK check, runner, viewer, tests | done |
+| D0-D6 | WUJI Hand 2: fetch, import, grasp synthesis, taxel patches, joint control, strikes, viewer | done |
+| D7 | experiments E1-E9 of `docs/dexterous_hand_plan.md` | partly (E2, E3, E7) |
+| V0-V3 | Vega U (and Vega-1P): fetch, URDF import (GLB meshes converted), position-servo interface, WUJI hands on both arms, downward arc strike onto a tabletop, limits, tests, viewer | done |
+| | Sharpa Wave | not started |
+
+Not built: the series-elastic joint mode from the plan (`flex_mode="sea"`), the predictive grip law across
+tools, the saw and driver in the replay viewer, and any learned L2/L3 layer.
+
+The paper draft is in `paper/` (`latexmk -pdf main.tex`); its methods section describes the method and the
+testbed as built so far.
+
+## Licenses
+
+Menagerie models are Apache-2.0 (Franka FR3, Franka Hand) and the WUJI Hand 2 model is MIT; their LICENSE
+files are fetched alongside the meshes and are not redistributed in this repository. The Dexmate Vega U and Vega-1P URDFs
+and meshes are Apache-2.0, fetched the same way. The YCB hammer scan is
+CC BY 4.0.

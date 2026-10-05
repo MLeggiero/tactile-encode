@@ -1,0 +1,36 @@
+\documentclass[conference]{IEEEtran}
+% Working draft. Build: latexmk -pdf main.tex   (or: pdflatex main && bibtex main && pdflatex main && pdflatex main)
+
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\sisetup{detect-all, per-mode=symbol}
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+
+\title{Anticipate and React: Kilohertz Tactile Control of Held Tools Under Impulsive, Periodic and Jerk Loads}
+\author{\todo{authors}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\todo{abstract, once results are in}
+\end{abstract}
+
+\section{Introduction}
+This work responds to the Office of Naval Research's call, under BAA N00014-25-S-B001 (Code~341, Human Interaction with Autonomous Systems), for affordable humanoid robots that operate aboard ships and assist with maintenance \cite{onr2025baa,onr341hias}.
+
+\todo{introduction}
+
+\input{sections/methods}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs,dod_refs}
+
+\end{document}

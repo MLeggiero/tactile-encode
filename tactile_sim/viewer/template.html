@@ -1,0 +1,743 @@
+<meta charset="utf-8">
+<title>Nail Strike Replay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@75..100,400..700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: an instrument bench. The 3D stage and its transport sit left, the strike log right;
+   time-aligned traces run full width underneath, all sharing one playhead. */
+:root {
+  --bg: #f3f4f2;
+  --panel: #ffffff;
+  --stage: #e6e9e8;
+  --ink: #16191a;
+  --ink-2: #4b5354;
+  --ink-3: #7c8586;
+  --rule: #d5dad9;
+  --accent: #0f6c7a;
+  --accent-ink: #ffffff;
+  --hit: #1c7c4a;
+  --miss: #b3362f;
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --grid: rgba(22, 25, 26, 0.07);
+  --font-display: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-body: "Archivo", "Helvetica Neue", Arial, sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111415; --panel: #181c1d; --stage: #1d2223; --ink: #eef1f0; --ink-2: #b3bcbc; --ink-3: #7f898a;
+    --rule: #2c3334; --accent: #4fb3c2; --accent-ink: #0c1112; --hit: #4cc184; --miss: #ec6b62;
+    --series-1: #3987e5; --series-2: #d95926; --grid: rgba(238, 241, 240, 0.07); color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111415; --panel: #181c1d; --stage: #1d2223; --ink: #eef1f0; --ink-2: #b3bcbc; --ink-3: #7f898a;
+  --rule: #2c3334; --accent: #4fb3c2; --accent-ink: #0c1112; --hit: #4cc184; --miss: #ec6b62;
+  --series-1: #3987e5; --series-2: #d95926; --grid: rgba(238, 241, 240, 0.07); color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 14px; line-height: 1.45; }
+.wrap { max-width: 1400px; margin: 0 auto; padding-inline: 20px; padding-block: 18px 40px; display: grid; gap: 16px; }
+header.top { display: flex; flex-wrap: wrap; align-items: end; justify-content: space-between; gap: 12px 24px; }
+h1 { font-family: var(--font-display); font-stretch: 78%; font-weight: 700; font-size: 26px; letter-spacing: 0.01em; margin: 0; text-wrap: balance; }
+.sub { color: var(--ink-2); margin: 2px 0 0; max-width: 70ch; }
+.eps { display: flex; flex-wrap: wrap; gap: 6px; }
+button, select { font: inherit; color: inherit; }
+.seg { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+.seg[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.seg:focus-visible, .btn:focus-visible, .chip:focus-visible, input:focus-visible, select:focus-visible, tr:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bench { display: grid; grid-template-columns: minmax(0, 1.55fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 900px) { .bench { grid-template-columns: minmax(0, 1fr); } }
+.stagebox { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; display: grid; }
+.stage { position: relative; aspect-ratio: 16 / 10; max-width: 100%; background: var(--stage); }
+.stage canvas { display: block; width: 100%; height: 100%; }
+.hud { position: absolute; left: 12px; top: 10px; display: grid; gap: 2px; font-family: var(--font-data); font-size: 12px; color: var(--ink-2); pointer-events: none; }
+.hud b { color: var(--ink); font-weight: 500; }
+.hud .contact { color: var(--accent); font-weight: 500; }
+.views { position: absolute; right: 10px; bottom: 10px; display: flex; gap: 4px; }
+.views .seg { padding: 3px 8px; font-size: 12px; }
+.transport { display: grid; grid-template-columns: auto auto minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 10px 12px; border-top: 1px solid var(--rule); }
+.btn { border: 1px solid var(--rule); background: var(--panel); border-radius: 6px; padding: 5px 12px; cursor: pointer; min-width: 64px; }
+.btn.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.tread { font-family: var(--font-data); font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 12px; }
+.chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--rule); background: var(--bg); border-radius: 999px; padding: 3px 10px 3px 8px; cursor: pointer; font-size: 12px; font-variant-numeric: tabular-nums; }
+.chip .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--hit); }
+.chip.miss .dot { background: var(--miss); }
+.chip[aria-current="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.side { display: grid; gap: 12px; min-width: 0; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stat { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 12px; }
+.stat .k { font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
+.stat .v { font-family: var(--font-display); font-stretch: 80%; font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.stat .n { color: var(--ink-2); font-size: 12px; }
+.card { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; min-width: 0; }
+.card h2 { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); font-weight: 600; margin: 0; padding: 10px 12px 6px; }
+.tablewrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; font-size: 12.5px; }
+th, td { text-align: right; padding: 5px 8px; border-top: 1px solid var(--rule); white-space: nowrap; }
+th:first-child, td:first-child { text-align: left; }
+th { font-weight: 500; color: var(--ink-3); font-size: 11px; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--bg); }
+tbody tr[aria-current="true"] { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.pill { display: inline-block; font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid currentColor; }
+.pill.hit { color: var(--hit); } .pill.miss { color: var(--miss); }
+.cfg { padding: 4px 12px 12px; color: var(--ink-2); font-size: 12.5px; display: grid; gap: 2px; }
+.cfg span { font-family: var(--font-data); color: var(--ink); }
+.traces-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; }
+.traces-head h2 { font-family: var(--font-display); font-stretch: 80%; font-size: 18px; margin: 0; }
+.traces { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 420px), 1fr)); gap: 12px; }
+.chart { background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px 6px; min-width: 0; position: relative; }
+.chart .ttl { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.chart .ttl b { font-weight: 600; font-size: 13px; }
+.chart .ttl i { font-style: normal; color: var(--ink-3); font-size: 11.5px; }
+.legend { display: flex; gap: 12px; font-size: 11.5px; color: var(--ink-2); }
+.legend span::before { content: ""; display: inline-block; width: 12px; height: 2px; margin-right: 5px; vertical-align: middle; background: var(--c); }
+.legend span.dash::before { background: repeating-linear-gradient(90deg, var(--c) 0 4px, transparent 4px 7px); }
+.chart canvas { display: block; width: 100%; height: 150px; cursor: crosshair; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px; font-family: var(--font-data); font-size: 11.5px; color: var(--ink); white-space: nowrap; box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+.note { color: var(--ink-3); font-size: 12px; margin: 0; }
+.tactile .pads { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 0 12px; }
+.tactile figure { margin: 0; display: grid; gap: 4px; min-width: 0; }
+.tactile canvas { width: 100%; aspect-ratio: 1 / 1; display: block; border-radius: 4px; cursor: crosshair; }
+.tactile figcaption { font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.tactile figcaption b { color: var(--ink); font-weight: 600; }
+.ramp { padding: 10px 12px 0; }
+.ramp canvas { width: 100%; height: 10px; display: block; border-radius: 2px; }
+.ramp-ticks { display: flex; justify-content: space-between; font-family: var(--font-data); font-size: 11px; color: var(--ink-3); padding-top: 2px; }
+.tnote { padding: 6px 12px 12px; }
+.err { background: var(--panel); border: 1px solid var(--miss); color: var(--ink); border-radius: 8px; padding: 12px; }
+@media (max-width: 560px) {
+  .transport { grid-template-columns: auto auto minmax(0, 1fr); }
+  .transport .tread { grid-column: 1 / -1; }
+  h1 { font-size: 22px; }
+}
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto; } }
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1>Nail Strike Replay</h1>
+      <p class="sub" id="sub">Task A testbed episodes: Franka FR3 with the Franka Hand, 0.6 kg hammer, pre-started nail in a vertical board.</p>
+    </div>
+    <div class="eps" id="eps" role="group" aria-label="Episode"></div>
+  </header>
+
+  <section class="bench">
+    <div class="stagebox">
+      <div class="stage" id="stage">
+        <div class="hud" id="hud"></div>
+        <div class="views" role="group" aria-label="Camera">
+          <button class="seg" data-view="overview" aria-pressed="true">Overview</button>
+          <button class="seg" data-view="top">Top</button>
+          <button class="seg" data-view="nail">Nail</button>
+          <button class="seg" data-view="hand">Hand</button>
+        </div>
+      </div>
+      <div class="transport">
+        <button class="btn primary" id="play" aria-label="Play">Play</button>
+        <label class="tread" for="speed">Speed
+          <select id="speed">
+            <option value="1">1x</option>
+            <option value="0.25">0.25x</option>
+            <option value="0.05" selected>0.05x</option>
+            <option value="0.01">0.01x</option>
+          </select>
+        </label>
+        <input type="range" id="scrub" min="0" max="1000" step="1" value="0" aria-label="Time">
+        <span class="tread" id="tread">0.000 s</span>
+      </div>
+      <div class="chips" id="chips" aria-label="Jump to strike"></div>
+    </div>
+
+    <aside class="side">
+      <div class="stats" id="stats"></div>
+      <div class="card tactile" id="tactile-card">
+        <h2>Pressure arrays</h2>
+        <div class="pads" id="pads"></div>
+        <div class="ramp"><canvas id="ramp" aria-hidden="true"></canvas><div class="ramp-ticks" id="ramp-ticks"></div></div>
+        <p class="note tnote" id="tnote"></p>
+      </div>
+      <div class="card">
+        <h2>Strike log</h2>
+        <div class="tablewrap"><table id="log"></table></div>
+      </div>
+      <div class="card">
+        <h2>Episode settings</h2>
+        <div class="cfg" id="cfg"></div>
+      </div>
+    </aside>
+  </section>
+
+  <section class="traces-wrap" style="display:grid;gap:10px">
+    <div class="traces-head">
+      <h2>Traces</h2>
+      <div class="eps" role="group" aria-label="Time window">
+        <button class="seg" data-win="strike" aria-pressed="true">Around current strike</button>
+        <button class="seg" data-win="episode" aria-pressed="false">Whole episode</button>
+      </div>
+    </div>
+    <div class="traces" id="traces"></div>
+    <p class="note">Contact force and nail depth are simulation ground truth; wrist F/T and pad acceleration are the modeled sensors (rate, band-limit, latency and noise applied). Click any trace to move the playhead.</p>
+  </section>
+</div>
+
+<script>window.REPLAY = /*__REPLAY_DATA__*/null;</script>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const D = window.REPLAY;
+const $ = (id) => document.getElementById(id);
+if (!D || !D.episodes || !D.episodes.length) {
+  $("stage").insertAdjacentHTML("afterend", '<p class="err">No episode data is embedded in this page. Rebuild it with <code>python -m tactile_sim.viewer.export</code>.</p>');
+  throw new Error("no data");
+}
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+// ------------------------------------------------------------------ state
+const S = { ep: null, t: 0, playing: false, speed: 0.05, win: "strike", strike: 0, view: "overview" };
+
+// ------------------------------------------------------------------ 3D stage
+const stage = $("stage");
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+stage.prepend(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(38, 16 / 10, 0.01, 20);
+camera.up.set(0, 0, 1);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x404848, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(1.5, -1.2, 2.5); scene.add(sun);
+const grid = new THREE.GridHelper(2, 20); grid.rotation.x = Math.PI / 2; scene.add(grid);
+
+function materialFor(g) {
+  const [r, gg, b, a] = g.rgba;
+  const name = g.name || "";
+  const metal = /hammer_head|nail_head/.test(name);
+  return new THREE.MeshStandardMaterial({ color: new THREE.Color(r, gg, b), transparent: a < 1, opacity: a,
+    metalness: metal ? 0.65 : 0.05, roughness: metal ? 0.35 : 0.7 });
+}
+function b64bytes(str) { const bin = atob(str); const out = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i); return out; }
+const meshCache = {};
+function meshGeometry(name) {
+  if (meshCache[name]) return meshCache[name];
+  const M = D.meshes[name];
+  const q = new Uint16Array(b64bytes(M.v).buffer);
+  const pos = new Float32Array(q.length);
+  for (let i = 0; i < q.length; i++) pos[i] = M.min[i % 3] + q[i] * M.scale[i % 3];
+  const fb = b64bytes(M.f).buffer;
+  const idx = M.idx32 ? new Uint32Array(fb) : new Uint16Array(fb);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.computeVertexNormals();
+  return (meshCache[name] = geo);
+}
+function geometryFor(g) {
+  const s = g.size;
+  let geo;
+  if (g.type === "mesh") return D.meshes && D.meshes[g.mesh] ? meshGeometry(g.mesh) : null;
+  if (g.type === "box") geo = new THREE.BoxGeometry(2 * s[0], 2 * s[1], 2 * s[2]);
+  else if (g.type === "sphere") geo = new THREE.SphereGeometry(s[0], 20, 14);
+  else if (g.type === "capsule") { geo = new THREE.CapsuleGeometry(s[0], 2 * s[1], 6, 18); geo.rotateX(Math.PI / 2); }
+  else if (g.type === "cylinder") { geo = new THREE.CylinderGeometry(s[0], s[0], 2 * s[1], 28); geo.rotateX(Math.PI / 2); }
+  return geo;
+}
+const bodyGroups = {};
+const sceneMeshes = [];
+let nailHeadMat = null;
+function buildScene() {
+  for (const g of D.geoms) {
+    if (!bodyGroups[g.body]) { bodyGroups[g.body] = new THREE.Group(); scene.add(bodyGroups[g.body]); }
+    const geo = geometryFor(g); if (!geo) continue;
+    const mat = materialFor(g);
+    if (g.name === "nail_head") { nailHeadMat = mat; }
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(...g.pos);
+    mesh.quaternion.set(g.quat[1], g.quat[2], g.quat[3], g.quat[0]);
+    mesh.userData.scene = g.scene ?? 0;
+    sceneMeshes.push(mesh);
+    bodyGroups[g.body].add(mesh);
+  }
+  // joint knuckles so a capsule (fallback) arm reads as connected links; the real FR3 meshes need none
+  const hasArmMeshes = D.geoms.some((g) => g.type === "mesh" && /^fr3_link/.test(g.body));
+  if (hasArmMeshes) return;
+  const knuckle = new THREE.MeshStandardMaterial({ color: 0xcfd4d3, roughness: 0.6 });
+  for (const name of Object.keys(bodyGroups)) {
+    if (/^fr3_link[1-7]$/.test(name)) bodyGroups[name].add(new THREE.Mesh(new THREE.SphereGeometry(0.052, 20, 14), knuckle));
+  }
+}
+buildScene();
+
+// ------------------------------------------------------------------ tactile heatmaps
+// single-hue sequential ramp (light: pale = near zero; dark: reversed so near zero recedes into the surface)
+const RAMP = ["#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5", "#2a78d6", "#256abf",
+              "#1c5cab", "#184f95", "#104281", "#0d366b"].map((h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)));
+const isDark = () => { const t = document.documentElement.dataset.theme; return t === "dark" || (t !== "light" && window.matchMedia("(prefers-color-scheme: dark)").matches); };
+function rampColor(x) {
+  const r = isDark() ? RAMP.slice().reverse() : RAMP;
+  const f = Math.min(Math.max(x, 0), 1) * (r.length - 1), i = Math.min(Math.floor(f), r.length - 2), a = f - i;
+  const c = r[i].map((v, k) => Math.round(v + a * (r[i + 1][k] - v)));
+  return `rgb(${c[0]},${c[1]},${c[2]})`;
+}
+const tactileCache = {};
+function tactile() {
+  const T = S.ep.tactile; if (!T) return null;
+  if (!tactileCache[S.ep.key]) tactileCache[S.ep.key] = b64bytes(T.data);
+  return T;
+}
+const tHover = {};
+function patchDims(T, p, k) {  // older exports: one grid for every patch
+  const nr = p.rows || T.rows, nc = p.cols || T.cols;
+  return { nr, nc, n: nr * nc, off: p.off != null ? p.off : k * nr * nc };
+}
+function tactileFrame(T, t) {
+  const i = bsearch(T.t, t), bytes = tactileCache[S.ep.key];
+  const dims = T.patches.map((p, k) => patchDims(T, p, k)), N = dims.reduce((a, d) => a + d.n, 0);
+  const scale = T.range / 255, row = bytes.subarray(i * N, (i + 1) * N);
+  const out = dims.map((d) => { const v = new Float32Array(d.n); for (let j = 0; j < d.n; j++) v[j] = row[d.off + j] * scale; return v; });
+  return { vals: out, t: T.t[i] };
+}
+// grid cell (col across, row down) of taxel (r along the first axis, c along the second) for each patch view
+function cellOf(view, r, c, nr, nc) {
+  const col = view === "R" ? nr - 1 - r : r;  // the Franka's right pad is mirrored so both read from the handle
+  return [col, nc - 1 - c];
+}
+// TaxelScan skins: one hand-shaped map, every taxel drawn where it sits on the open hand seen from the palm
+let handHover = null;
+function handBox(T) {
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+  for (const p of T.patches) for (let j = 0; j < p.xy.length; j += 2) {
+    x0 = Math.min(x0, p.xy[j] - p.cell[0]); x1 = Math.max(x1, p.xy[j] + p.cell[0]);
+    y0 = Math.min(y0, p.xy[j + 1] - p.cell[1]); y1 = Math.max(y1, p.xy[j + 1] + p.cell[1]);
+  }
+  return { x0, x1, y0, y1 };
+}
+function buildHand(T, box) {
+  box.style.gridTemplateColumns = "1fr";
+  box.insertAdjacentHTML("beforeend", `<figure><canvas id="hand-map" aria-label="Hand pressure map"></canvas><figcaption id="hand-cap"></figcaption></figure>`);
+  const cv = $("hand-map"), b = handBox(T);
+  cv.style.aspectRatio = `${b.x1 - b.x0} / ${b.y1 - b.y0}`;
+  cv.addEventListener("mousemove", (ev) => {
+    const s = cv.clientWidth / (b.x1 - b.x0), x = b.x0 + ev.offsetX / s, y = b.y1 - ev.offsetY / s;
+    let best = null, bd = Infinity;
+    T.patches.forEach((p, k) => { for (let j = 0; j < p.xy.length / 2; j++) {
+      const d = (p.xy[2 * j] - x) ** 2 + (p.xy[2 * j + 1] - y) ** 2; if (d < bd) { bd = d; best = { k, j }; } } });
+    handHover = bd < 9 ? best : null; drawTactile();
+  });
+  cv.addEventListener("mouseleave", () => { handHover = null; drawTactile(); });
+}
+function drawHand(vals, T) {
+  const cv = $("hand-map"); if (!cv) return;
+  const W = cv.clientWidth, b = handBox(T), s = W / (b.x1 - b.x0), H = (b.y1 - b.y0) * s; if (!W) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.fillStyle = css("--panel"); g.fillRect(0, 0, W, H);
+  let tot = 0, peak = 0;
+  T.patches.forEach((p, k) => {
+    const w = Math.max(p.cell[0] * s - 1, 1), h = Math.max(p.cell[1] * s - 1, 1);
+    for (let j = 0; j < p.xy.length / 2; j++) {
+      const v = vals[k][j], X = (p.xy[2 * j] - b.x0) * s, Y = (b.y1 - p.xy[2 * j + 1]) * s;
+      g.save(); g.translate(X, Y); g.rotate(p.angle || 0);  // cells turned with the patch's rows
+      g.fillStyle = rampColor(v / T.range); g.fillRect(-w / 2, -h / 2, w, h);
+      if (handHover && handHover.k === k && handHover.j === j) {
+        g.strokeStyle = css("--accent"); g.lineWidth = 2; g.strokeRect(-w / 2 - 1, -h / 2 - 1, w + 2, h + 2);
+      }
+      g.restore();
+      tot += v; peak = Math.max(peak, v);
+    }
+  });
+  if (handHover) {
+    const p = T.patches[handHover.k], nc = p.cols, j = handHover.j;
+    const sum = vals[handHover.k].reduce((a, v) => a + v, 0);
+    $("hand-cap").innerHTML = `${p.label} (${p.rows} × ${p.cols}) · taxel ${Math.floor(j / nc) + 1},${(j % nc) + 1}: <b>${vals[handHover.k][j].toFixed(2)} N</b> · patch ${sum.toFixed(1)} N`;
+  } else {
+    $("hand-cap").innerHTML = `Whole hand · <b>${tot.toFixed(1)} N</b> total · peak ${peak.toFixed(1)} N · hover a taxel`;
+  }
+}
+function buildPads() {
+  const T = S.ep.tactile, box = $("pads");
+  box.innerHTML = "";
+  if (!T) return;
+  if (T.layout === "hand") { buildHand(T, box); return; }
+  box.style.gridTemplateColumns = `repeat(${Math.min(T.patches.length, 2)}, 1fr)`;
+  T.patches.forEach((p, k) => {
+    box.insertAdjacentHTML("beforeend", `<figure><canvas id="pad-${k}" aria-label="${p.label} pressure heatmap"></canvas><figcaption id="cap-${k}">${p.label}</figcaption></figure>`);
+    const cv = $(`pad-${k}`);
+    cv.addEventListener("mousemove", (ev) => {
+      const cell = cv.clientWidth / Math.max(T.rows, T.cols);
+      tHover[k] = { col: Math.min(T.rows - 1, Math.floor(ev.offsetX / cell)), row: Math.min(T.cols - 1, Math.floor(ev.offsetY / cell)) };
+      drawTactile();
+    });
+    cv.addEventListener("mouseleave", () => { tHover[k] = null; drawTactile(); });
+  });
+}
+function drawPad(k, vals, T) {
+  const p = T.patches[k], cv = $(`pad-${k}`); if (!cv) return;
+  const W = cv.clientWidth; if (!W) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  cv.width = W * dpr; cv.height = W * dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const nr = T.rows, nc = T.cols, cell = W / Math.max(nr, nc), gap = 1;
+  g.fillStyle = css("--panel"); g.fillRect(0, 0, W, W);
+  let tot = 0, cx = 0, cy = 0, peak = 0;
+  for (let r = 0; r < nr; r++) for (let c = 0; c < nc; c++) {
+    const v = vals[r * nc + c], [col, rowPix] = cellOf(p.view, r, c, nr, nc);
+    g.fillStyle = rampColor(v / T.range);
+    g.fillRect(col * cell + gap / 2, rowPix * cell + gap / 2, cell - gap, cell - gap);
+    tot += v; cx += v * (col + 0.5); cy += v * (rowPix + 0.5); peak = Math.max(peak, v);
+  }
+  if (tot > 0.5) {  // centre of pressure
+    g.beginPath(); g.arc((cx / tot) * cell, (cy / tot) * cell, cell * 0.32, 0, 2 * Math.PI);
+    g.lineWidth = 2; g.strokeStyle = css("--panel"); g.stroke();
+    g.lineWidth = 1.2; g.strokeStyle = css("--ink"); g.stroke();
+  }
+  const h = tHover[k];
+  if (h) {
+    g.strokeStyle = css("--accent"); g.lineWidth = 2; g.strokeRect(h.col * cell + 1, h.row * cell + 1, cell - 2, cell - 2);
+    const r = p.view === "R" ? nr - 1 - h.col : h.col, c = nc - 1 - h.row;
+    $(`cap-${k}`).innerHTML = `${p.label} · taxel ${r + 1},${c + 1}: <b>${vals[r * nc + c].toFixed(2)} N</b>`;
+  } else {
+    $(`cap-${k}`).innerHTML = `${p.label} · <b>${tot.toFixed(1)} N</b> total · peak ${peak.toFixed(1)} N`;
+  }
+}
+function drawTactile() {
+  const T = tactile(), card = $("tactile-card");
+  card.hidden = !T; if (!T) return;
+  const f = tactileFrame(T, S.t);
+  if (T.layout === "hand") drawHand(f.vals, T); else f.vals.forEach((v, k) => drawPad(k, v, T));
+  const rc = $("ramp"), W = rc.clientWidth;
+  if (W) {
+    rc.width = W; rc.height = 10; const g = rc.getContext("2d");
+    for (let x = 0; x < W; x++) { g.fillStyle = rampColor(x / (W - 1)); g.fillRect(x, 0, 1, 10); }
+  }
+  $("ramp-ticks").innerHTML = [0, 0.25, 0.5, 0.75, 1].map((q) => `<span>${(q * T.range).toFixed(0)}${q === 1 ? " N" : ""}</span>`).join("");
+  const sizes = [...new Set(T.patches.map((p) => `${p.mm[0]} × ${p.mm[1]} mm`))].join(" / ");
+  if (T.layout === "hand") {
+    const n = T.patches.reduce((a, p) => a + p.rows * p.cols, 0);
+    $("tnote").textContent = `${n} taxels in ${T.patches.length} patches at ${Math.round(T.rate)} Hz, colour scale to ${T.range} N per taxel. ${T.note || ""}`;
+  } else {
+    $("tnote").textContent = `Sensor model output: ${T.rows} × ${T.cols} taxels per ${sizes} patch at ${Math.round(T.rate)} Hz, ${T.noise} N noise, ${T.range} N per taxel. ${T.note || ""} The ring is the centre of pressure.`;
+  }
+}
+new ResizeObserver(() => { if (S.ep) drawTactile(); }).observe($("tactile-card"));
+
+function applyTheme() {
+  scene.background = new THREE.Color(css("--stage"));
+  const c = new THREE.Color(css("--ink-3"));
+  grid.material.color = c; grid.material.opacity = 0.35; grid.material.transparent = true;
+  drawAll();
+  if (S.ep) drawTactile();
+}
+
+// camera offsets in the task frame (h = along the handle, away from the head; a = strike axis; c = h x a, which
+// is up for a horizontal strike), so they hold for any strike direction
+const VIEWS = {
+  overview: { pos: [1.05, -0.75, 0.45], tgt: [0.05, -0.12, 0.02] },
+  top: { pos: [0.02, -0.10, 0.75], tgt: [0.02, -0.10, 0] },
+  nail: { pos: [-0.17, -0.16, 0.02], tgt: [0, -0.02, 0] },
+  // the grip sits ~0.19 m along the handle from the head and one head-length short of the nail
+  hand: { pos: [0.40, 0.02, -0.13], tgt: [0.19, -0.14, 0] },
+};
+// a downward strike onto a tabletop: c is horizontal. The "top" view looks along c at the swing plane (h, a), as
+// it does for a horizontal strike, which here is from the side; it shows the arc the hammer travels.
+const VERTICAL_VIEWS = {
+  overview: { pos: [0.55, -0.55, 1.25], tgt: [-0.05, -0.25, -0.15] },
+  top: { pos: [0.12, -0.15, 0.95], tgt: [0.12, -0.15, 0] },
+  nail: { pos: [-0.08, -0.12, 0.25], tgt: [0, -0.02, 0] },
+  hand: { pos: [0.35, -0.25, 0.30], tgt: [0.19, -0.12, 0] },
+};
+// a humanoid's torso hides the FR3 overview angle: look at the striking arm from its side instead
+const VEGA_OVERVIEW = { overview: { pos: [1.5, -0.45, 0.75], tgt: [0.3, -0.35, 0.05] } };
+const VIEWS_BY_ARM = { vega_1p: VEGA_OVERVIEW, vega_1u: VEGA_OVERVIEW };
+function cross(u, v) { return [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]]; }
+function vertical() { return Math.abs(S.ep.strike_axis[2]) > 0.85; }
+function taskPoint(o) {
+  const n = S.ep.nail_head, a = S.ep.strike_axis, h = S.ep.handle_axis || [1, 0, 0];
+  const c = vertical() ? cross(h, a) : [0, 0, 1];
+  return [0, 1, 2].map((k) => n[k] + o[0] * h[k] + o[1] * a[k] + o[2] * c[k]);
+}
+function setView(v) {
+  S.view = v;
+  const V = vertical() ? VERTICAL_VIEWS[v] : (VIEWS_BY_ARM[S.ep.arm] || {})[v] || VIEWS[v];
+  camera.position.set(...taskPoint(V.pos)); controls.target.set(...taskPoint(V.tgt)); controls.update();
+  document.querySelectorAll("[data-view]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.view === v)));
+  document.querySelector('[data-view="top"]').textContent = vertical() ? "Side" : "Top";
+}
+document.querySelectorAll("[data-view]").forEach((b) => b.addEventListener("click", () => setView(b.dataset.view)));
+
+function resize() {
+  const w = stage.clientWidth, h = stage.clientHeight;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}
+new ResizeObserver(resize).observe(stage);
+
+// ------------------------------------------------------------------ frames
+function bsearch(arr, t) { let lo = 0, hi = arr.length - 1; if (t <= arr[0]) return 0; if (t >= arr[hi]) return hi; while (hi - lo > 1) { const m = (lo + hi) >> 1; if (arr[m] <= t) lo = m; else hi = m; } return lo; }
+const qa = new THREE.Quaternion(), qb = new THREE.Quaternion();
+function poseAt(t) {
+  const F = S.ep.frames, n = S.ep.bodies.length, ts = F.t;
+  const i = bsearch(ts, t), j = Math.min(i + 1, ts.length - 1);
+  const a = j > i ? Math.min(Math.max((t - ts[i]) / (ts[j] - ts[i]), 0), 1) : 0;
+  if (!F.P) {  // decode the int16 pose streams once per episode
+    const u = F.pos_unit, P = new Int16Array(b64bytes(F.pos).buffer), Q = new Int16Array(b64bytes(F.quat).buffer);
+    F.P = Float32Array.from(P, (v) => v * u); F.Q = Float32Array.from(Q, (v) => v / 32767);
+  }
+  const o3i = 3 * n * i, o3j = 3 * n * j, o4i = 4 * n * i, o4j = 4 * n * j;
+  const Pi = F.P.subarray(o3i, o3i + 3 * n), Pj = F.P.subarray(o3j, o3j + 3 * n);
+  const Qi = F.Q.subarray(o4i, o4i + 4 * n), Qj = F.Q.subarray(o4j, o4j + 4 * n);
+  for (let b = 0; b < n; b++) {
+    const g = bodyGroups[S.ep.bodies[b]]; if (!g) continue;
+    g.position.set(Pi[3*b] + a * (Pj[3*b] - Pi[3*b]), Pi[3*b+1] + a * (Pj[3*b+1] - Pi[3*b+1]), Pi[3*b+2] + a * (Pj[3*b+2] - Pi[3*b+2]));
+    qa.set(Qi[4*b+1], Qi[4*b+2], Qi[4*b+3], Qi[4*b]).normalize(); qb.set(Qj[4*b+1], Qj[4*b+2], Qj[4*b+3], Qj[4*b]).normalize();
+    g.quaternion.slerpQuaternions(qa, qb, a);
+  }
+}
+function seriesAt(key, t) { const s = S.ep.series[key]; if (!s || !s.t.length) return null; return s.y[bsearch(s.t, t)]; }
+
+// ------------------------------------------------------------------ episode UI
+const tMax = () => S.ep.frames.t[S.ep.frames.t.length - 1];
+function currentStrikeIndex(t) {
+  const st = S.ep.strikes; let k = 0;
+  for (let i = 0; i < st.length; i++) if (t >= st[i].t_swing - 0.05) k = i;
+  return k;
+}
+function fmt(v, d = 1, unit = "") { return v === null || v === undefined || Number.isNaN(v) ? "—" : `${Number(v).toFixed(d)}${unit}`; }
+
+function renderEpisodeChrome() {
+  const e = S.ep, s = e.summary, c = e.config;
+  const handName = { franka: "the Franka Hand (MuJoCo Menagerie)", wuji2: "the WUJI Hand 2 (WUJI's published model)", box: "a box stand-in hand" }[e.hand] || e.hand;
+  $("sub").textContent = `${e.label}. ${{ fr3: "Franka FR3 (MuJoCo Menagerie)", vega_1u: "Dexmate Vega U (Dexmate's URDF; pedestal and lift fixed, right arm striking, left arm holding)", vega_1p: "Dexmate Vega-1P (Dexmate's URDF; right arm striking, left arm holding)" }[e.arm] || "Capsule stand-in arm"} with ${handName}; physics ${Math.round(1 / e.dt)} Hz.`;
+  const target = c.drive_target_mm;
+  const driven = (s.total_depth || 0) * 1e3;
+  $("stats").innerHTML = [
+    ["Nail driven", `${driven.toFixed(1)} mm`, `target ${target.toFixed(0)} mm${s.strikes_to_target ? ` · reached on strike ${s.strikes_to_target}` : ""}`],
+    ["Strikes on the nail", `${Math.round((s.hit_rate || 0) * s.n_strikes)} / ${s.n_strikes}`, `${fmt((s.mean_depth_inc || 0) * 1e3, 2)} mm per strike`],
+    ["Tool tilt in the grasp", `${fmt(Math.max(...e.strikes.map((r) => r.slip_deg)), 2)}°`, `worst strike · slip ${fmt(Math.max(...e.strikes.map((r) => r.slip_mm)), 2)} mm`],
+    ["Impact flag latency", `${fmt((s.mean_flag_latency || 0) * 1e3, 2)} ms`, `after true contact · max ${fmt((s.max_flag_latency || 0) * 1e3, 2)} ms`],
+  ].map(([k, v, n]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div><div class="n">${n}</div></div>`).join("");
+  $("cfg").innerHTML = [
+    ["Strike speed (requested)", `${c.v_strike} m/s`], ["Hold grip force", `${c.grip_hold} N ${e.hand === "franka" ? "per pad" : "on the patches"}`],
+    ["Pad torsional friction", `${c.pad_torsion} m`], ["Wrist", c.flex_mode === "wrist" ? "compliant" : "rigid"],
+    ["Nail resistance at start", `${c.resistance_0} N`],
+    ["Hardware limits", e.limits && e.limits.violations ? `exceeded: ${e.limits.violations.replaceAll("_", " ").replaceAll(",", ", ")}` : "all held"],
+  ].map(([k, v]) => `<div>${k}: <span>${v}</span></div>`).join("");
+  $("log").innerHTML = `<thead><tr><th>#</th><th></th><th>face m/s</th><th>peak N</th><th>pulse ms</th><th>depth mm</th><th>tilt °</th><th>slip mm</th><th>flag</th></tr></thead><tbody>` +
+    e.strikes.map((r, i) => `<tr tabindex="0" data-i="${i}"><td>${r.idx}</td><td><span class="pill ${r.hit ? "hit" : "miss"}">${r.hit ? "hit" : "miss"}</span></td><td>${fmt(r.v, 2)}</td><td>${fmt(r.peak, 0)}</td><td>${fmt(r.width_ms, 1)}</td><td>${fmt(r.depth_mm, 2)}</td><td>${fmt(r.slip_deg, 2)}</td><td>${fmt(r.slip_mm, 2)}</td><td>${r.latency_ms === null ? "—" : `${fmt(r.latency_ms, 2)} ms ${r.flag_source}`}</td></tr>`).join("") + "</tbody>";
+  $("log").querySelectorAll("tbody tr").forEach((tr) => {
+    const go = () => jumpToStrike(+tr.dataset.i);
+    tr.addEventListener("click", go); tr.addEventListener("keydown", (ev) => { if (ev.key === "Enter") go(); });
+  });
+  $("chips").innerHTML = e.strikes.map((r, i) => `<button class="chip ${r.hit ? "" : "miss"}" data-i="${i}" aria-label="Strike ${r.idx}, ${r.hit ? "hit" : "miss"}"><span class="dot"></span>#${r.idx} · ${fmt(r.depth_mm, 1)} mm</button>`).join("");
+  $("chips").querySelectorAll(".chip").forEach((b) => b.addEventListener("click", () => jumpToStrike(+b.dataset.i)));
+  buildCharts();
+}
+function markCurrent() {
+  const k = S.strike;
+  document.querySelectorAll("#chips .chip").forEach((b) => b.setAttribute("aria-current", String(+b.dataset.i === k)));
+  document.querySelectorAll("#log tbody tr").forEach((tr) => tr.setAttribute("aria-current", String(+tr.dataset.i === k)));
+}
+function strikeTime(r) { return r.t_contact ?? r.t_pred; }
+function jumpToStrike(i) {
+  const r = S.ep.strikes[i];
+  setTime(strikeTime(r) - 0.03); S.strike = i; drawPath(); setPlaying(false); markCurrent();
+}
+function selectEpisode(k) {
+  S.ep = D.episodes[k];
+  for (const m of sceneMeshes) m.visible = m.userData.scene === (S.ep.scene ?? 0);
+  for (const key of Object.keys(tHover)) delete tHover[key];
+  buildPads();
+  document.querySelectorAll("#eps .seg").forEach((b) => b.setAttribute("aria-pressed", String(+b.dataset.k === k)));
+  renderEpisodeChrome();
+  setView(S.view);
+  const first = S.ep.strikes[0];
+  setTime(first ? strikeTime(first) + 0.0015 : 0);
+}
+$("eps").innerHTML = D.episodes.length > 1 ? D.episodes.map((e, k) => `<button class="seg" data-k="${k}">${e.label}</button>`).join("") : "";
+document.querySelectorAll("#eps .seg").forEach((b) => b.addEventListener("click", () => selectEpisode(+b.dataset.k)));
+
+// ------------------------------------------------------------------ transport
+function setPlaying(p) { S.playing = p; $("play").textContent = p ? "Pause" : "Play"; $("play").setAttribute("aria-label", p ? "Pause" : "Play"); }
+$("play").addEventListener("click", () => { if (S.t >= tMax() - 1e-4) setTime(0); setPlaying(!S.playing); });
+$("speed").addEventListener("change", (ev) => { S.speed = +ev.target.value; });
+$("scrub").addEventListener("input", (ev) => { setTime((+ev.target.value / 1000) * tMax()); setPlaying(false); });
+window.addEventListener("keydown", (ev) => {
+  if (ev.target.closest && ev.target.closest("select, input[type=text]")) return;
+  if (ev.code === "Space") { ev.preventDefault(); $("play").click(); }
+  if (ev.key === "ArrowRight" || ev.key === "ArrowLeft") {
+    const ts = S.ep.frames.t, i = bsearch(ts, S.t) + (ev.key === "ArrowRight" ? 1 : -1);
+    setTime(ts[Math.max(0, Math.min(ts.length - 1, i))]); setPlaying(false);
+  }
+});
+document.querySelectorAll("[data-win]").forEach((b) => b.addEventListener("click", () => {
+  S.win = b.dataset.win;
+  document.querySelectorAll("[data-win]").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+  drawAll();
+}));
+
+// the hammer face's path through the current strike's swing (curved for an arc strike)
+const pathMat = new THREE.LineBasicMaterial({ color: 0xd08a2c, depthTest: false, transparent: true, opacity: 0.9 });
+const pathLine = new THREE.Line(new THREE.BufferGeometry(), pathMat); pathLine.renderOrder = 1; scene.add(pathLine);
+let pathFor = null;
+function drawPath() {
+  const r = S.ep.strikes[S.strike];
+  const key = r && r.path ? `${S.ep.key}:${S.strike}` : null;
+  if (key === pathFor) return;
+  pathFor = key;
+  pathLine.visible = !!key;
+  if (key) pathLine.geometry.setFromPoints(r.path.map((p) => new THREE.Vector3(...p)));
+}
+
+function setTime(t) {
+  S.t = Math.max(0, Math.min(t, tMax()));
+  const k = currentStrikeIndex(S.t);
+  if (k !== S.strike) { S.strike = k; markCurrent(); }
+  drawPath();
+  poseAt(S.t);
+  $("scrub").value = String(Math.round((S.t / tMax()) * 1000));
+  const r = S.ep.strikes[S.strike];
+  const f = seriesAt("contact_force", S.t) || 0;
+  const rel = r ? (S.t - strikeTime(r)) * 1e3 : NaN;
+  $("tread").textContent = `${S.t.toFixed(4)} s`;
+  $("hud").innerHTML = `<div>strike <b>#${r ? r.idx : "—"}</b> · <b>${Number.isFinite(rel) ? (rel >= 0 ? "+" : "") + rel.toFixed(1) : "—"} ms</b> from contact</div>` +
+    `<div>nail depth <b>${fmt(seriesAt("nail_depth", S.t), 2)} mm</b> · grip <b>${fmt(seriesAt("grip_truth", S.t), 0)} N</b></div>` +
+    (f > 1 ? `<div class="contact">hammer on nail · ${f.toFixed(0)} N</div>` : "<div>&nbsp;</div>");
+  if (nailHeadMat) nailHeadMat.emissive = new THREE.Color(f > 1 ? css("--accent") : "#000000");
+  drawAll();
+  drawTactile();
+}
+
+let last = performance.now();
+function loop(now) {
+  const dt = Math.min((now - last) / 1000, 0.1); last = now;
+  if (S.playing) {
+    const t = S.t + dt * S.speed;
+    if (t >= tMax()) { setTime(tMax()); setPlaying(false); } else setTime(t);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+
+// ------------------------------------------------------------------ charts
+const CHARTS = [
+  { key: "contact_force", title: "Hammer–nail contact force", unit: "N, truth", series: [["contact_force", "--series-1", "contact force"]], area: true, floor0: true },
+  { key: "nail_depth", title: "Nail depth", unit: "mm, truth", series: [["nail_depth", "--series-1", "depth"]], floor0: true },
+  { key: "grip", title: "Grip force per pad", unit: "N", series: [["grip_truth", "--series-1", "measured (truth)"], ["grip_setpoint", "--series-2", "setpoint", true]], floor0: true },
+  { key: "tool_tilt", title: "Tool tilt in the grasp", unit: "deg from episode start, truth", series: [["tool_tilt", "--series-1", "tilt"]], floor0: true },
+  { key: "ft_axis", title: "Wrist F/T along the strike axis", unit: "N, sensor model", series: [["ft_axis", "--series-1", "F/T"]] },
+  { key: "pad_accel", title: "Pad accelerometer", unit: "m/s², |a| − g, ±16 g sensor", series: [["pad_accel", "--series-1", "|a| − g"]] },
+];
+const charts = [];
+function buildCharts() {
+  const host = $("traces"); host.innerHTML = ""; charts.length = 0;
+  for (const spec of CHARTS) {
+    if (!spec.series.some(([k]) => S.ep.series[k])) continue;
+    const el = document.createElement("div"); el.className = "chart";
+    const legend = spec.series.length > 1 ? `<div class="legend">${spec.series.map(([, c, lab, dash]) => `<span class="${dash ? "dash" : ""}" style="--c: var(${c})">${lab}</span>`).join("")}</div>` : "";
+    el.innerHTML = `<div class="ttl"><div><b>${spec.title}</b> <i>${spec.unit}</i></div>${legend}</div><canvas></canvas><div class="tip" hidden></div>`;
+    host.appendChild(el);
+    const cv = el.querySelector("canvas"), tip = el.querySelector(".tip");
+    const ch = { spec, el, cv, tip, hover: null };
+    cv.addEventListener("mousemove", (ev) => { ch.hover = ev.offsetX; drawChart(ch); });
+    cv.addEventListener("mouseleave", () => { ch.hover = null; tip.hidden = true; drawChart(ch); });
+    cv.addEventListener("click", (ev) => { const [t0, t1] = windowRange(); const pl = 44, pr = 24, w = cv.clientWidth - pl - pr; setTime(t0 + ((ev.offsetX - pl) / w) * (t1 - t0)); setPlaying(false); });
+    charts.push(ch);
+  }
+  new ResizeObserver(() => drawAll()).observe(host);
+}
+function windowRange() {
+  if (S.win === "episode") return [0, tMax()];
+  const r = S.ep.strikes[S.strike]; if (!r) return [0, tMax()];
+  const tc = strikeTime(r); return [tc - 0.15, tc + 0.15];
+}
+function niceTicks(lo, hi, n = 4, cover = true) {
+  const span = hi - lo || 1, step0 = span / n, mag = Math.pow(10, Math.floor(Math.log10(step0)));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => span / s <= n) || 10 * mag;
+  // cover=true extends the ticks outward so the data never runs past the last labeled value
+  const a = cover ? Math.floor(lo / step + 1e-9) * step : Math.ceil(lo / step - 1e-9) * step;
+  const b = cover ? Math.ceil(hi / step - 1e-9) * step : Math.floor(hi / step + 1e-9) * step;
+  const out = []; for (let v = a; v <= b + step * 1e-6; v += step) out.push(+v.toFixed(10));
+  return out;
+}
+function drawChart(ch) {
+  const { cv, spec } = ch, dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const W = cv.clientWidth, H = cv.clientHeight; if (!W) return;
+  cv.width = W * dpr; cv.height = H * dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
+  const pl = 44, pr = 24, pt = 8, pb = 20, w = W - pl - pr, h = H - pt - pb;
+  const [t0, t1] = windowRange();
+  const seg = spec.series.map(([k, c, lab, dash]) => {
+    const s = S.ep.series[k]; if (!s) return null;
+    const i0 = Math.max(0, bsearch(s.t, t0) - 1), i1 = Math.min(s.t.length - 1, bsearch(s.t, t1) + 1);
+    return { t: s.t.slice(i0, i1 + 1), y: s.y.slice(i0, i1 + 1), c, lab, dash };
+  }).filter(Boolean);
+  let ymin = Infinity, ymax = -Infinity;
+  for (const s of seg) for (const v of s.y) { if (v < ymin) ymin = v; if (v > ymax) ymax = v; }
+  if (!Number.isFinite(ymin)) { ymin = 0; ymax = 1; }
+  if (spec.floor0) ymin = Math.min(0, ymin);
+  if (ymax - ymin < 1e-6) ymax = ymin + 1;
+  const ticks = niceTicks(ymin, ymax); ymin = Math.min(ymin, ticks[0]); ymax = Math.max(ymax, ticks[ticks.length - 1]);
+  const X = (t) => pl + ((t - t0) / (t1 - t0)) * w, Y = (v) => pt + h - ((v - ymin) / (ymax - ymin)) * h;
+  const ink3 = css("--ink-3"), gridc = css("--grid");
+  g.font = `11px ${css("--font-data")}`; g.fillStyle = ink3; g.textBaseline = "middle"; g.textAlign = "right";
+  for (const v of ticks) { const y = Y(v); g.strokeStyle = gridc; g.lineWidth = 1; g.beginPath(); g.moveTo(pl, y); g.lineTo(pl + w, y); g.stroke(); g.fillText(Math.abs(v) >= 100 ? v.toFixed(0) : +v.toFixed(2), pl - 6, y); }
+  // x ticks
+  g.textAlign = "center"; g.textBaseline = "top";
+  const r = S.ep.strikes[S.strike], tc = r ? strikeTime(r) : 0;
+  const narrow = w < 380;
+  if (S.win === "strike") { for (const ms of (narrow ? [-100, 0, 100] : [-150, -100, -50, 0, 50, 100, 150])) { const x = X(tc + ms / 1000); g.fillText(`${ms > 0 ? "+" : ""}${ms} ms`, x, pt + h + 5); } }
+  else { for (const v of niceTicks(t0, t1, narrow ? 3 : 6, false)) g.fillText(`${v} s`, X(v), pt + h + 5); }
+  // strike contact markers
+  g.strokeStyle = gridc; g.setLineDash([2, 3]);
+  for (const s of S.ep.strikes) { const x = X(strikeTime(s)); if (x >= pl && x <= pl + w) { g.beginPath(); g.moveTo(x, pt); g.lineTo(x, pt + h); g.stroke(); } }
+  g.setLineDash([]);
+  g.save(); g.beginPath(); g.rect(pl, pt, w, h); g.clip();
+  for (const s of seg) {
+    const col = css(s.c);
+    if (spec.area) {
+      g.beginPath(); g.moveTo(X(s.t[0]), Y(Math.max(ymin, 0)));
+      for (let i = 0; i < s.t.length; i++) g.lineTo(X(s.t[i]), Y(s.y[i]));
+      g.lineTo(X(s.t[s.t.length - 1]), Y(Math.max(ymin, 0))); g.closePath();
+      g.fillStyle = col; g.globalAlpha = 0.18; g.fill(); g.globalAlpha = 1;
+    }
+    g.strokeStyle = col; g.lineWidth = 2; g.lineJoin = "round"; g.setLineDash(s.dash ? [5, 3] : []);
+    g.beginPath(); for (let i = 0; i < s.t.length; i++) { const x = X(s.t[i]), y = Y(s.y[i]); i ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke();
+  }
+  g.setLineDash([]); g.restore();
+  // playhead
+  const xp = X(S.t);
+  if (xp >= pl && xp <= pl + w) { g.strokeStyle = css("--accent"); g.lineWidth = 1.5; g.beginPath(); g.moveTo(xp, pt); g.lineTo(xp, pt + h); g.stroke(); }
+  // hover
+  if (ch.hover !== null && ch.hover >= pl && ch.hover <= pl + w) {
+    const th = t0 + ((ch.hover - pl) / w) * (t1 - t0);
+    g.strokeStyle = ink3; g.lineWidth = 1; g.beginPath(); g.moveTo(ch.hover, pt); g.lineTo(ch.hover, pt + h); g.stroke();
+    const rows = seg.map((s) => { const i = bsearch(s.t, th); return `${s.lab}: ${fmt(s.y[i], Math.abs(s.y[i]) >= 100 ? 0 : 2)}`; });
+    const rel = S.win === "strike" ? `${((th - tc) * 1e3).toFixed(1)} ms` : `${th.toFixed(3)} s`;
+    ch.tip.innerHTML = `${rel}<br>${rows.join("<br>")}`; ch.tip.hidden = false;
+    const tw = ch.tip.offsetWidth; ch.tip.style.left = `${Math.min(Math.max(ch.hover + 12, 0), W - tw)}px`; ch.tip.style.top = "28px";
+  }
+}
+function drawAll() { for (const ch of charts) drawChart(ch); }
+
+// ------------------------------------------------------------------ boot
+const mq = window.matchMedia("(prefers-color-scheme: dark)");
+mq.addEventListener("change", applyTheme);
+new MutationObserver(applyTheme).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+selectEpisode(0);
+resize();
+applyTheme();
+requestAnimationFrame(loop);
+</script>

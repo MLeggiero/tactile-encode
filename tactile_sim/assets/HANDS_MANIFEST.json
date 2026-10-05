@@ -1,0 +1,515 @@
+{
+  "wuji2": {
+    "repo": "wuji-technology/wuji-description",
+    "commit": "c2cd7f8d1ef8b6dc8cb907c17daa5a88b4442d95",
+    "mjcf": "hand2/hand2_beta2/body/mjcf/right_with_mount.xml",
+    "files": [
+      {
+        "path": "hand2/hand2_beta2/body/mjcf/right_with_mount.xml",
+        "sha256": "9bce131e7cf7147b2fdf822cf762ac6ed7a313c449e65c7ff0db3120a617254a",
+        "size": 24172
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "38b27e3155e0c1c8d6f3e909e7a00359a302085dfd9ae963b52a91cbbe25afa3",
+        "size": 1072
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_distal.STL",
+        "sha256": "837f4ffdcd4a786731ded0652a57ec9015605148cba78881d2d4d71ced804976",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_middle.STL",
+        "sha256": "2e1dd153fb0725aa3caed4dd49cb918da0378e875c4b9442bd147793a111f7d7",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_proximal.STL",
+        "sha256": "46b1e8036544dcd4aeba9382d1b3fbe4adb531fb2fe56b6ab5138d0a81f6661c",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_proximal_abd.STL",
+        "sha256": "f1ff36b8d54ce2bf93f42424da9392df6568dc1b286ff588157fe6030797f1f6",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_index_finger_tip_sensor_frame.STL",
+        "sha256": "4142c661bbe09bcbbee8c6188676915986bcdcc49f397720252864148665da37",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_distal.STL",
+        "sha256": "81ed25e0a780172603b334895e2f7487478e785db0b9c1642ddbb4964b7a388a",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_middle.STL",
+        "sha256": "8f7234c6ef133c11ecea89e3d1a94f4842dec9099c53faccd9312115d86fed4d",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_proximal.STL",
+        "sha256": "ea4db9cd3cccfd4048b620d334a1f00b034110d667aa689e3421e56c08725ff9",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_proximal_abd.STL",
+        "sha256": "483d9af13da2a605263cf27cbbc789f2dfcd571cb0a37b54c9322e5705c7ada9",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_middle_finger_tip_sensor_frame.STL",
+        "sha256": "4142c661bbe09bcbbee8c6188676915986bcdcc49f397720252864148665da37",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_mount.STL",
+        "sha256": "fd30d30dbfd254e317e957588dd5863c46405f719e255fe79104ece93a08e416",
+        "size": 614584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_distal.STL",
+        "sha256": "d6aef893258d6de0200e1bc4cdfeb3a7f941072aa79aa4d955162b362b9af894",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_middle.STL",
+        "sha256": "12466b870cf8cc47aacdc02a535474d65bce3bf128840a8e471c4fede43d57ee",
+        "size": 108384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_proximal.STL",
+        "sha256": "6a5696573c69e37467e3ba3b722d92ecd0078f0e18ae8e1e2c49ad118800ea8b",
+        "size": 56884
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_proximal_abd.STL",
+        "sha256": "321e9e615166eab4cd87ad4bc8609a7c19944fd7200f957d11bb020fa255bb72",
+        "size": 57684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_pinky_tip_sensor_frame.STL",
+        "sha256": "b9c9df3fee37dd4f30072c15b65bd1019c4cea1b90dbba9b082eb05b6678d561",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_distal.STL",
+        "sha256": "32129d2a8cf862f410c64201fea9f8942108af3bdc3b6e8ddd5776c3e9da465a",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_middle.STL",
+        "sha256": "9069d35b6f34fe23b49a7b28f8ef2dfd36ee18bebcf72de039e550f38d6a36cb",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_proximal.STL",
+        "sha256": "7f22b426af3ce5ddae228e370d51d15c1c66e7888c4db292ab5b8127dadcef5f",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_proximal_abd.STL",
+        "sha256": "bfc1ac8e3324942ecfd2dae448b925db3bf668a03b3aaa36a050aef1d8734d40",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_ring_finger_tip_sensor_frame.STL",
+        "sha256": "4142c661bbe09bcbbee8c6188676915986bcdcc49f397720252864148665da37",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_distal.STL",
+        "sha256": "133cd575b899cf7c40651d8851065d43c87addb6be61face329c170edcc389dd",
+        "size": 566784
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_middle.STL",
+        "sha256": "a3e9851cd3aed770fb0ed2b05b2ceca86980af1bfef2fbc8e1925e9a6110f56f",
+        "size": 70084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_proximal.STL",
+        "sha256": "e5f4c7dbffeddf626e5d6c7883e10a6c1de0e2d8213a9122dba5ee29a488345f",
+        "size": 197984
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_proximal_abd.STL",
+        "sha256": "d9e28b15b054ede554f23524c32f430fefa3622eb9fa10016c39fec10a2638e8",
+        "size": 48484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_thumb_tip_sensor_frame.STL",
+        "sha256": "7a94ebdd1c50ec5b62e73abd51848fe15589d9eb07e2fa3b1eab6567e5f08c12",
+        "size": 282884
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/right/r_wrist.STL",
+        "sha256": "748cf6a16bc5bfedf9c7e2ee489459f726740680db1449221133be570f9ee505",
+        "size": 323284
+      }
+    ]
+  },
+  "wuji2_left": {
+    "repo": "wuji-technology/wuji-description",
+    "commit": "c2cd7f8d1ef8b6dc8cb907c17daa5a88b4442d95",
+    "mjcf": "hand2/hand2_beta2/body/mjcf/left_with_mount.xml",
+    "files": [
+      {
+        "path": "hand2/hand2_beta2/body/mjcf/left_with_mount.xml",
+        "sha256": "903d80d3fa00ff78efa7f7684cedb768b0a1b960db9f68fdb1d28c03eee3ba22",
+        "size": 24088
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "38b27e3155e0c1c8d6f3e909e7a00359a302085dfd9ae963b52a91cbbe25afa3",
+        "size": 1072
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_index_finger_distal.STL",
+        "sha256": "3e87920820252191b66a337bffe1bdddb4392fc30309758e0369bdcd9964c996",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_index_finger_middle.STL",
+        "sha256": "ad167cffae6957a062eb67576cf40584b668ad5a26ce9133269ea1028c8a4765",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_index_finger_proximal.STL",
+        "sha256": "4f8635951712c36749c362c18f33253e852179c6042211afebee7a57d8db9c57",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_index_finger_proximal_abd.STL",
+        "sha256": "879583b9403fbb8a408de722a77c37e42bc29b5ec4a3f28ce35d8bde758684ac",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_index_finger_tip_sensor_frame.STL",
+        "sha256": "7b66999e7d8a09b0d194af807b0780c2205cc9f1b00db49444369911bd85135b",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_middle_finger_distal.STL",
+        "sha256": "d52e9285937c71589da2a0cc04ef91a39019f09d4a9d6d413ffdf226e9bdc3c3",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_middle_finger_middle.STL",
+        "sha256": "3fa4868a8c2431c42bad76a6e8ce7a87b71b370c05af89dbff7a9441a5e8880d",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_middle_finger_proximal.STL",
+        "sha256": "60bd1719c350e60126f6eaea8a702902df748f426c4bd47eb48d9f8fa8c3803c",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_middle_finger_proximal_abd.STL",
+        "sha256": "921328fed4290d6abb0ff559e7b9f6818513210d3562a64811ca9b084af8b2b1",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_middle_finger_tip_sensor_frame.STL",
+        "sha256": "7b66999e7d8a09b0d194af807b0780c2205cc9f1b00db49444369911bd85135b",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_mount.STL",
+        "sha256": "175491889134d13e4b468c32e80cc93e14d6eed3f287c52ed7e0cb8273920aae",
+        "size": 613734
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_pinky_distal.STL",
+        "sha256": "630261a156db18cd88207aa5a90572d15480961c4b68fbfb6877b6349195232a",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_pinky_middle.STL",
+        "sha256": "c19b3b46d170a87e08beb309307fcbcc11b89fc52061f6d8ad63a6692c0c33d5",
+        "size": 108384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_pinky_proximal.STL",
+        "sha256": "df5bbe36bbd592c8913ea3c6c31af5cda0011f801de184815672b2fbe4f429b1",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_pinky_proximal_abd.STL",
+        "sha256": "af1e1a26483fac1b030b3bec7fe6a96b1705c8b1f1410095ecb6fb09751ad641",
+        "size": 55884
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_pinky_tip_sensor_frame.STL",
+        "sha256": "be13adc0fdfbec3c1f70821a0ea946cc6ff9f0a1531c065a7965c9dfcf7b8514",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_ring_finger_distal.STL",
+        "sha256": "7f7abd5a0b0762012296aa57895c3abaace20965557c8ceda20bd184e70009f7",
+        "size": 570384
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_ring_finger_middle.STL",
+        "sha256": "386912dd2d79d6f274a957d4b227cd12208393b65f19da59155e190fc835d093",
+        "size": 103084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_ring_finger_proximal.STL",
+        "sha256": "1025331cca112596feb9e5c6e39e110297bbf7c5b9a80c73aa8f552dc97c4877",
+        "size": 56684
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_ring_finger_proximal_abd.STL",
+        "sha256": "2a687303caa5ea25ef63640b8e3606be1493b9f26d1b95d89e687425abcb53a8",
+        "size": 55584
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_ring_finger_tip_sensor_frame.STL",
+        "sha256": "7b66999e7d8a09b0d194af807b0780c2205cc9f1b00db49444369911bd85135b",
+        "size": 198484
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_thumb_distal.STL",
+        "sha256": "c64baf6839b633a668cfc8b9386f44b26e1a52f9ae28e11a24aae54cd6fcd4c6",
+        "size": 528084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_thumb_middle.STL",
+        "sha256": "33cafea989a21445ceb51fee5bc6777b23c6ded88183ad2103946108efdbc292",
+        "size": 70084
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_thumb_proximal.STL",
+        "sha256": "115227446584dd51e3ae77113063f97dc9e88cf4ce5db201eef2b81c17dd939c",
+        "size": 117284
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_thumb_proximal_abd.STL",
+        "sha256": "3528478e63b18ee73b4170d03b6cf2df5bbf00f31bca2c1b03eccdfde0f5caa4",
+        "size": 46984
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_thumb_tip_sensor_frame.STL",
+        "sha256": "1f0460fbb02d1d148ade528851099034e90652ea5440f39c26415cf281eb8232",
+        "size": 282884
+      },
+      {
+        "path": "hand2/hand2_beta2/body/meshes/left/l_wrist.STL",
+        "sha256": "b37d7bbcb3c8888e7179f27e8c87e436358adad9cf30d7cb86bc46ee696a7ee8",
+        "size": 285384
+      }
+    ]
+  },
+  "vega_1p": {
+    "repo": "dexmate-ai/dexmate-urdf",
+    "commit": "d8fc9c4962a5a9559aa2c72b3a55791bee66a2fb",
+    "mjcf": "robots/humanoid/vega_1p/vega_1p.urdf",
+    "files": [
+      {
+        "path": "robots/humanoid/vega_1p/vega_1p.urdf",
+        "sha256": "aaaf3c131cbed2c018ffaa4fb6ce499f85dddc01e2f3799594c37bc5f235004b",
+        "size": 29739
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "ff96ae9867bdaec10c0999e6fc1fc28d37b7dd16a3f41a5548b4295c312bf1b0",
+        "size": 10570
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/B_wheel_l2.obj",
+        "sha256": "c713d389208d7c337df30cf74ee6cb0a0a9acff93664891042f63aea01889543",
+        "size": 1027982
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/L_arm_l1.obj",
+        "sha256": "3de20c5339c919b044bad72b1c4ffd75338c1b890a637b1952805128e36fd2be",
+        "size": 515061
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/L_arm_l6.obj",
+        "sha256": "b48209bbf5d969966e878f5b55944b12b0970175a09b27acc9f5d3fb781fe3b1",
+        "size": 532278
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/R_arm_l1.obj",
+        "sha256": "be40ab74b2ee3ec7c51af02ef55403e020610d063694c523ed6d4944d87f3958",
+        "size": 519344
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/R_arm_l6.obj",
+        "sha256": "b79825473e6e800e26fe80190cb92905e23af2920d132d9befa394affb62ce5e",
+        "size": 573521
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l2.obj",
+        "sha256": "4db35b036b8bdfacf2b68d023cd0a0f7b96e93954b413243ff065b363afdca5d",
+        "size": 449494
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l3.obj",
+        "sha256": "169295fc1b6194d6e7c4e0850c9a546474201a018e7f939161ad2e375cc0b979",
+        "size": 599957
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l4.obj",
+        "sha256": "2007b60cec5f1507401a365efc126323e42cb2e0ee0d4ac5d8b876c5c3d25efa",
+        "size": 477742
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l5.obj",
+        "sha256": "1fb6888c9174eb084c73d216cd07a4dbe300d1a69c1127ca9d0ae761ae6d6774",
+        "size": 291507
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l7.obj",
+        "sha256": "a94e304b58ed35ad2d91b6649d4c19f35b22957561669c2878922ad73969d192",
+        "size": 506794
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l8.obj",
+        "sha256": "e251becda5f4ce923864f9e06a399cfd76ab5cb382bff35f0bfedad798a10888",
+        "size": 195588
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/base.obj",
+        "sha256": "24e4be280e058045deee4f5c76d8653486f87f5bd8c8da26320cf871539b82ec",
+        "size": 566670
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/head_l1.obj",
+        "sha256": "1979c67071a4f3b51c37df7c54743734ae16708640b073f151c63fdd974edda0",
+        "size": 451629
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/head_l2.obj",
+        "sha256": "10b71280d0b7988b9f1c473d23650153db1ec44b12a98765ae66df45b1ed3620",
+        "size": 272356
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/head_l3.obj",
+        "sha256": "5ae353bec15fe5c1eb8c194543bdcbe9b1c9da14e1cf3f544e765bca6b2a41d7",
+        "size": 689012
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/torso_l1.obj",
+        "sha256": "797da723f5143aa5729e3b6ca8ef6d22246a9a61206479fccfe01abf9ea1fe7d",
+        "size": 194061
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/torso_l2.obj",
+        "sha256": "57347aa18b49857fbb315884361b05b45a3f5d0e6e1c08e0f128d482a57d1f0e",
+        "size": 70309
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/torso_l3.obj",
+        "sha256": "df4a86196ece839c08336fc5c45ae2575c50355b6bcbf023e95da8823ba26075",
+        "size": 410334
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/wheel_l2.obj",
+        "sha256": "8a2e92fe630a1527be888e292eff2a912b6c6f60318ff30d5418958f5b46df8f",
+        "size": 882416
+      }
+    ]
+  },
+  "vega_1u": {
+    "repo": "dexmate-ai/dexmate-urdf",
+    "commit": "d8fc9c4962a5a9559aa2c72b3a55791bee66a2fb",
+    "mjcf": "robots/humanoid/vega_1u/vega_1u.urdf",
+    "files": [
+      {
+        "path": "robots/humanoid/vega_1u/vega_1u.urdf",
+        "sha256": "b8111dbda1c47aabb0d03fd84be14d638e90a163e1770b76efe9c8e5104924d5",
+        "size": 20795
+      },
+      {
+        "path": "LICENSE",
+        "sha256": "ff96ae9867bdaec10c0999e6fc1fc28d37b7dd16a3f41a5548b4295c312bf1b0",
+        "size": 10570
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/L_arm_l1.obj",
+        "sha256": "3de20c5339c919b044bad72b1c4ffd75338c1b890a637b1952805128e36fd2be",
+        "size": 515061
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/L_arm_l6.obj",
+        "sha256": "b48209bbf5d969966e878f5b55944b12b0970175a09b27acc9f5d3fb781fe3b1",
+        "size": 532278
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/R_arm_l1.obj",
+        "sha256": "be40ab74b2ee3ec7c51af02ef55403e020610d063694c523ed6d4944d87f3958",
+        "size": 519344
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/R_arm_l6.obj",
+        "sha256": "b79825473e6e800e26fe80190cb92905e23af2920d132d9befa394affb62ce5e",
+        "size": 573521
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l2.obj",
+        "sha256": "4db35b036b8bdfacf2b68d023cd0a0f7b96e93954b413243ff065b363afdca5d",
+        "size": 449494
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l3.obj",
+        "sha256": "169295fc1b6194d6e7c4e0850c9a546474201a018e7f939161ad2e375cc0b979",
+        "size": 599957
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l4.obj",
+        "sha256": "2007b60cec5f1507401a365efc126323e42cb2e0ee0d4ac5d8b876c5c3d25efa",
+        "size": 477742
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l5.obj",
+        "sha256": "1fb6888c9174eb084c73d216cd07a4dbe300d1a69c1127ca9d0ae761ae6d6774",
+        "size": 291507
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l7.obj",
+        "sha256": "a94e304b58ed35ad2d91b6649d4c19f35b22957561669c2878922ad73969d192",
+        "size": 506794
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/arm_l8.obj",
+        "sha256": "e251becda5f4ce923864f9e06a399cfd76ab5cb382bff35f0bfedad798a10888",
+        "size": 195588
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/head_l1.obj",
+        "sha256": "1979c67071a4f3b51c37df7c54743734ae16708640b073f151c63fdd974edda0",
+        "size": 451629
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/head_l2.obj",
+        "sha256": "10b71280d0b7988b9f1c473d23650153db1ec44b12a98765ae66df45b1ed3620",
+        "size": 272356
+      },
+      {
+        "path": "robots/humanoid/vega_1/meshes/collision/head_l3.obj",
+        "sha256": "5ae353bec15fe5c1eb8c194543bdcbe9b1c9da14e1cf3f544e765bca6b2a41d7",
+        "size": 689012
+      },
+      {
+        "path": "robots/humanoid/vega_1u/meshes/visual/base_link.glb",
+        "sha256": "f6f8955d99754e753e90e8da430dc951e5d64f81f0fee3270bc9665e8fd6daff",
+        "size": 726520
+      },
+      {
+        "path": "robots/humanoid/vega_1u/meshes/visual/lift_link.glb",
+        "sha256": "35760a9098f0cd9c58babc5124a59f929cf484180b6cd3c3e04a9942b0941d9f",
+        "size": 189996
+      },
+      {
+        "path": "robots/humanoid/vega_1u/meshes/visual/torso_link.glb",
+        "sha256": "403ccb99a7ee9687aef62fcd2b54754b3eea11d8b472ad3b6563548c1ae1c3f2",
+        "size": 1233288
+      }
+    ]
+  }
+}

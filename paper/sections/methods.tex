@@ -1,0 +1,257 @@
+% Methods: what is designed and built so far. Numbers in the testbed tables come from the repository's runs
+% (README "Results"); rerun before submission.
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Problem setting}
+A robot arm holds a hand tool and applies it to a workpiece: one arm, one tool, one target. We study three tools
+whose loads on the grasp span the regimes a general tool controller must handle:
+\begin{itemize}
+  \item \textbf{hammer} driving a pre-started nail: an impulse of $\sim$\SI{4}{\milli\second} and
+    \SIrange{500}{700}{\newton} at a predictable time;
+  \item \textbf{hand saw} crosscutting a board: a periodic load that reverses with every stroke, with binding as an
+    untimed event;
+  \item \textbf{cordless driver} seating a wood screw or drilling through a board: a steady reaction torque with
+    untimed jerks (cam-out, clutch slip, the bit catching, breakthrough).
+\end{itemize}
+The task goal (nail flush, cut through, screw seated, hole through) must be reached without losing the tool,
+without the tool slipping in the grasp, and within the robot's hardware limits.
+
+\subsection{Architecture: anticipate, then react}
+The controller has four layers running at different rates (Fig.~\todo{flow chart}).
+\begin{description}
+  \item[L3, vision-language-action planner (\SIrange{1}{10}{\hertz}).] From camera images, proprioception and a
+    command (``drive it flush'', ``tap it in''), it outputs the task phase, the target, and a \emph{prediction} of
+    the coming load: the expected grip wrench over the task cycle $\hat{\vect{w}}(\phi)$, the contact time
+    $\hat t_c$, the tool mass and an estimate of the grip friction $\hat\mu$.
+  \item[L2, learned reactive layer (\SI{1}{\kilo\hertz}).] A small causal network conditioned on the L3 prediction.
+    Every millisecond it reads the last \SIrange{16}{32}{\milli\second} of wrist force/torque, pad accelerometers
+    and pressure arrays, and outputs corrections to the L1 set points: equilibrium pose, directional stiffness and
+    damping, feedforward wrench and grip force, plus estimates of the contact phase and of slip.
+  \item[L1, hand-designed controller (\SI{1}{\kilo\hertz}).] Cartesian impedance control with reference
+    limiting, impact detection, feedback gating and the hardware limits (Sec.~\ref{sec:l1}). It bounds whatever
+    L2 commands.
+  \item[L0, tool--target estimator.] Per cycle (strike, stroke, revolution) it estimates task progress (nail depth,
+    cut depth, screw seating), the workpiece's resistance and the slip of the tool in the grasp.
+\end{description}
+The split follows one physical constraint. A hammer blow lasts \SI{4}{\milli\second}, while grip actuators need
+\SIrange{50}{185}{\milli\second} to change force, so the grasp cannot be rescued during a blow: it must be set
+\emph{before} contact from a prediction (anticipation). Rebound, ringing, slip and jerks unfold over the following
+\SIrange{5}{60}{\milli\second}, where a \SI{1}{\kilo\hertz} loop can still act (reaction).
+
+\subsection{L1: impedance control around impacts}
+\label{sec:l1}
+The arm runs joint-torque control at \SI{1}{\kilo\hertz}:
+\begin{equation}
+  \vect\tau = J^\top\!\left(K\vect e + D\dot{\vect e} + \vect F_{\mathrm{ff}} + \Lambda\ddot{\vect x}_{\mathrm{ff}}\right)
+  + N\vect\tau_{\mathrm{null}} + \vect g(\vect q) + \vect c(\vect q,\dot{\vect q}),
+\end{equation}
+with $\vect e$ the pose error to the equilibrium (clipped to $\pm\SI{5}{\centi\metre}$, $\pm\SI{0.3}{\radian}$ so
+tracking error cannot inject force), $K$ and $D$ diagonal in a task frame, $D=2\zeta\sqrt{K\Lambda}$ by default,
+$\Lambda$ the task-space inertia and $N$ the dynamically consistent null-space projector. Stiffness changes are
+slew-limited (\SI{5e4}{\newton\per\metre\per\second}) to keep the controller passive. The commanded torque is
+clipped to the joint ratings and rate-limited to \SI{1000}{\newton\metre\per\second} (libfranka's limit).
+
+\paragraph{Impacts} Contact is flagged by the first of three detectors: a generalized-momentum observer
+\cite{haddadin2017collisions} (gain \SI{400}{\per\second}), the wrist force along the strike axis departing
+\SI{35}{\newton} from its \SI{10}{\milli\second} baseline, and the pad accelerometer departing
+\SI{60}{\metre\per\second\squared} from its \SI{5}{\milli\second} baseline. The swing reference follows reference
+spreading \cite{vansteen2024rs}: an ante-impact reference continued through the expected contact, an interim mode
+around the predicted contact time and a post-impact reference started at the flag. For \SI{50}{\milli\second} after
+the flag, joint-velocity feedback is replaced by the reference velocity, since ringing makes measured velocity
+unreliable \cite{vansteen2024simtoreal,yang2021impactinvariant}.
+
+\paragraph{Swing under hardware limits} The strike speed is capped at a margin (0.8) of the fastest speed the joint
+velocity limits allow along the strike path at the strike pose, $v_{\mathrm{cap}}=\min_i
+\dot q_i^{\max}/|(J^{+}\vect t)_i|$, and the swing acceleration at 0.6 of what the joint torque limits can push
+there. The swing peaks just before the nail and arrives braking, so the torque reversal is under way when the blow
+lands; a swing still accelerating at contact keeps driving the arm into the nail for the
+$\sim$\SI{170}{\milli\second} a torque-rate-limited joint needs to reverse. The path may be a straight line with the
+tool's orientation held, or an arc: the tool turns about a pivot a distance $L$ behind the face along the handle,
+so the face moves on a circle and meets the nail square while the shoulder and elbow, not the wrist, drive the
+swing.
+
+\subsection{Grip and impedance from a predicted load}
+\label{sec:grip}
+The same law sets grip force and arm stiffness for all three tools. Each task is a cycle with phase $\phi$
+(strike, stroke, revolution). L3 predicts the wrench the tool will put on the grasp over the cycle,
+$\hat{\vect w}(\phi)$, split into the force tangential to the pads $\hat f_t$ and the torque about the pad normal
+and the handle axis $\hat\tau$. The grip set point is commanded one actuator latency $\tau_a$ ahead:
+\begin{equation}
+  \begin{aligned}
+  F_g(t) = (1+m_k)\,\max\!\Big(&\frac{\hat f_t(\phi(t+\tau_a))}{2\hat\mu},\;
+                                  \frac{\hat\tau(\phi(t+\tau_a))}{2\hat\mu r}\Big)\\
+         &+ F_{\min} + \Delta F_{\mathrm{L2}}(t),
+  \end{aligned}
+  \label{eq:grip}
+\end{equation}
+with $r$ the handle radius, $m_k$ a safety margin, $F_{\min}$ a holding floor and $\Delta F_{\mathrm{L2}}$ the
+reactive layer's correction. Loads are routed by how predictable their timing is and how fast they are:
+\begin{itemize}
+  \item slow, predictable loads (swing inertia, saw strokes, steady drill torque): feedforward from
+    $\hat{\vect w}(\phi)$ plus feedback;
+  \item fast loads at a predictable time (a blow, a screw head seating): grip and stiffness raised before
+    $\hat t_c$; velocity feedback gated after the flag;
+  \item fast loads at unpredictable times (cam-out, binding, a bent nail, breakthrough): a standing margin set by
+    the prediction's uncertainty, the L2 reaction, and passive pad and wrist compliance for what no actuator can
+    follow.
+\end{itemize}
+For the hammer the grip ramp starts at least \SI{150}{\milli\second} before the predicted contact and peaks
+\SI{60}{\milli\second} after it, following human grip during collisions, where grip force rises for
+$\sim$\SI{200}{\milli\second} before impact and peaks $\sim$\SI{60}{\milli\second} after peak load
+\cite{johansson1988programmed,turrell1999grip,white2011grip}; in humans the same predictive grip--load coupling is
+seen in cyclic movements \cite{flanagan1993modulation}. After each cycle $k$ the margin is updated from the measured
+slip $s_k$:
+\begin{equation}
+  m_{k+1} = \operatorname{clip}\!\left(m_k + \gamma\,(s_k - s^\star),\; m_{\min},\; m_{\max}\right),
+\end{equation}
+and the residual between predicted and measured grip wrench updates $\hat{\vect w}(\phi)$, an iterative-learning
+update indexed by phase. Slip is never rescued within a blow; it changes the next cycle.
+
+\subsection{Sensing}
+The wrist carries a 6-axis force/torque sensor at \SI{4}{\kilo\hertz}. Each pad of the parallel gripper carries an
+$8\times8$ pressure array (\SI{17}{\milli\metre}) at \SI{1}{\kilo\hertz}, with \SI{0.1}{\newton} noise and a
+\SI{20}{\newton} per-taxel range, and a 3-axis accelerometer at \SI{8}{\kilo\hertz} ($\pm16\,g$). Joint encoders and
+torques run at \SI{1}{\kilo\hertz}. Each sensor model applies a bandwidth filter, decimation, latency, bias, noise,
+quantization and saturation.
+
+The dexterous hand wears TaxelScan skins: a 128-taxel sheet on the palm and 32-taxel patches on each finger's
+fingertip pad and middle segment, 448 taxels in all, each patch scanned at \SI{1}{\kilo\hertz} by its own RP2350
+board. Every taxel is ray-cast onto the palmar surface of its link's detailed mesh, so the patches follow the
+fingers' curvature. A contact's normal force is distributed over the taxels as on an elastic foundation (load in
+proportion to the skin's compression, found by rays from the taxels to the touching tool), so a handle across the
+palm loads a band. The readout models the board: a piezoresistive divider, the 12-bit SAR ADC at
+\SI{500}{ksps} (ENOB 9.2), a sequential scan whose per-taxel time skew is kept, calibration residuals, and USB
+latency.
+
+\subsection{Simulation testbed}
+\label{sec:testbed}
+The testbed is built on MuJoCo \cite{todorov2012mujoco} at \SI{8}{\kilo\hertz} (\SI{0.125}{\milli\second},
+implicit-fast integration, elliptic friction cones and a no-slip pass, needed for a static grasp to hold). All
+contacts are explicit pairs. Every robot and hand comes from its maker's published model at a pinned commit, and its
+limits are enforced or monitored as the hardware would:
+\begin{itemize}
+  \item \textbf{Franka FR3} with torque control: joint torques (\SIrange{12}{87}{\newton\metre}) and the
+    \SI{1000}{\newton\metre\per\second} torque rate enforced; joint velocities, ranges and the \SI{3}{\kilo\gram}
+    payload monitored;
+  \item \textbf{Franka Hand} with compliant \SI{17}{\milli\metre} pads and a grip force loop at \SI{500}{\hertz};
+  \item \textbf{WUJI Hand 2} (20 joints, per-joint torque ratings of \SIrange{0.2}{2}{\newton\metre}) holding the
+    hammer in a power wrap synthesized offline; joint impedance at \SI{1}{\kilo\hertz}; backdrivable or
+    self-locking drives (a ratchet on the joint limits), with hard-stop and gearbox loads monitored against the
+    ratings;
+  \item \textbf{Dexmate Vega U} humanoid (two 7-joint arms on a fixed pedestal) with a WUJI hand on each arm. As
+    on the hardware, its arms take only joint position targets at \SI{100}{\hertz}, tracked by torque-limited PD
+    servos; a host loop detects impacts at \SI{1}{\kilo\hertz} and sends differential-IK targets with gravity-droop
+    compensation, rate-limited to 90\,\% of the joint velocity limits.
+\end{itemize}
+Ground truth the sensors never see is logged every step: tool--target contact force, task progress, and the tool's
+pose in the grasp (slip).
+
+\paragraph{Plants} MuJoCo cannot remove material, so each workpiece is a small state model whose forces act on the
+tool.
+\begin{itemize}
+  \item \emph{Nail.} A slide joint whose Coulomb resistance grows with depth (\SI{450}{\newton} plus
+    \SI{e4}{\newton\per\metre}), with viscous crushing; the hammer--nail contact damping is set from the approach
+    speed just before contact (velocity-dependent restitution) and frozen through the blow.
+  \item \emph{Saw.} The kerf depth $c$ is a state. At the ends of the stretch of teeth over the board, the kerf
+    bottom supports the blade with $k_n\,(e-c)^+$ plus damping ($e$: the tooth's depth below the surface); the
+    teeth resist the stroke with $\mu_c F_n$ plus drag; on the cutting stroke the kerf deepens at
+    $\dot c = F_n|v_s|/k_c(c)$, with a knot raising $k_c$ over a depth range; once the kerf is started its walls push
+    the blade back beyond the side clearance, adding binding friction.
+  \item \emph{Driver and screw.} A motor $\tau_m = \tau_s(u - \omega/\omega_0)$ with a soft-start trigger and an
+    electronic brake drives the spindle through a clutch that slips above its setting with a detent ripple. The
+    screw advances one pitch per turn against a torque growing with depth and rising steeply once the head is flush.
+    The bit cams out of the recess when the torque exceeds $c_{\mathrm{cam}}F_a(1-\theta/\theta_{\max})$ ($F_a$ the
+    axial push, $\theta$ the bit's misalignment), with a kick and ripple; repeated cam-outs strip the recess. The
+    housing carries the output torque plus the rotor's acceleration.
+  \item \emph{Driver and hole.} Thrust above a threshold sets the feed per revolution and the torque; over the last
+    \SI{2}{\milli\metre} the support fades and the bit grabs; once through, the tool loses its support.
+\end{itemize}
+
+\paragraph{Tasks with scripted layers} Until the learned layers exist, scripted stand-ins issue the same L2 commands.
+The hammer swing plans a limit-aware strike, ramps the grip before contact and raises the margin after a slip. The
+saw lowers the teeth onto the board and strokes at \SI{1.2}{\hertz} ($\pm\SI{7}{\centi\metre}$) with a
+\SI{25}{\newton} push and a soft spring along the cut. The driver brings the bit to the screw, pushes
+\SI{70}{\newton} along the bit (soft along it, stiff across it), pulls the trigger once the wrist force reads the
+push, and stops when the tool's own telemetry reports the screw seated or the bit through.
+
+\paragraph{Replaying recorded motions} No public dataset records impact or grip forces in tool use, so recorded
+motions supply kinematics and the testbed supplies the contact. Human hammering from the Adroit/DAPG demonstrations
+(VR and data glove, \SI{100}{\hertz}) and tool trajectories tracked from human videos in DexToolBench
+(\SI{3}{\hertz}) are retargeted face-first, so every recorded contact becomes a square blow on our nail head: the
+recorded strike is placed on our nail along our strike axis, each contact is aimed at the head, the motion across the
+nail axis is blended out within \SI{80}{\milli\second} of a contact, the face is turned square at every contact, a
+soft clamp keeps the face \SI{3}{\milli\metre} short of the head between blows, and the grasp pose follows from our
+hammer's face offset. A time warp slows the path only where it exceeds the arm's speed or acceleration caps (ignoring
+the deceleration within \SI{40}{\milli\second} of a recorded contact, which the nail produces), and damped
+least-squares IK along the path checks reach and joint speeds. On the FR3 the 22 Adroit demonstrations that contain
+blows replay within all limits and track to \SIrange{2.5}{4.4}{\milli\metre} RMS; 79 blows land for 75 recorded
+contacts, one off-centre and none against the shank. But they need 2.2--4.6$\times$ the recorded time: a human hand
+accelerates far beyond what the arm can, so the replayed blows land at \SIrange{0.07}{0.61}{\metre\per\second}. On
+the Vega U, 21 of the 22 replay (73 blows for 72 contacts, \SIrange{155}{370}{\newton}); its position interface lags,
+so 18 blows end with the tool resting on the nail for a moment.
+
+\subsection{Preliminary testbed results}
+Table~\ref{tab:hammer} summarizes ten-strike hammer episodes at \SI{8}{\kilo\hertz}, and Table~\ref{tab:tools}
+the saw and driver tasks. They come from the scripted layers and fixed grip settings; they establish the testbed and
+the baselines the learned layers will be compared against.
+
+\begin{table}[t]
+  \centering
+  \caption{Hammer, ten strikes (\SI{8}{\kilo\hertz}, seed 0, scripted layers).}
+  \label{tab:hammer}
+  \resizebox{\columnwidth}{!}{%
+  \begin{tabular}{@{}lcccc@{}}
+    \toprule
+    & FR3 + & FR3 + & FR3 + WUJI & Vega U + \\
+    & Franka Hand & WUJI & self-locking & WUJI \\
+    \midrule
+    Strikes on nail    & 10/10 & 10/10 & 10/10 & 10/10 \\
+    Nail driven (mm)   & 13.8 & 12.3 & 15.6 & 10.2 \\
+    Face speed (m/s)   & 1.3--1.8 & 1.2--2.2 & 1.2--1.8 & 1.08--1.13 \\
+    Flag latency (ms)  & 0.4--1.1 & 0.25--1.1 & 0.25--1.1 & 0.6--1.75 \\
+    Tilt/strike (deg)  & 0.5--2.9 & 1.9--30.7 & 0.1--0.5 & 0.3--2.8 \\
+    Arm limits         & held & J6 speed 1.14$\times$ & J6 speed 1.31$\times$ & held \\
+    Hand joint loads   & --- & stops 16$\times$ & gearbox 32$\times$ & stops 4$\times$ \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+\begin{table}[t]
+  \centering
+  \caption{Saw and driver on the FR3 + Franka Hand (\SI{8}{\kilo\hertz}, scripted layers, grip \SI{60}{\newton}
+  per pad).}
+  \label{tab:tools}
+  \resizebox{\columnwidth}{!}{%
+  \begin{tabular}{@{}lccc@{}}
+    \toprule
+    & Saw, crosscut & Driver, screw & Driver, hole \\
+    \midrule
+    Goal                  & \SI{20}{\milli\metre} cut & seated & \SI{38}{\milli\metre} through \\
+    Reached at (s)        & 23.1 (54 strokes) & 2.16 & 7.14 \\
+    Peak load             & \SI{49}{\newton} normal &  \SI{1.88}{\newton\metre}, \SI{87}{\newton} & \SI{2.41}{\newton\metre}, \SI{90}{\newton} \\
+    Net slip in grasp     & \SI{1.0}{\milli\metre}, \SI{4.8}{\degree} & \SI{0.2}{\milli\metre}, \SI{2.4}{\degree} & \SI{0.1}{\milli\metre}, \SI{0.6}{\degree} \\
+    Untimed events        & binding (\SI{23}{\newton}) & 0 cam-outs & breakthrough \\
+    Arm limits            & held & held & held \\
+    \bottomrule
+  \end{tabular}}
+\end{table}
+
+Three findings shape the method. (i) On the FR3, enforcing the torque-rate limit made an accelerate-through-contact
+swing infeasible (it demanded up to 43$\times$ the limit), which motivated the braking, limit-capped swing. (ii) A
+dexterous power wrap at the WUJI hand's rated torques does not hold a blow: the handle turns
+\SIrange{2}{31}{\degree} per strike and finger joints hit their stops at up to 16$\times$ their rating; with
+self-locking drives the tool holds (\SIrange{0.1}{0.5}{\degree}) but the gearboxes carry up to 32--40$\times$ their
+rating. Holding by squeeze alone is therefore not available to a dexterous hand; holding must come from geometry,
+timing and locking. (iii) At a fixed grip, a parallel gripper holding a driver by its body yields \SI{2.4}{\degree} about the bit when
+the clutch ratchets at seating, and a saw handle flexes the pads by up to \SI{9}{\degree} each stroke and creeps
+\SI{4.8}{\degree} over 27 strokes: the jerk and periodic loads that Eq.~\eqref{eq:grip} and the cycle-to-cycle
+margin update are meant to anticipate.
+
+\subsection{Planned evaluation}
+\todo{metrics: progress per cycle, slip per cycle, grip effort, reaction latency from contact to actuator; baselines:
+fixed high grip at equal mean force, reactive-only slip control, hand-designed L1 only, a slow (24--30\,Hz) fast
+layer as in \cite{xue2025rdp}, a grasp optimizer as in \cite{gupta2026grasptoact,trupin2025physics}; ablations:
+anticipation lead time, L2 rate (30, 100, 300, 1000\,Hz), sensing rate and modality, VLA prediction removed;
+sim-to-real: a force-truth rig (force plate, nail-depth encoder, hammer IMU) to check the simulated impulses.}

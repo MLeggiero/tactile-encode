@@ -1,0 +1,353 @@
+"""Scripted swing: a 200 Hz state machine that plays the role of L2 plus a trivial L3.
+
+Phases: approach -> windup -> swing (ante reference through the nail, detector armed 20 ms before the
+predicted contact) -> post (hold, then recover to the hover pose) -> settle -> next strike or done.
+
+The stroke is a straight line along the strike axis. The swing is a quintic from rest at the windup
+point to the strike speed at the predicted contact, then continues at that speed for `overshoot`
+past it (reference spreading's ante reference). Stiffness is high along the strike axis and moderate
+across it during the swing, nominal otherwise.
+
+Grip follows the human impact template (Johansson & Westling; White et al.): hold force until
+t_c - 150 ms, ramp to a pre-load scaled by tool momentum by t_c - 50 ms, keep rising after the impact
+flag to a peak ~60 ms later, then decay back to the hold force over 200 ms. Slip measured on one strike
+raises the hold margin for the next one (feedback updates the next strike, not the current one).
+
+Aiming: the swing line is shifted so the hammer face, not the TCP, passes through the nail. Before each
+windup the face position at the settled hover pose is predicted from the TCP pose and the tool-in-hand
+estimate (L0's "tool pose drift in the grasp"), so slip from the previous blow is re-aimed. The lateral
+drift the swing itself adds (friction, dynamic tracking error) is learned across strikes with gain
+`aim_gain` and pre-compensated (iterative re-aiming). The estimates default to simulation truth,
+standing in for L0 and for vision of the nail.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from dataclasses import dataclass
+
+import numpy as np
+
+from tactile_sim.behaviors.trajectories import (
+    Segment,
+    StrikePath,
+    brake_profile,
+    min_jerk,
+    quintic_coeffs,
+    strike_profile,
+    swing_duration,
+)
+from tactile_sim.control.interface import L2Command, Mode
+from tactile_sim.control.reference_spreading import PlainRef, ReferenceSpreader
+from tactile_sim.model.builder import strike_axis
+
+
+def _smoothstep(x: float) -> float:
+    x = min(max(x, 0.0), 1.0)
+    return x * x * x * (10 - 15 * x + 6 * x * x)
+
+
+@dataclass
+class StrikePlan:
+    idx: int
+    t_start: float  # swing start
+    t_c_pred: float
+    s_contact: float  # predicted contact, along the strike axis from the hover pose
+    v_strike: float
+    F_hold: float
+    F_pre: float
+    F_peak: float
+    t_arm: float
+    t_flag: float | None = None
+    missed: bool = False
+
+
+class ScriptedSwing:
+    def __init__(self, tb, n_strikes: int | None = None, depth_estimate: Callable[[], float] | None = None,
+                 on_swing_start=None, on_strike_end=None, tool_estimate=None, nail_estimate=None,
+                 aim_gain: float = 0.7):
+        self.tb = tb
+        self.cfg = tb.cfg
+        sw = self.cfg.swing
+        self.n_strikes = sw.n_strikes if n_strikes is None else n_strikes
+        self.axis = strike_axis(self.cfg)
+        self.origin = tb.world.hover_tcp.copy()
+        self.R = tb.world.tcp_R_nominal.copy()
+        # strike frame for the stiffness: z along the strike axis
+        x_k = tb.world.tcp_R_nominal[:, 0]  # along the handle, across the strike
+        z_k = self.axis
+        self.R_K = np.column_stack([x_k, np.cross(z_k, x_k), z_k])
+        c = self.cfg.controller
+        self.K_nom = np.array(c.k_trans + c.k_rot, dtype=float)
+        self.K_strike = np.array(tuple(sw.strike_k) + (250.0, 250.0, 250.0))
+        self.depth_estimate = depth_estimate or (lambda: tb.world.plant.depth)
+        self.tool_estimate = tool_estimate or tb.world.hammer_in_hand
+        w = tb.world
+        self.nail_estimate = nail_estimate or (lambda: w.data.site_xpos[w.site["nail_head_top"]].copy())
+        from tactile_sim.model.tool_hammer import face_offset
+
+        self.face_local = np.array(face_offset(self.cfg.hammer))
+        self.aim_gain = aim_gain
+        self.aim_offset = np.zeros(3)  # line origin shift from the nominal hover pose
+        self.drift_per_v2 = np.zeros(3)  # learned lateral face drift per (strike speed)^2
+        self.face_hover = None
+        self.on_swing_start = on_swing_start
+        self.on_strike_end = on_strike_end
+        self.grip_margin = 0.0
+        self.m_tool = tb.l1.payload_mass
+        self.v_cap, self.a_cap = self._arm_caps()
+        self.reset()
+
+    def _arm_caps(self) -> tuple[float, float]:
+        """What the arm can do along the strike axis at the hover pose (orientation held):
+        v_cap = min_j qd_max_j / |dq_j/dv| from the joint velocity limits, and a_cap = 60 % of the force the
+        joint torque limits can apply along the axis, over the arm + tool's effective mass along it."""
+        import mujoco
+
+        from tactile_sim.control.kinematics import site_jacobian, task_inertia
+        from tactile_sim.sim.world import full_inertia
+
+        w = self.tb.world
+        if w.q_hover is None:
+            return np.inf, np.inf
+        m = w.model
+        d = mujoco.MjData(m)
+        d.qpos[:] = w.data.qpos
+        d.qpos[w.arm_qadr] = w.q_hover
+        mujoco.mj_forward(m, d)
+        J = site_jacobian(m, d, w.tcp_site, w.arm_dofs)
+        spec = w.arm_spec
+        M = full_inertia(m, d, np.zeros((m.nv, m.nv)))[np.ix_(w.arm_dofs, w.arm_dofs)]
+        if w.geom.L <= 0:
+            twist = np.concatenate([self.axis, np.zeros(3)])
+            dq = np.linalg.pinv(J) @ twist
+            v_cap = float(np.min(spec.velocity / np.maximum(np.abs(dq), 1e-9)))
+            m_eff = float(twist @ task_inertia(M, J) @ twist) + self.tb.l1.payload_mass
+            f_cap = float(1.0 / np.max(np.abs(J.T @ twist) / spec.torque))
+            return v_cap, 0.6 * f_cap / m_eff
+        # arc: per unit face speed along the path the joint rates are J^+ twist; per unit face acceleration the
+        # joint torques (arm + tool inertia) are M_eff J^+ twist. Taken at the hover pose.
+        dx, om, _ = w.geom.tangent(0.0)
+        dq = np.linalg.pinv(J) @ np.concatenate([dx, om])
+        v_cap = float(np.min(spec.velocity / np.maximum(np.abs(dq), 1e-9)))
+        mass, com = w.hammer_payload()
+        M_eff = M + w.payload_mass_matrix(mass, com, w.hammer_inertia_tcp())
+        a_cap = float(np.min(spec.torque / np.maximum(np.abs(M_eff @ dq), 1e-9)))
+        return v_cap, 0.6 * a_cap
+
+    # ------------------------------------------------------------------
+    def face_estimate(self) -> np.ndarray:
+        """Face position from the TCP pose and the tool-in-hand estimate."""
+        p_t, R_t = self.tb.world.tcp_pose()
+        p_rel, rv = self.tool_estimate()
+        import mujoco
+
+        q = np.zeros(4)
+        ang = float(np.linalg.norm(rv))
+        mujoco.mju_axisAngle2Quat(q, rv / ang if ang > 0 else np.array([1.0, 0, 0]), ang)
+        R_rel = np.zeros(9)
+        mujoco.mju_quat2Mat(R_rel, q)
+        return p_t + R_t @ (p_rel + R_rel.reshape(3, 3) @ self.face_local)
+
+    def _lateral(self, v: np.ndarray) -> np.ndarray:
+        return v - (v @ self.axis) * self.axis
+
+    def reset(self) -> None:
+        self.phase = "approach"
+        self.phase_t0 = self.tb.t
+        self.k = 0
+        self.plan: StrikePlan | None = None
+        self.plans: list[StrikePlan] = []
+        self.cmd = L2Command(self.tb.t, self.origin.copy(), self.R.copy(), K=self.K_nom.copy(),
+                             F_grip=self.cfg.controller.grip_hold)
+        x_now = self.tb.world.tcp_pose()[0]
+        self.line_origin = self.origin.copy()
+        s0 = self._geom().s_of(x_now)
+        T = self.cfg.swing.approach_time
+        self.cmd.ref = PlainRef(self._path([Segment(self.tb.t, T, min_jerk(s0, 0.0, T))]))
+        self.tb.l1.set_command(self.cmd)
+        self.done = False
+
+    @property
+    def F_hold(self) -> float:
+        # continuous-hold ceiling of the hand (Franka Hand: 70 N per pad)
+        return min(self.cfg.controller.grip_hold + self.grip_margin, self.tb.world.hand.grip_hold_max)
+
+    def _set_phase(self, name: str, t: float) -> None:
+        self.phase = name
+        self.phase_t0 = t
+
+    # ------------------------------------------------------------------
+    def tick(self, t: float) -> None:
+        sw = self.cfg.swing
+        cmd = self.cmd
+        cmd.t = t
+        if self.done:
+            return
+        if self.tb.grip.dropped:
+            self.done = True
+            return
+        if self.phase == "approach":
+            if t >= self.phase_t0 + sw.approach_time + 0.1:
+                self._start_windup(t)
+        elif self.phase == "windup":
+            if t >= self.phase_t0 + sw.windup_time + 0.05:
+                self._start_swing(t)
+        elif self.phase == "swing":
+            p = self.plan
+            if not self.tb.l1.detector.armed and p.t_flag is None and t >= p.t_arm and \
+                    not getattr(self, "_armed_once", False):
+                self.tb.l1.detector.arm(True)
+                self._armed_once = True
+            rs = cmd.ref
+            if rs.t_switch is not None:
+                p.t_flag = None if rs.missed else rs.t_switch
+                p.missed = rs.missed
+                self.tb.l1.detector.arm(False)
+                self._set_phase("post", rs.t_switch)
+                cmd.K = self.K_nom.copy()
+        elif self.phase == "post":
+            if t >= self.phase_t0 + 0.02 + sw.recover_time:
+                self._set_phase("settle", t)
+                cmd.ref = PlainRef(self._path([Segment(t, 0.001, min_jerk(0, 0, 0.001))]))
+                cmd.R_K = np.eye(3)
+        elif self.phase == "settle":
+            if t >= self.phase_t0 + sw.settle_time:
+                if self.on_strike_end is not None:
+                    self.on_strike_end(self.plan)
+                self.k += 1
+                if self.k >= self.n_strikes or self.tb.world.plant.done():
+                    self.done = True
+                else:
+                    self._start_windup(t)
+        cmd.F_grip = self._grip(t)
+
+    # ------------------------------------------------------------------
+    def _start_windup(self, t: float) -> None:
+        sw = self.cfg.swing
+        self._set_phase("windup", t)
+        self.cmd.K = self.K_nom.copy()
+        self.cmd.R_K = np.eye(3)
+        self.line_origin = self.origin + self.aim_offset
+        x_now = self.tb.world.tcp_pose()[0]
+        s0 = self._geom().s_of(x_now)
+        self.cmd.ref = PlainRef(self._path([Segment(t, sw.windup_time, min_jerk(s0, -sw.windup_height,
+                                                                                   sw.windup_time))]))
+
+    def _start_swing(self, t: float) -> None:
+        sw = self.cfg.swing
+        self._set_phase("swing", t)
+        # static aim at the windup pose: shift the line so the face, plus the drift the swing is expected
+        # to add, lands on the nail. Tracking drift grows with the swing's acceleration, i.e. ~ v^2.
+        v_next = sw.first_tap_speed if (self.k == 0 and sw.first_tap_speed > 0) else sw.v_strike
+        v_next = min(v_next, sw.v_margin * self.v_cap)  # the drift was learned at the speed actually swung
+        self._v_swing = v_next
+        # where the face will be at the nominal contact if the tool moves rigidly along the path from here
+        s_c0 = self.tb.world.geom.s_c0
+        self.face_hover = self._face_at(s_c0)
+        err = self._lateral(self.nail_estimate() - self.drift_per_v2 * v_next**2 - self.face_hover)
+        self._aim_step = err
+        self.aim_offset += err
+        self.line_origin = self.origin + self.aim_offset
+        # path parameter at which the face reaches the nail head
+        x_now = self.tb.world.tcp_pose()[0]
+        s_now = self._geom().s_of(x_now)
+        s_c = s_c0 + float((self.nail_estimate() - self._face_at(s_c0)) @ self.axis)
+        dist = s_c - s_now
+        v_max = sw.v_margin * self.v_cap
+        a_max = min(sw.a_max, self.a_cap)
+        v = min(self._v_swing, v_max)
+        prof = None
+        while sw.brake_decel > 0 and prof is None and v > 0.2:
+            # brake in proportion to the contact speed: a gentle tap should not peak far above its speed
+            a_b = min(sw.brake_decel * v / sw.v_strike, 0.8 * a_max)
+            prof = strike_profile(dist, v, a_b, a_max, min(v_max, 1.25 * v))
+            if prof is None:
+                v *= 0.97  # arriving braking means peaking above the contact speed: lower it until feasible
+        self._v_swing = v
+        if prof is not None:
+            T, c = prof
+            seg_swing = Segment(t, T, c + np.array([s_now, 0, 0, 0, 0, 0]))
+            T_over, d_over = brake_profile(v, a_b)
+            seg_over = Segment(t + T, T_over, quintic_coeffs(s_c, v, -a_b, s_c + d_over, 0.0, 0.0, T_over))
+        else:
+            T = swing_duration(dist, v, a_max=a_max)
+            seg_swing = Segment(t, T, quintic_coeffs(s_now, 0.0, 0.0, s_c, v, 0.0, T))
+            T_over = sw.overshoot / v
+            seg_over = Segment(t + T, T_over, quintic_coeffs(s_c, v, 0.0, s_c + sw.overshoot, v, 0.0, T_over))
+        t_c = t + T
+        ante = self._path([seg_swing, seg_over])
+        rs = ReferenceSpreader(ante, self._make_post, t_c, interim_lead=0.010, timeout=sw.strike_timeout)
+        rs.R = self.R
+        rs.t_armed = t_c - 0.020
+        F_hold = self.F_hold
+        hand = self.tb.world.hand
+        f_max = hand.grip_force_max
+        F_pre = float(np.clip(F_hold + sw.grip_pre_gain * self.m_tool * v, F_hold, hand.grip_pre_max))
+        self.plan = StrikePlan(self.k, t, t_c, s_c, v, F_hold, F_pre, min(1.2 * F_pre, f_max), t_c - 0.020)
+        self.plans.append(self.plan)
+        self._armed_once = False
+        self.cmd.ref = rs
+        self.cmd.K = self.K_strike.copy()
+        self.cmd.R_K = self.R_K.copy()
+        self.cmd.t_c_pred = t_c
+        if self.on_swing_start is not None:
+            self.on_swing_start(self.plan)
+
+    def _make_post(self, t_switch: float, x_now: np.ndarray):
+        sw = self.cfg.swing
+        # iterative re-aim: learn the lateral drift the swing adds between its start and contact (or timeout);
+        # the face was shifted by the static aim at swing start, so measure from the aimed position
+        if self.face_hover is not None:
+            d_k = self._lateral(self.face_estimate() - (self.face_hover + self._aim_step))
+            self.drift_per_v2 += self.aim_gain * (d_k / self._v_swing**2 - self.drift_per_v2)
+        s_f = self._geom().s_of(x_now)
+        segs = [Segment(t_switch, 0.02, min_jerk(s_f, s_f, 0.02)),
+                Segment(t_switch + 0.02, sw.recover_time, min_jerk(s_f, 0.0, sw.recover_time))]
+        return self._path(segs)
+
+    def _face_at(self, s: float) -> np.ndarray:
+        """Face position predicted at path parameter s: the current face estimate carried rigidly from the hand's
+        current pose to the path pose at s (for a straight strike, a shift along the strike axis)."""
+        g = self._geom()
+        x_now, R_now = self.tb.world.tcp_pose()
+        if g.L <= 0:
+            return self.face_estimate() + self.axis * (s - g.s_of(x_now))
+        # arc: the hand goes from where it actually is to the path pose at s, carrying the tool with it
+        p1, R1 = g.pose(s)
+        return p1 + R1 @ R_now.T @ (self.face_estimate() - x_now)
+
+    def _geom(self):
+        """The strike path shifted by the current aim (line_origin - origin)."""
+        return self.tb.world.geom.shifted(self.line_origin - self.origin)
+
+    def _path(self, segs) -> StrikePath:
+        return StrikePath(self._geom(), segs)
+
+    # ------------------------------------------------------------------
+    def _grip(self, t: float) -> float:
+        sw = self.cfg.swing
+        p = self.plan
+        F_hold = self.F_hold
+        if p is None or self.phase in ("approach", "windup") and p.idx != self.k:
+            return F_hold
+        if p.t_flag is None and not p.missed:
+            t_ramp0 = p.t_c_pred - sw.grip_lead
+            t_ramp1 = p.t_c_pred - sw.grip_ramp_end
+            if t < t_ramp0:
+                return p.F_hold
+            return p.F_hold + (p.F_pre - p.F_hold) * _smoothstep((t - t_ramp0) / (t_ramp1 - t_ramp0))
+        t_ref = p.t_flag if p.t_flag is not None else p.t_c_pred + sw.strike_timeout
+        t_pk = t_ref + sw.grip_peak_delay
+        if t < t_pk:
+            return p.F_pre + (p.F_peak - p.F_pre) * _smoothstep((t - t_ref) / sw.grip_peak_delay)
+        return p.F_peak + (F_hold - p.F_peak) * _smoothstep((t - t_pk) / sw.grip_decay)
+
+    def register_slip(self, slip_trans: float, slip_rot: float) -> None:
+        """Feedback for the next strike: raise the hold margin when this strike slipped."""
+        if slip_trans > 0.002 or slip_rot > np.radians(0.5):
+            self.grip_margin = min(self.grip_margin + self.cfg.swing.grip_margin_step, 40.0)
+
+    @property
+    def mode(self) -> Mode:
+        return self.cmd.mode
