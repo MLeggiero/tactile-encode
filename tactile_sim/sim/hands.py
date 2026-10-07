@@ -46,6 +46,11 @@ class HandIO:
         self.world = world
         m = world.model
         self.tool_geoms = frozenset(g for g in range(m.ngeom) if m.geom_bodyid[g] == world.hammer_body)
+        # first-order lag between the commanded grip and the grip the drives apply (GripperCfg.grip_lag)
+        lag = world.cfg.gripper.grip_lag
+        self._lag_a = 1.0 - float(np.exp(-world.dt / lag)) if lag > 0.0 else 1.0
+        self._target = 0.0
+        self._applied: float | None = None
 
     @property
     def accel_names(self) -> list[str]:
@@ -61,11 +66,36 @@ class HandIO:
 
     # --- to implement
     def init_pose(self) -> None: ...
-    def set_grip(self, f: float) -> None: ...
+
+    def set_grip(self, f: float) -> None:
+        """Command a grip (grip-command units). With a lag the drives reach it at the physics rate (`actuate`)."""
+        self._target = self._clip(f)
+        if self._lag_a >= 1.0 or self._applied is None:
+            self._applied = self._target
+            self._apply(self._applied)
+
+    def actuate(self) -> None:
+        """One physics step of the grip lag (World.step calls this before mj_step)."""
+        if self._applied is not None and self._applied != self._target:
+            self._applied += self._lag_a * (self._target - self._applied)
+            self._apply(self._applied)
+
+    def reset_actuation(self) -> None:
+        self._applied = None
+
+    def _clip(self, f: float) -> float:
+        raise NotImplementedError
+
+    def _apply(self, f: float) -> None:
+        raise NotImplementedError
     def tick(self, t: float) -> None:  # hand-level control at the hand's own rate
         pass
 
     def grip_from_patches(self, forces: np.ndarray) -> float:
+        raise NotImplementedError
+
+    def command(self) -> float:
+        """Grip the hand is commanded to apply (grip-command units): its effort, as opposed to contact load."""
         raise NotImplementedError
 
     # --- shared
@@ -233,10 +263,21 @@ class HandIO:
         nw = p.taxel_normal[idx] @ R.T
         back = 0.003  # start inside the skin so a tool already pressing in is still found
         gap = np.full(idx.size, np.inf)
+        orig = pw - back * nw
         for g in tool:
             mesh = m.geom_type[g] == mujoco.mjtGeom.mjGEOM_MESH
-            for j in range(idx.size):
-                o = pw[j] - back * nw[j]
+            cand = range(idx.size)
+            r = float(m.geom_rbound[g])
+            if self._ray_cull and r > 0.0:
+                # a ray can only hit the geom if it passes within its bounding sphere (an exact cut: the rays
+                # skipped would all miss), which skips most taxel/handle-slice pairs
+                v = d.geom_xpos[g] - orig
+                t = np.einsum("ij,ij->i", v, nw)
+                perp2 = np.einsum("ij,ij->i", v, v) - t * t
+                r_tol = r * (1.0 + 1e-6) + 1e-9
+                cand = np.flatnonzero((perp2 <= r_tol * r_tol) & (t >= -r_tol))
+            for j in cand:
+                o = orig[j]
                 if mesh:
                     h = mujoco.mj_rayMesh(m, d, g, o, nw[j])
                 else:
@@ -254,6 +295,7 @@ class HandIO:
 
     _skin_key = None
     _skin_by_geom: dict = {}
+    _ray_cull = True  # bounding-sphere cut in _foundation (identical results; off only to verify that)
 
 
 class FrankaHandIO(HandIO):
@@ -282,10 +324,16 @@ class FrankaHandIO(HandIO):
         w = self.world
         w.data.qpos[self.finger_qadr] = finger_q_touch(w.cfg.gripper, hammer_geometry(w.cfg.hammer).grip_half_width)
 
-    def set_grip(self, f: float) -> None:
+    def _clip(self, f: float) -> float:
         """Squeeze force per pad (N); positive closes."""
-        g = self.grip_force_max
-        self.world.data.ctrl[self.grip_act] = -float(np.clip(f, -g, g))
+        return float(np.clip(f, -self.grip_force_max, self.grip_force_max))
+
+    def _apply(self, f: float) -> None:
+        self.world.data.ctrl[self.grip_act] = -f
+
+    def command(self) -> float:
+        """Grip the drive applies, in grip-command units (N per pad)."""
+        return -float(self.world.data.ctrl[self.grip_act])
 
     def grip_from_patches(self, forces: np.ndarray) -> float:
         return float(np.mean(forces))
@@ -363,8 +411,15 @@ class WujiHandIO(HandIO):
         r[self.jids, 0] = np.maximum(lo, self._range0[:, 0])
         r[self.jids, 1] = np.minimum(hi, self._range0[:, 1])
 
-    def set_grip(self, f: float) -> None:
-        self.s = float(np.clip(f / self.f_full, 0.0, 1.0))
+    def _clip(self, f: float) -> float:
+        return float(np.clip(f, 0.0, self.f_full))
+
+    def _apply(self, f: float) -> None:
+        self.s = f / self.f_full
+
+    def command(self) -> float:
+        """Grip the synergy applies, in grip-command units (N of summed patch force)."""
+        return self.s * self.f_full
 
     def tick(self, t: float) -> None:
         d = self.world.data

@@ -32,6 +32,12 @@ class Testbed:
         else:
             self.l1 = L1Controller(self.world, self.cfg, self.sensors, self.tau_ext, log=log)
         self.grip = GripForceLoop(self.world, self.cfg, self.sensors, log=log)
+        self.grip_boost = 0.0  # grip floor raised by the reactive slip loop (N, grip-command units)
+        self.reactive = None
+        if self.cfg.reactive.mode != "off":
+            from tactile_sim.control.reactive_slip import ReactiveSlip
+
+            self.reactive = ReactiveSlip(self)
         self.sched = RateScheduler(self.world.dt)
         self.l2_callbacks = []
         self._build_schedule()
@@ -43,6 +49,9 @@ class Testbed:
         self.sched.register("l2", self.cfg.swing.rate, self._l2_tick)
         self.sched.register("l1", c.rate, self.l1.tick)
         self.sched.register("grip", c.grip_rate, self._grip_tick)
+        if self.reactive is not None:
+            # after the grip loop and before the hand's joint law, so a detection reaches the joints this tick
+            self.sched.register("reactive", self.cfg.reactive.rate, self.reactive.tick)
         if self.world.hand.kind != "franka":
             # the hand's own joint controller (MIT mode), after the grip loop has set this tick's synergy
             self.sched.register("hand", self.cfg.gripper.hand_rate, self.world.hand.tick)
@@ -52,7 +61,8 @@ class Testbed:
             fn(t)
 
     def _grip_tick(self, t: float) -> None:
-        self.grip.tick(t, getattr(self.l1, "grip_setpoint", self.cfg.controller.grip_hold), self.l1)
+        setpoint = getattr(self.l1, "grip_setpoint", self.cfg.controller.grip_hold)
+        self.grip.tick(t, max(setpoint, self.grip_boost), self.l1)
 
     def reset(self, seed: int | None = None) -> None:
         if seed is not None:
@@ -63,6 +73,9 @@ class Testbed:
         self.sensors.reset(self.world.t)
         self.l1.reset()
         self.grip.reset()
+        self.grip_boost = 0.0
+        if self.reactive is not None:
+            self.reactive.reset()
         self.sched.reset()
         self.l1.hold_here(self.world.t)
         self.l1.grip_setpoint = self.cfg.controller.grip_hold

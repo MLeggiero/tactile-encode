@@ -22,6 +22,33 @@ def pair_force(model: mujoco.MjModel, data: mujoco.MjData, g1: int, g2: int) -> 
     return total, n
 
 
+def contact_wrench(model: mujoco.MjModel, data: mujoco.MjData, body_geoms: frozenset[int],
+                   other_geoms: frozenset[int], point: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Net contact force (N) and moment about `point` (N m), world frame, that `other_geoms` exert on `body_geoms`.
+
+    MuJoCo's contact normal points from geom1 to geom2, and mj_contactForce gives the force on geom2 in the contact
+    frame (rows of `frame`), so geom1 receives the opposite."""
+    F = np.zeros(3)
+    M = np.zeros(3)
+    f6 = np.zeros(6)
+    for i in range(data.ncon):
+        c = data.contact[i]
+        if c.geom2 in body_geoms and c.geom1 in other_geoms:
+            sign = 1.0
+        elif c.geom1 in body_geoms and c.geom2 in other_geoms:
+            sign = -1.0
+        else:
+            continue
+        if c.efc_address < 0:
+            continue
+        mujoco.mj_contactForce(model, data, i, f6)
+        R = c.frame.reshape(3, 3)
+        f = sign * (R.T @ f6[:3])
+        F += f
+        M += np.cross(c.pos - point, f) + sign * (R.T @ f6[3:])
+    return F, M
+
+
 def pulse_stats(t: np.ndarray, f: np.ndarray, frac: float = 0.05, max_gap: float = 0.001) -> dict[str, float]:
     """Peak, impulse and width of a force pulse.
 

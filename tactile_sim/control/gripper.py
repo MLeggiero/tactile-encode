@@ -1,4 +1,5 @@
-"""Grasp-force loop (500 Hz): PI + feedforward on the summed pad normal force from the pressure arrays,
+"""Grasp-force loop (500 Hz): PI + feedforward on the summed pad normal force from the pressure arrays
+(ControllerCfg.grip_loop = "closed"), or the setpoint passed straight to the hand as a commanded effort ("open"),
 plus drop detection (grip force collapses while the pad accelerometer spikes)."""
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ class GripForceLoop:
         self.cfg = cfg
         self.sensors = sensors
         self.dt = 1.0 / cfg.controller.grip_rate
+        if cfg.controller.grip_loop not in ("closed", "open"):
+            raise ValueError(f"unknown grip_loop {cfg.controller.grip_loop!r} (expected 'closed' or 'open')")
         self.do_log = log
         self.reset()
 
@@ -56,11 +59,13 @@ class GripForceLoop:
         f = self.measure()
         self.measured = f
         err = setpoint - f
-        u_ff = setpoint
-        u = u_ff + c.grip_kp * err + c.grip_ki * self.integral
         lo = 0.0 if setpoint > 0 else -f_max
-        if lo < u < f_max:  # anti-windup: integrate only when unsaturated
-            self.integral += err * self.dt
+        if c.grip_loop == "open":
+            u = setpoint  # commanded effort: the hand squeezes as told, whatever the patches read
+        else:
+            u = setpoint + c.grip_kp * err + c.grip_ki * self.integral
+            if lo < u < f_max:  # anti-windup: integrate only when unsaturated
+                self.integral += err * self.dt
         # while holding, the loop may relax the squeeze but never drive the fingers open
         u = float(np.clip(u, lo, f_max))
         self.world.set_grip_force(u)

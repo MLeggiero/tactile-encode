@@ -35,7 +35,7 @@ class _ToolBehavior:
         self.phase = "start"
         self.t0 = self.tb.t
         self.t_phase = self.tb.t
-        self.x0 = self.w.tcp_pose()[0].copy()
+        self.x0 = self.w.ctrl_pose()[0].copy()
         c = self.cfg.controller
         self.cmd = L2Command(self.tb.t, self.x0.copy(), self.R.copy(), K=np.array(c.k_trans + c.k_rot, dtype=float),
                              R_K=self.R.copy(), F_grip=c.grip_hold)
@@ -71,7 +71,7 @@ class SawStroke(_ToolBehavior):
         u, f, n = R[:, 0], R[:, 1], R[:, 2]  # stroke, cut (the fingers' closing axis), across the blade
         c = self.cfg.controller
         K_stiff = np.array(c.k_trans + c.k_rot, dtype=float)
-        x_now = self.w.tcp_pose()[0]
+        x_now = self.w.ctrl_pose()[0]
         plant = self.w.plant
         if self.phase == "start":
             self._set_phase("approach", t)
@@ -131,7 +131,7 @@ class DrillFeed(_ToolBehavior):
         a = R[:, 2]  # the bit (the hand's approach axis)
         c = self.cfg.controller
         K_stiff = np.array(c.k_trans + c.k_rot, dtype=float)
-        x_now = self.w.tcp_pose()[0]
+        x_now = self.w.ctrl_pose()[0]
         plant = self.w.plant
         if self.phase == "start":
             self._set_phase("approach", t)

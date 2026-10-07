@@ -23,7 +23,7 @@ import numpy as np
 
 from tactile_sim.config import SimConfig
 from tactile_sim.control.interface import L2Command, Mode
-from tactile_sim.control.kinematics import pose_error, site_jacobian, site_pose
+from tactile_sim.control.kinematics import pose_error
 from tactile_sim.control.l1 import L1Log
 from tactile_sim.control.momentum_observer import ImpactDetector
 from tactile_sim.control.supervisor import Supervisor
@@ -75,7 +75,7 @@ class PositionL1:
         self.cmd = cmd
 
     def hold_here(self, t: float, F_grip: float | None = None) -> L2Command:
-        p, R = self.world.tcp_pose()
+        p, R = self.world.ctrl_pose()
         c = self.cfg.controller
         cmd = L2Command(t, p, R, K=np.array(c.k_trans + c.k_rot, dtype=float),
                         F_grip=c.grip_hold if F_grip is None else F_grip)
@@ -89,8 +89,8 @@ class PositionL1:
         d.qpos[w.arm_qadr] = q
         mujoco.mj_kinematics(w.model, d)
         mujoco.mj_comPos(w.model, d)
-        p, R = site_pose(d, w.tcp_site)
-        return p, R, site_jacobian(w.model, d, w.tcp_site, w.arm_dofs)
+        p, R = w.ctrl_pose(d)
+        return p, R, w.ctrl_jacobian(w.arm_dofs, d)
 
     def _ik(self, x: np.ndarray, R: np.ndarray, xd: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         q = self.q_ref.copy()
@@ -126,7 +126,7 @@ class PositionL1:
 
     def _command(self, t: float, flagged: bool) -> None:
         w = self.world
-        x_now, R_now = w.tcp_pose()
+        x_now, R_now = w.ctrl_pose()
         cmd = self.supervisor.filter(self.cmd, t, x_now, R_now)
         if cmd.ref is not None and not self.supervisor.frozen:
             t_flag = None

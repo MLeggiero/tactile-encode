@@ -50,4 +50,6 @@ def apply_dr(cfg: SimConfig, s: DRSample) -> SimConfig:
 def apply_runtime_dr(testbed, s: DRSample) -> None:
     """Runtime parameters: sensor noise and the observer's gain."""
     testbed.sensors.set_noise_scale(s.sensor_noise_scale)
-    testbed.l1.observer.K = testbed.l1.observer.K * s.observer_gain_scale
+    observer = getattr(testbed.l1, "observer", None)
+    if observer is not None:  # the position-interface L1 (Vega) has no joint-torque momentum observer
+        observer.K = observer.K * s.observer_gain_scale
