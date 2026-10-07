@@ -79,7 +79,9 @@ class ScriptedSwing:
         self.R_K = np.column_stack([x_k, np.cross(z_k, x_k), z_k])
         c = self.cfg.controller
         self.K_nom = np.array(c.k_trans + c.k_rot, dtype=float)
-        self.K_strike = np.array(tuple(sw.strike_k) + (250.0, 250.0, 250.0))
+        self.K_strike = np.array(tuple(sw.strike_k) + (sw.strike_k_rot,) * 3)
+        if sw.grip_profile not in ("template", "constant"):
+            raise ValueError(f"unknown grip_profile {sw.grip_profile!r} (expected 'template' or 'constant')")
         self.depth_estimate = depth_estimate or (lambda: tb.world.plant.depth)
         self.tool_estimate = tool_estimate or tb.world.hammer_in_hand
         w = tb.world
@@ -104,7 +106,7 @@ class ScriptedSwing:
         joint torque limits can apply along the axis, over the arm + tool's effective mass along it."""
         import mujoco
 
-        from tactile_sim.control.kinematics import site_jacobian, task_inertia
+        from tactile_sim.control.kinematics import task_inertia
         from tactile_sim.sim.world import full_inertia
 
         w = self.tb.world
@@ -115,7 +117,7 @@ class ScriptedSwing:
         d.qpos[:] = w.data.qpos
         d.qpos[w.arm_qadr] = w.q_hover
         mujoco.mj_forward(m, d)
-        J = site_jacobian(m, d, w.tcp_site, w.arm_dofs)
+        J = w.ctrl_jacobian(w.arm_dofs, d)
         spec = w.arm_spec
         M = full_inertia(m, d, np.zeros((m.nv, m.nv)))[np.ix_(w.arm_dofs, w.arm_dofs)]
         if w.geom.L <= 0:
@@ -160,7 +162,7 @@ class ScriptedSwing:
         self.plans: list[StrikePlan] = []
         self.cmd = L2Command(self.tb.t, self.origin.copy(), self.R.copy(), K=self.K_nom.copy(),
                              F_grip=self.cfg.controller.grip_hold)
-        x_now = self.tb.world.tcp_pose()[0]
+        x_now = self.tb.world.ctrl_pose()[0]
         self.line_origin = self.origin.copy()
         s0 = self._geom().s_of(x_now)
         T = self.cfg.swing.approach_time
@@ -229,7 +231,7 @@ class ScriptedSwing:
         self.cmd.K = self.K_nom.copy()
         self.cmd.R_K = np.eye(3)
         self.line_origin = self.origin + self.aim_offset
-        x_now = self.tb.world.tcp_pose()[0]
+        x_now = self.tb.world.ctrl_pose()[0]
         s0 = self._geom().s_of(x_now)
         self.cmd.ref = PlainRef(self._path([Segment(t, sw.windup_time, min_jerk(s0, -sw.windup_height,
                                                                                    sw.windup_time))]))
@@ -250,7 +252,7 @@ class ScriptedSwing:
         self.aim_offset += err
         self.line_origin = self.origin + self.aim_offset
         # path parameter at which the face reaches the nail head
-        x_now = self.tb.world.tcp_pose()[0]
+        x_now = self.tb.world.ctrl_pose()[0]
         s_now = self._geom().s_of(x_now)
         s_c = s_c0 + float((self.nail_estimate() - self._face_at(s_c0)) @ self.axis)
         dist = s_c - s_now
@@ -310,7 +312,7 @@ class ScriptedSwing:
         """Face position predicted at path parameter s: the current face estimate carried rigidly from the hand's
         current pose to the path pose at s (for a straight strike, a shift along the strike axis)."""
         g = self._geom()
-        x_now, R_now = self.tb.world.tcp_pose()
+        x_now, R_now = self.tb.world.ctrl_pose()
         if g.L <= 0:
             return self.face_estimate() + self.axis * (s - g.s_of(x_now))
         # arc: the hand goes from where it actually is to the path pose at s, carrying the tool with it
@@ -331,6 +333,8 @@ class ScriptedSwing:
         F_hold = self.F_hold
         if p is None or self.phase in ("approach", "windup") and p.idx != self.k:
             return F_hold
+        if sw.grip_profile == "constant":
+            return p.F_hold
         if p.t_flag is None and not p.missed:
             t_ramp0 = p.t_c_pred - sw.grip_lead
             t_ramp1 = p.t_c_pred - sw.grip_ramp_end

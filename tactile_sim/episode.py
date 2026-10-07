@@ -19,7 +19,7 @@ from tactile_sim.config import SimConfig
 from tactile_sim.limits import LimitMonitor, check_payload
 from tactile_sim.logging.strike_metrics import StrikeRecord, grasp_slip
 from tactile_sim.sim.testbed import Testbed
-from tactile_sim.sim.truth import pair_force, pulse_stats
+from tactile_sim.sim.truth import contact_wrench, pair_force, pulse_stats
 
 
 @dataclass
@@ -102,6 +102,18 @@ class Episode:
         self.strike_limits = LimitMonitor(w)
         self.swing = ScriptedSwing(self.tb, on_swing_start=self._on_swing_start, on_strike_end=self._on_strike_end)
         self.tb.l2_callbacks[:] = [self.swing.tick]
+        # grasp wrench: what the hand's geoms exert on the tool, about the grasp point, in the tool frame
+        m = w.model
+        hand_bodies = {w.hand_body}
+        for b in range(m.nbody):
+            p = b
+            while p > 0 and p not in hand_bodies:
+                p = int(m.body_parentid[p])
+            if p in hand_bodies:
+                hand_bodies.add(b)
+        self.tool_geoms = frozenset(g for g in range(m.ngeom) if m.geom_bodyid[g] == w.hammer_body)
+        self.hand_geoms = frozenset(g for g in range(m.ngeom) if int(m.geom_bodyid[g]) in hand_bodies)
+        self.ref_site = w.site[names.HAMMER_REF_SITE]
 
     # ---------------------------------------------------------------- hooks
     def _on_swing_start(self, plan: StrikePlan) -> None:
@@ -115,6 +127,11 @@ class Episode:
         self._board_hit = False
         self._peak_tau = np.zeros(7)
         self._grip_samples: list[tuple[float, float]] = []
+        self._effort_samples: list[float] = []
+        self._snap_c = self._snap_100 = None  # tool pose in the hand at contact and 100 ms after it
+        self._aim_offset = float("nan")
+        self._grasp_peak = {"force": 0.0, "moment": 0.0, "twist": 0.0, "pitch": 0.0, "yaw": 0.0}
+        self._grasp_at_contact = None
         self.strike_limits.reset()
         self.events.append((f"swing_start_{plan.idx}", plan.t_start))
 
@@ -159,10 +176,55 @@ class Episode:
                 rec.grip_peak = float(after[k, 1])
                 rec.t_grip_peak_rel = float(after[k, 0] - t_pk_load)
             rec.t_grip_ramp_start_rel = float((plan.t_c_pred - self.cfg.swing.grip_lead) - rec.t_contact_truth)
+        rec.extra = self._extra_metrics(rec, p, r)
         self.records.append(rec)
         self.swing.register_slip(rec.slip_trans, rec.slip_rot)
         self.events.append((f"strike_end_{rec.idx}", tb.t))
         self._cur = None
+
+    def _extra_metrics(self, rec: StrikeRecord, p_end: np.ndarray, r_end: np.ndarray) -> dict:
+        """Slip split by window (swing: swing start -> contact; impact: contact -> +100 ms; post: the rest of the
+        strike), mean grip, peak grasp wrench in the 60 ms after contact, aim, and the reactive loop's detections."""
+        ex: dict = {}
+        p0, r0 = rec._p0, rec._r0  # noqa: SLF001
+        snaps = [(p0, r0), self._snap_c, self._snap_100, (p_end, r_end)]
+        for name, a, b in (("swing", 0, 1), ("impact", 1, 2), ("post", 2, 3)):
+            if snaps[a] is None or snaps[b] is None:
+                ex[f"slip_{name}_trans"] = ex[f"slip_{name}_rot"] = float("nan")
+            else:
+                ex[f"slip_{name}_trans"], ex[f"slip_{name}_rot"] = grasp_slip(*snaps[a], *snaps[b])
+        g = np.array(self._grip_samples) if self._grip_samples else np.zeros((0, 2))
+        # contact load: the summed patch (pad) normal force, impact loads included
+        ex["grip_mean"] = float(g[:, 1].mean()) if len(g) else float("nan")
+        ex["grip_max"] = float(g[:, 1].max()) if len(g) else float("nan")
+        # effort: the grip the hand is commanded to apply (what the actuators spend), the frontier's axis
+        e = np.asarray(self._effort_samples, dtype=float)
+        ex["effort_mean"] = float(e.mean()) if len(e) else float("nan")
+        ex["effort_max"] = float(e.max()) if len(e) else float("nan")
+        for k, v in self._grasp_peak.items():
+            ex[f"grasp_peak_{k}"] = float(v)
+        ex["aim_offset"] = float(getattr(self, "_aim_offset", float("nan")))
+        rx = self.tb.reactive
+        if rx is not None:
+            det = rx.detections_between(rec.t_swing_start, self.tb.t)
+            ex["reactive_n"] = len(det)
+            ex["reactive_first_rel"] = float(det[0].t - rec.t_contact_truth) if det else float("nan")
+            ex["reactive_sources"] = ",".join(sorted({d.source for d in det}))
+        return ex
+
+    def _track_grasp(self, w) -> None:
+        """Peak grasp wrench: force and moment the hand exerts on the tool about the grasp point; the moment split
+        in the tool frame into twist (about the handle, x), yaw (about the head, y) and pitch (in the swing plane,
+        z)."""
+        d = w.data
+        F, M = contact_wrench(w.model, d, self.tool_geoms, self.hand_geoms, d.site_xpos[self.ref_site])
+        Ml = d.site_xmat[self.ref_site].reshape(3, 3).T @ M
+        pk = self._grasp_peak
+        pk["force"] = max(pk["force"], float(np.linalg.norm(F)))
+        pk["moment"] = max(pk["moment"], float(np.linalg.norm(M)))
+        pk["twist"] = max(pk["twist"], abs(float(Ml[0])))
+        pk["yaw"] = max(pk["yaw"], abs(float(Ml[1])))
+        pk["pitch"] = max(pk["pitch"], abs(float(Ml[2])))
 
     # ---------------------------------------------------------------- per step
     def _step_cb(self, tb: Testbed) -> None:
@@ -181,15 +243,26 @@ class Episode:
                     rec.v_strike_actual = float(v)
                     rec.v_tcp = float(w.site_velocity(w.tcp_site)[:3] @ tb.l1.axis)
                     rec.grip_at_contact = w.grip_truth()
+                    self._snap_c = w.hammer_in_hand()
+                    # aim: face centre to nail axis, across the strike axis
+                    off = d.site_xpos[self.face_site] - d.geom_xpos[self.g_nail]
+                    self._aim_offset = float(np.linalg.norm(off - (off @ tb.l1.axis) * tb.l1.axis))
                 self._series_t.append(t)
                 self._series_f.append(f_nail)
             elif np.isfinite(rec.t_contact_truth) and t - rec.t_contact_truth < 0.05:
                 self._series_t.append(t)
                 self._series_f.append(0.0)
+            if np.isfinite(rec.t_contact_truth):
+                since = t - rec.t_contact_truth
+                if since <= 0.060:
+                    self._track_grasp(w)
+                if self._snap_100 is None and since >= 0.100:
+                    self._snap_100 = w.hammer_in_hand()
             np.maximum(self._peak_tau, np.abs(w.arm_torque()), out=self._peak_tau)
             self.strike_limits.step()
             if self._k % 4 == 0:
                 self._grip_samples.append((t, w.grip_truth()))
+                self._effort_samples.append(w.hand.command())
         self.limits.step()
         if self.record_truth and self._k % self.cfg.logging.truth_decim == 0:
             T = self.truth

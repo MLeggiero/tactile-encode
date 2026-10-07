@@ -38,7 +38,7 @@ class ToolTask:
         tb, w = self.tb, self.tb.world
         t_end = (t_max if t_max is not None else self.behavior.t_max) + 2.0
         p0, r0 = w.hammer_in_hand()
-        rec: dict[str, list] = {"t": [], "grip": [], "slip_trans": [], "slip_rot": [], "ft": []}
+        rec: dict[str, list] = {"t": [], "grip": [], "effort": [], "slip_trans": [], "slip_rot": [], "ft": []}
         k = 0
         t_done = float("nan")
         while not self.behavior.finished and tb.t < t_end:
@@ -52,6 +52,7 @@ class ToolTask:
             p, r = w.hammer_in_hand()
             rec["t"].append(tb.t)
             rec["grip"].append(tb.grip.measured)
+            rec["effort"].append(w.hand.command())
             rec["slip_trans"].append(float(np.linalg.norm(p - p0)))
             rec["slip_rot"].append(rotvec_diff(r0, r))
             ft = tb.sensors["ft"].latest()
@@ -64,7 +65,8 @@ class ToolTask:
              "max_slip_rot": float(np.max(truth["slip_rot"], initial=0.0)),  # includes the pads' elastic twist
              "net_slip_trans": float(truth["slip_trans"][-1]) if len(truth["t"]) else 0.0,
              "net_slip_rot": float(truth["slip_rot"][-1]) if len(truth["t"]) else 0.0,
-             "mean_grip": float(np.mean(truth["grip"])) if len(truth["grip"]) else float("nan")}
+             "mean_grip": float(np.mean(truth["grip"])) if len(truth["grip"]) else float("nan"),
+             "mean_effort": float(np.mean(truth["effort"])) if len(truth["effort"]) else float("nan")}
         if self.cfg.plant.kind == "saw":
             s.update(strokes=int(w.plant.strokes), peak_normal=float(np.max(truth["saw_normal_force"], initial=0.0)),
                      peak_lateral=float(np.max(truth["saw_lateral_force"], initial=0.0)))
@@ -72,6 +74,11 @@ class ToolTask:
             s.update(mode=self.cfg.drill.mode, state=w.plant.state, cam_outs=int(w.plant.cam_outs),
                      peak_torque=float(np.max(truth["drill_torque"], initial=0.0)),
                      peak_axial=float(np.max(truth["drill_axial_force"], initial=0.0)))
+        # the tool left the hand: the drop detector fired, or it ended up more than 5 cm from where it was held
+        s.update(dropped=bool(tb.grip.dropped), lost=bool(tb.grip.dropped or s["net_slip_trans"] > 0.05))
+        if tb.reactive is not None:
+            s.update(reactive_n=len(tb.reactive.detections), reactive_ticks=int(tb.reactive.ticks_fired),
+                     reactive_sources=",".join(sorted({d.source for d in tb.reactive.detections})))
         s.update({f"limit_{k}": v for k, v in self.limits.summary().items()})
         viol = self.limits.violations()
         s["limit_violations"] = ",".join(sorted(viol))

@@ -33,6 +33,11 @@ class ArmCfg:
     wrist_d_rot: float = 1.5  # Nms/rad
     wrist_k_lin: float = 2.0e5  # N/m along the flange z axis
     wrist_d_lin: float = 150.0  # Ns/m
+    wrist_range: float = 0.1  # rad, travel of each wrist hinge (a soft wrist needs more before it hits its stop)
+    # what the arm controller servoes: "tcp", the hand's TCP, through the wrist compliance; "flange", the TCP's
+    # zero-deflection pose carried by the F/T body, so the compliance is a passive element after the flange (a soft
+    # wrist servoed through its own spring oscillates)
+    wrist_control: str = "tcp"
     ft_body_mass: float = 0.12  # wrist F/T sensor (Bota SensONE class)
     torque_rate_limit: float = 1000.0  # Nm/s per joint, libfranka kMaxTorqueRate (0 = off)
     # --- Dexmate Vega U / Vega-1P (robot = "vega_1u" / "vega_1p"). Its public interface (dexcontrol) streams joint
@@ -66,6 +71,9 @@ class GripperCfg:
     hand: str = "franka"  # "franka" (two-finger Franka Hand) or "wuji2" (WUJI Hand 2, power wrap)
     hand_source: str = "auto"  # "franka" (Menagerie Franka Hand), "box" (same dims, no meshes), "auto"
     tcp_offset: float = 0.1034  # hand base to grasp centre (Franka Hand TCP)
+    # first-order lag between the grip command and the grip the drives apply (s); 0 = instant, as the force-
+    # controlled drive and the MIT-mode joint law are modelled (real grippers take 20-185 ms to change force)
+    grip_lag: float = 0.0
     finger_range: float = 0.04  # opening per finger
     finger_armature: float = 0.1  # Menagerie hand.xml
     grip_force_max: float = 140.0  # N per finger: Franka Hand peak (70 N continuous)
@@ -322,6 +330,10 @@ class SensorsCfg:
 class ControllerCfg:
     rate: float = 1000.0
     grip_rate: float = 500.0
+    # "closed": PI on the measured grip (pads / taxel patches); "open": the setpoint is the commanded effort. On a
+    # wrap the patch sum includes the tool's weight and swing loads on the palm, so a closed loop squeezes less
+    # when those press in
+    grip_loop: str = "closed"
     k_trans: tuple[float, float, float] = (3000.0, 3000.0, 3000.0)
     k_rot: tuple[float, float, float] = (150.0, 150.0, 150.0)
     zeta: float = 1.0
@@ -370,6 +382,7 @@ class SwingCfg:
     # far behind the face along the handle, so the elbow and shoulder whip the head (StrikeGeometry)
     arc_radius: float = 0.0
     strike_k: tuple[float, float, float] = (3000.0, 3000.0, 4000.0)  # (across, across, along) the strike axis
+    strike_k_rot: float = 250.0  # Nm/rad, rotational stiffness during the swing
     recover_time: float = 0.4
     settle_time: float = 0.15
     grip_lead: float = 0.155  # ramp start before predicted contact (>= 150 ms before the actual one)
@@ -378,8 +391,54 @@ class SwingCfg:
     grip_decay: float = 0.200
     grip_pre_gain: float = 12.0  # N per (kg m/s) of tool momentum
     grip_margin_step: float = 10.0
+    # "template": the human impact template above (ramp before the predicted contact, peak after the flag, decay);
+    # "constant": hold force throughout, no anticipation
+    grip_profile: str = "template"
     strike_timeout: float = 0.100
     n_strikes: int = 10
+
+
+@dataclass
+class ReactiveCfg:
+    """Reactive grip: detect the tool slipping in the hand and answer with the hand's maximum grip.
+
+    mode "off"; "oracle": simulation truth of the tool's motion in the hand, zero latency (an upper bound on any
+    reactive loop); "taxel": the taxel arrays and pad accelerometers; "log": compute both detectors, never act
+    (for calibration)."""
+
+    mode: str = "off"
+    rate: float = 1000.0
+    # the grip a detection jumps to: "pre", the hand's pre-impact ceiling (the anticipatory ramp's cap, so reaction
+    # and anticipation reach the same squeeze and differ in timing); "max", the hand's full grip command (on a wrap,
+    # a step to full synergy torque reshapes the grasp)
+    boost_to: str = "pre"
+    hold_time: float = 0.200  # s at the boosted grip after the last detection
+    release_time: float = 0.200  # s to ramp back to the scheduled grip
+    # latched: after the hold the raised grip decays toward the schedule with time constant latch_tau instead of
+    # releasing within release_time (the human answer to a slip: a raised safety margin that persists)
+    latch: bool = False
+    latch_tau: float = 2.0  # s
+    confirm: int = 2  # consecutive ticks over threshold before acting (fast detectors)
+    # fast detectors (impacts, jerks). oracle: rate of the tool's motion in the TCP frame
+    omega_thresh: float = 1.0  # rad/s
+    v_thresh: float = 0.02  # m/s
+    # taxel: per patch, centre-of-pressure speed and relative load drop over `window`; pad accelerometer deviation
+    window: float = 0.003  # s
+    load_floor: float = 2.0  # N, a patch below this load is ignored
+    cop_speed_thresh: float = 0.05  # m/s
+    load_drop_thresh: float = 0.15  # fraction of the patch load lost within `window` (> 1 disables)
+    accel_thresh: float = 60.0  # m/s^2 deviation from the 5 ms baseline
+    # slow detectors (creep under periodic or steady load): the tool pose (oracle) or each patch's centre of pressure
+    # (taxel), low-passed by two cascaded first-order filters of `drift_tau` so elastic flexing at the stroke rate is
+    # filtered out, drifting from a reference that resets at every detection
+    drift_tau: float = 0.5  # s
+    drift_rot_thresh: float = 0.0175  # rad (1 deg)
+    drift_trans_thresh: float = 0.001  # m
+    cop_drift_thresh: float = 0.001  # m
+    # taxel: rotation of a patch's pressure pattern (principal axis of its low-passed second moments), the cue a
+    # normal-pressure array gives for a handle turning about the pad normal; only for elongated patterns
+    pattern_rot_thresh: float = 0.035  # rad (2 deg)
+    pattern_aniso: float = 1.5  # minimum ratio of the two largest second moments
 
 
 @dataclass
@@ -414,6 +473,7 @@ class SimConfig:
     sensors: SensorsCfg = field(default_factory=SensorsCfg)
     controller: ControllerCfg = field(default_factory=ControllerCfg)
     swing: SwingCfg = field(default_factory=SwingCfg)
+    reactive: ReactiveCfg = field(default_factory=ReactiveCfg)
     dr: DRCfg = field(default_factory=DRCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 

@@ -94,7 +94,7 @@ class L1Controller:
         self.cmd = cmd
 
     def hold_here(self, t: float, F_grip: float | None = None) -> L2Command:
-        p, R = self.world.tcp_pose()
+        p, R = self.world.ctrl_pose()
         c = self.cfg.controller
         cmd = L2Command(t, p, R, K=np.array(c.k_trans + c.k_rot, dtype=float),
                         F_grip=c.grip_hold if F_grip is None else F_grip)
