@@ -83,3 +83,21 @@ class WrapSynergy:
             # the fingertip joint is driven to its share of the middle joint's flexion, plus its tendon share
             tau[i] += self.coupling_kp * (self.coupling_ratio * q[j] - q[i])
         return np.clip(tau, -self.tau_max, self.tau_max)
+
+    def mit_command(self, s: float, q: np.ndarray) -> tuple[np.ndarray, ...]:
+        """The same joint law as per-joint MIT commands (q*, qd*, Kp, Kd, tau_ff) for drives that run the PD
+        themselves: the synergy torque as feedforward on the closing joints, a PD to the keyframe angle on the
+        shaping joints, the damping on every joint, and on a coupled fingertip joint a PD to its share of the
+        middle joint's angle as last read (`q`). The drives' current ceiling plays the part of the clip in
+        `torque`."""
+        s = float(np.clip(s, 0.0, 1.0))
+        n = len(self.joints)
+        shaping = self.close_dir == 0
+        w = 1.0 if self.weight is None else self.weight
+        tau = s * self.close_dir * w * self.tau_max * np.ones(n)
+        q_t = np.where(shaping, self.q_hold, q).astype(float)
+        kp = np.where(shaping, self.kp, 0.0)
+        for i, j in self.coupled or ():
+            q_t[i] = self.coupling_ratio * q[j]
+            kp[i] = self.coupling_kp
+        return q_t, np.zeros(n), kp, np.full(n, self.kd), tau

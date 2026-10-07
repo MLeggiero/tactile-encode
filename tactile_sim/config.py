@@ -121,6 +121,53 @@ class GripperCfg:
     # taxel patches: "taxelscan" (TaxelScan Rev3 skins conforming to the palm and to every finger's distal pad and
     # middle segment: 128 + 10 x 32 = 448 taxels), "palm_thumb" (2 flat 8 x 8 patches) or "palm"
     patch_layout: str = "palm_thumb"
+    # joint drives: "synergy" (the grip scalar sets each closing joint's torque at 1 kHz, written straight to the
+    # motors) or "mit" (WUJI Hand 2 MIT-mode drives, WujiDriveCfg / tactile_sim.sim.wuji_drive: per-joint
+    # (q*, qd*, Kp, Kd, tau_ff) commands pass the SDK's 1 kHz cycle and a transport delay to a driver that runs the
+    # servo law, clamps and derates the current and lags it through its current loop). In "mit" the grip synergy
+    # still drives the hand, as MIT commands, unless an external hand command is set (WujiHandIO.set_hand_command)
+    hand_control: str = "synergy"
+    # tool masses the grasp keyframe is synthesized and cached for: "actual" (the configured masses, one grasp per
+    # mass) or "nominal" (the tool model's nominal masses, so randomized masses share one grasp and the reset settle
+    # seats the tool under its actual mass)
+    grasp_mass: str = "actual"
+
+
+@dataclass
+class WujiDriveCfg:
+    """WUJI Hand 2 joint drives in MIT mode (GripperCfg.hand_control = "mit") as the host sees them through the SDK
+    realtime controller (PDO, 1 kHz): per joint the driver applies tau* = Kp (q* - q) + Kd (qd* - qd) + tau_ff,
+    clamps the current, and its current loop and windings respond with the time constants below.
+
+    WUJI publishes none of these internals: every value marked (assumed) is a placeholder until the hand is
+    characterized, and is randomized in training. Per-group tuples follow wuji_drive.JOINT_GROUPS:
+    (MCP flexion, MCP abduction, PIP/DIP, thumb CMC, thumb MCP/IP)."""
+
+    sdk_rate: float = 1000.0  # Hz: the SDK latches the host's latest command and publishes the drives' state
+    cmd_latency: float = 0.001  # s, host command -> driver (transport + pickup) (assumed)
+    cmd_jitter: float = 0.00025  # s, uniform +- per command; commands are never reordered (assumed)
+    fb_latency: float = 0.0005  # s, driver state -> host (assumed)
+    # the realtime controller's first-order low-pass on the host command (None = off), on the fields named in
+    # sdk_lpf_fields: any of "q", "qd", "kp", "kd", "tau"
+    sdk_lpf_hz: float | None = None
+    sdk_lpf_fields: tuple[str, ...] = ("q",)
+    servo_rate: float | None = None  # Hz the driver evaluates the MIT law at; None = every physics step
+    tau_i: float = 0.0002  # s, current-loop time constant (FOC) (assumed)
+    kp_nom: tuple[float, ...] = (0.37, 0.43, 0.22, 0.55, 0.22)  # Nm/rad, nominal Kp: the vendor MJCF gains (assumed)
+    zeta: float = 0.8  # damping ratio when Kd is derived from Kp: Kd = 2 zeta sqrt(Kp I)
+    i_rated: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0)  # A at each joint's rated torque (assumed)
+    i_peak_ratio: float = 2.0  # the driver's peak current / rated (assumed)
+    effort_limit_ratio: float = 1.0  # SDK effort_limit (the current ceiling) / rated current
+    r_wind: float = 2.0  # ohm, winding resistance (assumed)
+    r_th: float = 10.0  # K/W, winding to ambient (assumed)
+    c_th: float = 5.0  # J/K, winding heat capacity (assumed)
+    t_amb: float = 25.0  # degC
+    t_warn: float = 70.0  # degC: the current ceiling derates linearly from here ...
+    t_max: float = 90.0  # degC: ... to derate_floor here, where the driver faults (torque off until reset) (assumed)
+    derate_floor: float = 0.5  # current ceiling fraction just below t_max (assumed)
+    enc_bits: int = 14  # encoder resolution, bits per revolution (readback quantization) (assumed)
+    i_noise: float = 0.01  # A rms on the current readback (assumed)
+    i_quant: float = 0.001  # A, current readback resolution (assumed)
 
 
 @dataclass
@@ -465,6 +512,7 @@ class SimConfig:
     physics: PhysicsCfg = field(default_factory=PhysicsCfg)
     arm: ArmCfg = field(default_factory=ArmCfg)
     gripper: GripperCfg = field(default_factory=GripperCfg)
+    wuji: WujiDriveCfg = field(default_factory=WujiDriveCfg)
     hammer: HammerCfg = field(default_factory=HammerCfg)
     plant: NailPlantCfg = field(default_factory=NailPlantCfg)
     saw: SawCfg = field(default_factory=SawCfg)

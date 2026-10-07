@@ -416,5 +416,6 @@ class World:
             self.hand.tick(self.t)
             self._hold_arm()
             self.step()
+        self.hand.shift_time(-d.time)  # time restarts at 0: rebase the drives' clocks
         d.time = 0.0
         self.step_count = 0

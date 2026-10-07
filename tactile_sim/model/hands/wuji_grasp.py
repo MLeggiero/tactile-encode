@@ -87,8 +87,24 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def grasp_config(cfg: SimConfig) -> SimConfig:
+    """The configuration a grasp keyframe is synthesized and cached for. GripperCfg.grasp_mass = "nominal" puts the
+    tool's nominal masses in place of the configured ones, so randomized masses share one keyframe (the reset
+    settle then seats the tool under its actual mass); "actual" keys and synthesizes on the configured masses."""
+    mode = cfg.gripper.grasp_mass
+    if mode == "actual":
+        return cfg
+    if mode != "nominal":
+        raise ValueError(f"unknown grasp_mass {mode!r} (expected 'actual' or 'nominal')")
+    from tactile_sim.config import HammerCfg
+
+    nom = HammerCfg()
+    return cfg.replace(hammer={"head_mass": nom.head_mass, "handle_mass": nom.handle_mass})
+
+
 def cache_path(cfg: SimConfig, hand_path: Path) -> Path:
-    return Path.home() / ".cache" / "tactile_sim" / "grasps" / f"wuji2_{_cache_key(cfg, hand_path)}.json"
+    key = _cache_key(grasp_config(cfg), hand_path)
+    return Path.home() / ".cache" / "tactile_sim" / "grasps" / f"wuji2_{key}.json"
 
 
 def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:
@@ -238,7 +254,7 @@ def wrap_grasp(cfg: SimConfig, hand_path: Path) -> WrapGrasp:
     path = cache_path(cfg, hand_path)
     if path.exists():
         return WrapGrasp.from_dict(json.loads(path.read_text()))
-    g = synthesize(cfg, hand_path)
+    g = synthesize(grasp_config(cfg), hand_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(g.to_dict(), indent=1))
     return g

@@ -17,6 +17,7 @@ import numpy as np
 
 from tactile_sim import names
 from tactile_sim.control.hand import WrapSynergy
+from tactile_sim.control.interface import HandCommand
 
 
 @dataclass
@@ -82,6 +83,9 @@ class HandIO:
 
     def reset_actuation(self) -> None:
         self._applied = None
+
+    def shift_time(self, dt: float) -> None:
+        """The simulation clock moved by dt (World.reset restarts it at 0 once the grasp has settled)."""
 
     def _clip(self, f: float) -> float:
         raise NotImplementedError
@@ -392,6 +396,20 @@ class WujiHandIO(HandIO):
         if g.lock_mode not in ("backdrivable", "self_locking"):
             raise ValueError(f"unknown lock_mode {g.lock_mode!r}")
         self._range0 = m.jnt_range[self.jids].copy()
+        # MIT-mode drives: the host loop (`tick`) sends per-joint commands, the drives turn them into torque every
+        # physics step (`actuate`)
+        self.drive = None
+        self.ext_cmd: HandCommand | None = None
+        if g.hand_control == "mit":
+            from tactile_sim.sim.wuji_drive import WujiMitDrive
+
+            w = world.cfg.wuji
+            self.drive = WujiMitDrive(w, self.joint_names, self.tau_max, world.dt)
+            # the drives clamp their current; widen the motors' range so the model never clips below that
+            m.actuator_ctrlrange[self.act] = np.outer(self.tau_max, [-1.0, 1.0]) * max(
+                1.0, w.i_peak_ratio, w.effort_limit_ratio)
+        elif g.hand_control != "synergy":
+            raise ValueError(f"unknown hand_control {g.hand_control!r} (expected 'synergy' or 'mit')")
 
     def init_pose(self) -> None:
         self.world.data.qpos[self.qadr] = self.grasp.q
@@ -422,11 +440,44 @@ class WujiHandIO(HandIO):
         return self.s * self.f_full
 
     def tick(self, t: float) -> None:
+        """Host-side hand control at hand_rate. Synergy drives: the joint law, written to the motors. MIT drives:
+        the external command if one is set, else the synergy as MIT commands, handed to the SDK."""
         d = self.world.data
         q = d.qpos[self.qadr]
-        d.ctrl[self.act] = self.synergy.torque(self.s, q, d.qvel[self.dofs])
+        if self.drive is None:
+            d.ctrl[self.act] = self.synergy.torque(self.s, q, d.qvel[self.dofs])
+        else:
+            cmd = self.ext_cmd
+            if cmd is None:
+                cmd = HandCommand(t, *self.synergy.mit_command(self.s, q), src="synergy")
+            self.drive.set_host_command(cmd)
         if self.self_locking and self.locked:
             self._lock(q)
+
+    def set_hand_command(self, cmd: HandCommand | None) -> None:
+        """An external MIT command (base + residual) the host sends from now on; None hands control back to the
+        grip synergy. MIT drives only."""
+        if self.drive is None:
+            raise RuntimeError("set_hand_command needs GripperCfg.hand_control = 'mit'")
+        self.ext_cmd = cmd
+        if cmd is not None:
+            self.drive.set_host_command(cmd)
+
+    def actuate(self) -> None:
+        super().actuate()
+        if self.drive is not None:
+            d = self.world.data
+            d.ctrl[self.act] = self.drive.update(d.time, d.qpos[self.qadr], d.qvel[self.dofs])
+
+    def reset_actuation(self) -> None:
+        super().reset_actuation()
+        if self.drive is not None:
+            self.drive.reset(self.world.data.time)
+            self.ext_cmd = None
+
+    def shift_time(self, dt: float) -> None:
+        if self.drive is not None:
+            self.drive.shift_time(dt)
 
     locked = False  # set once the grasp has settled (World.reset)
 
