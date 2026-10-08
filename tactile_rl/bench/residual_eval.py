@@ -4,7 +4,8 @@ Each policy plays in Tactile-Residual at its own rate under C3's settings (the f
 sometimes masked forecast, the load generator's full band), the base fixed at one hold level per run, one episode per
 env and no resets: every hammer env plays one library swing (entries in order, perturbed) to its end, every
 load-generator env 3 s of loads. Every run starts from the same seed, so the policies meet the same entries, draws and
-schedules. A trained policy plays its mean action.
+schedules. A trained policy plays its mean action; "grip" is the strongest constant residual toward closing (the
+authority bound: every joint's offset, stiffness and feedforward at their limits).
 
 Per run: lost grasps (the tool 2 cm or 30 degrees from its reference, the training's drop), net slip (hammer: the
 tool's pose in the hand at the entry's end against its start, per strike; load generator: per event, and the share
@@ -35,13 +36,31 @@ LOADGEN_S = 3.0  # s: a load-generator episode (training's)
 
 
 def parse_policies(spec: str) -> list[dict]:
-    """"zero@1000,t1k=path.pt@1000" -> [{"name", "checkpoint" (None: zero), "rate"}]."""
+    """"zero@1000,grip@1000,t1k=path.pt@1000" -> [{"name", "checkpoint" (None: zero or grip), "rate"}]."""
     out = []
     for item in spec.split(","):
         body, rate = item.rsplit("@", 1)
         name, _, ckpt = body.partition("=")
         out.append({"name": f"{name}@{float(rate):g}", "checkpoint": ckpt or None, "rate": float(rate)})
     return out
+
+
+class ConstantGrip:
+    """The strongest constant residual toward closing (the authority bound): every joint's position offset, stiffness
+    and feedforward at their limits in the synergy's closing direction (pre-tanh actions of arctanh(0.999))."""
+
+    def __init__(self, env):
+        act = env.action_manager.get_term("residual")
+        cd = torch.as_tensor(np.asarray(act.parts.synergy.close_dir, float), dtype=torch.float32, device=env.device)
+        big = float(np.arctanh(0.999))
+        self.a = torch.cat([big * cd, torch.full_like(cd, big), big * cd])[None].repeat(env.num_envs, 1)
+
+    def reset(self) -> None:
+        pass
+
+    def __call__(self, obs) -> torch.Tensor:
+        del obs
+        return self.a
 
 
 def _horizon(library: str) -> float:
@@ -191,7 +210,10 @@ def evaluate(library: str, policies: list[dict], holds=HOLDS, tasks=("hammer", "
         env = make_env(rate, library, num_envs, episode_s, device)
         try:
             for p in [p for p in policies if p["rate"] == rate]:
-                actor = None if p["checkpoint"] is None else load_actor(p["checkpoint"], device=device).to(device)
+                if p["checkpoint"] is not None:
+                    actor = load_actor(p["checkpoint"], device=device).to(device)
+                else:
+                    actor = ConstantGrip(env) if p["name"].startswith("grip@") else None
                 for task in tasks:
                     for h in holds:
                         t0 = time.time()

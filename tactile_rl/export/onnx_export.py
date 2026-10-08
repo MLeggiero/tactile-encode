@@ -79,11 +79,13 @@ def load_actor(checkpoint: str, obs_dim: int | None = None, device: str = "cpu")
 
 
 def _commit() -> str:
+    """The checkout's HEAD; outside a checkout (a synced copy) the COMMIT file at the repo root, if any."""
     try:
         return subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True,
                               cwd=Path(__file__).parent).stdout.strip()
     except Exception:  # noqa: BLE001 - outside a checkout
-        return "unknown"
+        f = Path(__file__).resolve().parents[2] / "COMMIT"
+        return f.read_text().strip() if f.exists() else "unknown"
 
 
 def export_teacher(checkpoint: str, out: str, task: str, rate: float, commit: str | None = None) -> dict:
