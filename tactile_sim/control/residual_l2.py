@@ -36,6 +36,7 @@ from tactile_sim.control.obs_spec import (
     obs_dim,
     offsets,
     slew,
+    spec_hash,
     stack_for,
 )
 from tactile_sim.sim.world import full_inertia
@@ -55,8 +56,13 @@ class ZeroPolicy:
 
 
 def make_policy(name: str):
+    """"zero", or the path of an exported policy (.onnx with its sidecar)."""
     if name == "zero":
         return ZeroPolicy()
+    if name.endswith(".onnx"):
+        from tactile_sim.control.policy_io import OnnxPolicy
+
+        return OnnxPolicy(name)
     raise ValueError(f"unknown residual policy {name!r}; pass a policy object to ResidualHandL2 instead")
 
 
@@ -78,6 +84,7 @@ class ResidualHandL2:
         self.stack = stack_for(c.rate)
         self.dt = 1.0 / c.rate
         self.policy = policy if policy is not None else make_policy(c.policy)
+        self.check_policy(self.policy)
         self.base_fn = base_fn or self.synergy_base
         sens = tb.sensors
         assert_deployable(list(hand.pressure_names) + ["hand_q", "hand_current"])
@@ -94,6 +101,17 @@ class ResidualHandL2:
         self.close_dir = hand.synergy.close_dir
         self.task_vec = np.eye(len(TASKS))[TASKS.index(c.task)]
         self.reset()
+
+    def check_policy(self, policy) -> None:
+        """An exported policy runs only on the interface and rate it was trained for."""
+        meta = getattr(policy, "meta", None)
+        if meta is None:
+            return
+        want = spec_hash(self.spec, self.stack)
+        if meta.spec_hash != want:
+            raise ValueError(f"policy {meta.name!r} was trained on interface {meta.spec_hash}, this loop is {want}")
+        if abs(meta.rate - self.cfg.rate) > 1e-9:
+            raise ValueError(f"policy {meta.name!r} decides at {meta.rate} Hz, the loop runs at {self.cfg.rate} Hz")
 
     def _i_eff(self) -> np.ndarray:
         """Each hand joint's effective inertia (diagonal of the joint-space inertia) at the current pose."""

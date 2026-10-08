@@ -25,7 +25,9 @@ def test_conditions_share_each_seeds_randomization():
     (ca, da), (cb, db) = a.config(), b.config()
     assert da == db and ca.hammer.head_mass == cb.hammer.head_mass and ca.wuji.cmd_latency == cb.wuji.cmd_latency
     assert ca.controller.grip_hold != cb.controller.grip_hold
-    assert [c.name for c in e1_conditions({"s1": "x.onnx"})][-1] == "residual:s1"
+    tiny = str(__import__("pathlib").Path(__file__).parent / "data" / "tiny_policy.onnx")
+    last = e1_conditions({"s1": tiny})[-1]
+    assert last.name == "residual:s1" and last.overrides["residual"]["rate"] == 1000.0  # the policy's own rate
 
 
 def test_paired_bootstrap():

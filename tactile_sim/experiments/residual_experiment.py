@@ -53,7 +53,10 @@ def e1_conditions(policies: dict[str, str] | None = None) -> list[Condition]:
         Condition("squeeze", {**const, "controller": {"grip_hold": 60.0}}),
     ]
     for name, path in (policies or {}).items():
-        out.append(Condition(f"residual:{name}", const, policy=path))
+        from tactile_sim.control.policy_io import PolicyMeta
+
+        rate = PolicyMeta.read(path).rate  # the loop runs at the policy's own rate
+        out.append(Condition(f"residual:{name}", {**const, "residual": {"rate": rate}}, policy=path))
     return out
 
 
@@ -89,9 +92,7 @@ def make_jobs(stage: str, policies: dict[str, str] | None = None, only: str | No
 def load_policy(spec: str):
     from tactile_sim.control.residual_l2 import make_policy
 
-    if spec == "zero":
-        return make_policy("zero")
-    raise NotImplementedError(f"policy {spec!r}: exported-policy loading arrives with the ONNX exporter")
+    return make_policy(spec)
 
 
 class Recorder:
@@ -152,7 +153,9 @@ def run_job(job: Job, root: str = str(ROOT)) -> dict:
     tb = ep.tb
     tb.sensors.set_noise_scale(dr["_runtime"]["sensor_noise_scale"])
     tb.residual.base_fn = SwingBase(tb, ep.swing, rng=np.random.default_rng(10_000 + job.seed))
-    tb.residual.policy = load_policy(job.condition.policy)
+    policy = load_policy(job.condition.policy)
+    tb.residual.check_policy(policy)
+    tb.residual.policy = policy
     rec = Recorder(tb)
     tb.sched.register("recorder", 1000.0, rec)
     res = ep.run(STAGES[job.stage]["strikes"])

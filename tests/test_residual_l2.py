@@ -194,3 +194,34 @@ def test_a_slower_policy_sees_every_millisecond():
     assert obs.shape == (obs_dim(4),) and r.n_ticks == pytest.approx(25, abs=1)
     cur = obs[obs_slices(4)["hand_current"]].reshape(4, 20)
     assert np.all(np.isfinite(cur)) and len({c.tobytes() for c in cur}) == 4  # four distinct 1 kHz samples
+
+
+DATA = __import__("pathlib").Path(__file__).parent / "data"
+
+
+def test_an_exported_policy_matches_its_torch_outputs():
+    pytest.importorskip("onnxruntime")
+    from tactile_sim.control.policy_io import OnnxPolicy
+
+    pol = OnnxPolicy(DATA / "tiny_policy.onnx")
+    ref = np.load(DATA / "tiny_policy_io.npz")
+    assert pol.recurrent and pol.meta.rate == 1000.0 and pol.meta.spec_hash == spec_hash(ActionSpec(), 1)
+    out = np.array([pol(o) for o in ref["obs"]])  # the state carries across ticks
+    assert out == pytest.approx(ref["action"], abs=1e-5)
+    pol.reset()
+    assert pol(ref["obs"][0]) == pytest.approx(ref["action"][0], abs=1e-5)
+
+
+@requires_wuji
+def test_a_policy_for_another_interface_or_rate_is_refused(res_tb):
+    pytest.importorskip("onnxruntime")
+    from tactile_sim.control.policy_io import OnnxPolicy
+
+    pol = OnnxPolicy(DATA / "tiny_policy.onnx")
+    res_tb.residual.check_policy(pol)  # 1 kHz, stack 1: matches
+    pol.meta.rate = 250.0
+    with pytest.raises(ValueError, match="Hz"):
+        res_tb.residual.check_policy(pol)
+    pol.meta.rate, pol.meta.spec_hash = 1000.0, "0" * 16
+    with pytest.raises(ValueError, match="interface"):
+        res_tb.residual.check_policy(pol)
