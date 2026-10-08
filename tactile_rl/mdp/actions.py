@@ -49,13 +49,14 @@ def joint_ids(entity, names: tuple[str, ...], device) -> torch.Tensor:
 
 
 def base_command_term(env: ManagerBasedRlEnv):
-    """The env's base-trajectory command term, or None (the hold tasks)."""
-    from tactile_rl.mdp.commands import BaseTrajectoryCommand
-
+    """The env's base command term (the hammer's library swings, the load generator's hold), or None (the hold tasks
+    of milestone 1). A base term has `tactile_base = True` and provides the runtime (`rt`), the base hand command and
+    its scalar (`base`, `s_now`), the lookahead, the forecast and its truth, `trigger`, `ref_rel`, `arm_target(t)`
+    and `param_vector()`."""
     cm = getattr(env, "command_manager", None)
     for name in getattr(cm, "active_terms", []) or []:
         term = cm.get_term(name)
-        if isinstance(term, BaseTrajectoryCommand):
+        if getattr(term, "tactile_base", False):
             return term
     return None
 
@@ -122,6 +123,8 @@ class ResidualHandAction(ActionTerm):
         return self.synergy.mit_command(self.s, q)
 
     def process_actions(self, actions: torch.Tensor) -> None:
+        if self.rt is not None:
+            self.rt.begin_step()  # the reward integrands cover this policy step
         self._raw[:] = actions
         bad = ~torch.isfinite(actions).all(dim=1)
         self.n_nonfinite += bad.long()

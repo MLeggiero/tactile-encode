@@ -155,11 +155,62 @@ def bench_hammer(num_envs: int, rate: float, library: str | None, seconds: float
     return out
 
 
+def bench_loadgen(num_envs: int, rate: float, stage: int = 2, seconds: float = 0.2, device: str = "cuda:0") -> dict:
+    """The load-generator task (Tactile-LoadGen-VegaWuji-<rate>Hz at curriculum stage `stage`: rewards, reset
+    randomization, the curriculum and its metrics on, a zero residual): env steps per second, simulated seconds per
+    wall second, and the share of the step MuJoCo Warp's physics takes (the same substeps without the hooks and
+    managers)."""
+    from mjlab.envs import ManagerBasedRlEnv
+
+    from tactile_rl.mdp.events import CapacityPeaks
+    from tactile_rl.tasks.loadgen import loadgen_env_cfg
+
+    torch.zeros(1, device=device)
+    torch.cuda.synchronize()
+    free0, _ = torch.cuda.mem_get_info()
+    t_build = time.perf_counter()
+    env = ManagerBasedRlEnv(loadgen_env_cfg(rate, num_envs=num_envs, start_stage=stage, max_stage=stage),
+                            device=device)
+    build_s = time.perf_counter() - t_build
+    try:
+        env.reset()
+        a = torch.zeros(num_envs, env.action_manager.total_action_dim, device=env.device)
+        n_steps = max(1, int(round(seconds / env.step_dt)))
+        for _ in range(20):
+            env.step(a)
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        for _ in range(n_steps):
+            env.step(a)
+        torch.cuda.synchronize()
+        wall = time.perf_counter() - t0
+        free1, _ = torch.cuda.mem_get_info()
+        # the physics alone: the same number of substeps
+        t0 = time.perf_counter()
+        for _ in range(n_steps * env.cfg.decimation):
+            env.sim.step()
+        torch.cuda.synchronize()
+        phys = time.perf_counter() - t0
+        env.reset()
+        peaks = CapacityPeaks(env.device)
+        for _ in range(max(1, n_steps // 4)):
+            env.step(a)
+            peaks.update(env)
+        return {"task": "loadgen", "stage": stage, "num_envs": num_envs, "rate": rate, "dt_ms": env.physics_dt * 1e3,
+                "decimation": env.cfg.decimation, "build_s": build_s, "wall_s": wall,
+                "ms_per_env_step": 1e3 * wall / n_steps, "sim_s_per_wall_s": num_envs * n_steps * env.step_dt / wall,
+                "physics_share": phys / wall, "env_gpu_gb": (free0 - free1) / 1e9, "peaks": peaks.report(num_envs)}
+    finally:
+        env.close()
+        del env
+        gc.collect()
+
+
 def bench_in_subprocess(num_envs: int, timestep: float, seconds: float, nconmax: int | None,
                         njmax: int | None, task: str = "hold", rate: float = 1000.0,
-                        library: str | None = None) -> dict:
+                        library: str | None = None, stage: int = 2) -> dict:
     cmd = [sys.executable, "-m", "tactile_rl.bench.throughput", "--one", str(num_envs), repr(timestep),
-           "--seconds", repr(seconds), "--task", task, "--rate", repr(rate)]
+           "--seconds", repr(seconds), "--task", task, "--rate", repr(rate), "--stage", str(stage)]
     if library:
         cmd += ["--library", library]
     if nconmax is not None:
@@ -183,7 +234,8 @@ def main() -> None:
     ap.add_argument("--njmax", type=int, default=None)
     ap.add_argument("--no-cpu", action="store_true", help="skip the CPU reference drift")
     ap.add_argument("--json", type=str, default=None, help="also write the results here")
-    ap.add_argument("--task", choices=("hold", "hammer"), default="hold")
+    ap.add_argument("--task", choices=("hold", "hammer", "loadgen"), default="hold")
+    ap.add_argument("--stage", type=int, default=2, help="loadgen: the curriculum stage")
     ap.add_argument("--rate", type=float, nargs="+", default=[1000.0], help="hammer: policy rates")
     ap.add_argument("--library", type=str, default=None, help="hammer: the base library ($TACTILE_BASE_LIBRARY)")
     ap.add_argument("--one", type=float, nargs=2, metavar=("ENVS", "DT"), help=argparse.SUPPRESS)
@@ -191,6 +243,8 @@ def main() -> None:
     if args.one is not None:  # a single configuration in this process (the parent collects the JSON line)
         if args.task == "hammer":
             r = bench_hammer(int(args.one[0]), args.rate[0], args.library, args.seconds)
+        elif args.task == "loadgen":
+            r = bench_loadgen(int(args.one[0]), args.rate[0], args.stage, args.seconds)
         else:
             r = bench(int(args.one[0]), args.one[1], args.seconds, args.nconmax, args.njmax)
         print(json.dumps(r), flush=True)
@@ -209,6 +263,21 @@ def main() -> None:
                 print(f"| {n} | {rate:g} | {r['ms_per_env_step']:.1f} | {r['sim_s_per_wall_s']:.1f} | "
                       f"{r['env_gpu_gb']:.2f} | {p['broadphase_per_world']:.1f}, {p['contacts_per_world']:.1f}; "
                       f"{p['nefc_max']} |", flush=True)
+        return
+    if args.task == "loadgen":  # python -m tactile_rl.bench.throughput --task loadgen --stage 2 --rate 1000 250
+        print("| worlds | policy (Hz) | stage | ms per env step | sim s / wall s | physics share | env GPU mem (GB) | "
+              "peaks: broadphase, contacts / world; nefc |")
+        print("|---|---|---|---|---|---|---|---|")
+        for rate in args.rate:
+            for n in args.envs:
+                r = bench_in_subprocess(n, 0.00025, args.seconds, None, None, "loadgen", rate, stage=args.stage)
+                if "error" in r:
+                    print(f"{n} worlds, {rate:g} Hz failed: {r['error']}")
+                    continue
+                p = r["peaks"]
+                print(f"| {n} | {rate:g} | C{args.stage} | {r['ms_per_env_step']:.1f} | {r['sim_s_per_wall_s']:.1f} | "
+                      f"{100 * r['physics_share']:.0f} % | {r['env_gpu_gb']:.2f} | {p['broadphase_per_world']:.1f}, "
+                      f"{p['contacts_per_world']:.1f}; {p['nefc_max']} |", flush=True)
         return
     rows = []
     for dt in args.dt:

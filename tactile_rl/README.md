@@ -1,4 +1,4 @@
-# tactile_rl: GPU training env for the tactile residual (milestones 1–2)
+# tactile_rl: GPU training env for the tactile residual (milestones 1–3)
 
 GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mjlab 1.6.0, mirroring the CPU testbed
 (`tactile_sim`), which stays the reference and the validator. Plan: `~/.claude/plans/i-want-to-build-tidy-axolotl.md`
@@ -10,6 +10,10 @@ GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mj
   readback, TaxelScan rev3 with its load model, codec and frame timing), the nail plant, the base library of scripted
   swings recorded on the CPU and played on the GPU, the student / teacher / critic observations, the stale-input decay,
   and parity evidence for each against the testbed.
+- **Milestone 3** takes in the hard nail and the single-contact validator (feat/residual-l2 51e7ca1), re-records the
+  library and runs P3; then the plan's rewards integrated over the physics substeps, the load-generator task
+  (`Tactile-LoadGen-VegaWuji-*`), the reset randomization events, the curriculum C0–C2, and the GRU teacher with PPO and
+  its first 1 kHz run.
 
 ## What is here
 
@@ -23,16 +27,22 @@ GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mj
 | `sensors/taxel_load.py` | `TaxelLoadModel`: the testbed's elastic-foundation skin model (`HandIO.skin_taxels`) on MuJoCo Warp's contacts, with MuJoCo's `ray_capsule` in torch for the light hammer's capsule handle; its stateless core runs through `torch.compile`. |
 | `sensors/hub.py` | `TactileHub`: a scene sensor whose `update` mjlab calls after every physics substep: the post-substep hook. |
 | `plants/nail.py` | `TorchNailPlant`: `NailPlant.pre_step` per world and substep (friction loss from depth, velocity-dependent restitution through the pair's direct-form solref, frozen in contact), plus the strike truth. |
-| `mdp/runtime.py` | `TactileRuntime`, one per env: the substep clock, the sensors, the plant, the student's 1 kHz ring, the truth; the post-substep pipeline and the stale check. |
+| `plants/loadgen.py` | `TorchLoadGen`: `model/loadgen.py` batched (M3): per-env schedules of up to 16 events (impulse, periodic force or torque with drifting amplitude, breakthrough or appearing step, bind, push) drawn as `sample_schedule` draws them, the summed wrench (`LoadEvent.value`), `forecast_truth`, each event's window; `LoadApplicator` puts the wrench on the tool through `xfrc_applied` (force at the hammer face, torque about the handle). |
+| `mdp/runtime.py` | `TactileRuntime`, one per env: the substep clock, the sensors, the plant, the student's 1 kHz ring, the truth; the post-substep pipeline and the stale check. M3: pre-substep hooks (the load generator) and the reward integrands (`acc`, zeroed every policy step). |
+| `mdp/loadgen_command.py` | `LoadGenCommand` (M3): the load generator's base: the hold (arm at hover with each env's droop, the synergy at the hold scalar from the read-back angles), the schedule's loads every substep, the forecast of its next event, the per-event slip scoring for the curriculum and the metrics. |
+| `mdp/randomization.py` | The reset randomization (M3): `pair_solref_solimp`, `randomize_wuji_drive`, `randomize_taxelscan`, `randomize_plant`, `randomize_forecast` over ResidualDRCfg plus the plan's DR-table entries (`DRExtraCfg`), per env, scaled by the curriculum; the hammer's inertial for any head mass from a table compiled on the CPU; `TactileDR.param_vector` (32 values, teacher / critic). |
+| `mdp/curriculum.py` | `TactileCurriculum` (M3): stages C0 (hold, DR ×0.1, clean forecast), C1 (loads ×0.25, DR ×0.3, clean forecast), C2 (full band, full DR, noisy forecast masked in 25 % of episodes); advances when drops < 1 % and 80 % of events stay within the slip target. |
+| `algos/` | `ZeroInitRNNModel` (rsl_rl's RNNModel with a zero output layer) and `ScheduledPPO` (the entropy schedule), M3. |
 | `mdp/commands.py` | `BaseTrajectoryCommand`: the library on the GPU, per-env entry, start state and randomization, perturbations (time warp, amplitude, start delay), the 100 Hz arm stream, the synergy scalar, the lookahead, the forecast. |
 | `mdp/forecast.py` | `TorchForecastModel`: `behaviors.forecast.ForecastModel` batched, every error parameter per env. |
 | `mdp/obs_builder.py` | `StudentObs`: `ResidualHandL2.fast_sample` / `observe` batched (obs_spec layout, `stack` deep, masks). |
 | `mdp/actions.py` | `ResidualHandAction`: tanh, offsets, the drill-only trigger interlock, the stale-input decay, slew, composition with the base (the synergy at the library's scalar from the read-back angles). `SubstepHooks`: arm targets, plant pre-step, drives. |
-| `mdp/observations.py` | `student_obs` and the privileged terms (`tool_in_hand`, `patch_contact`, `event_truth`, `nail_state`, `drive_internals`, `randomization`); M1's placeholder terms for the hold tasks. |
-| `mdp/events.py`, `rewards.py`, `terminations.py` | M1's bank; `tactile_model_fields` (declares the per-world fields); placeholder hammer rewards (nail advance, slip path, I², residual size); `base_done`, `tool_left_hand`. |
-| `tasks/hammer.py` | `Tactile-Hammer-VegaWuji-{1000,500,250,100}Hz`; `hammer_scene_env_cfg` (the scene without base or sensors, for the parity scripts). `tasks/hold.py`: M1's `Tactile-Hold-VegaWuji-*`. |
-| `parity/` | `model_fields` (P0), `one_step` (P1, now also on strike states), `taxel_load` (the load model against the CPU's foundation), `strikes` (library entries on the GPU against the CPU). |
-| `tests/rl/` | `test_rl_sensors.py` (codec, readback, rev3, forecast, student observation against the CPU), `test_rl_hammer.py` (the hammer task), M1's tests. CPU: `tests/test_base_library.py`, `tests/test_residual_l2.py`. |
+| `mdp/observations.py` | `student_obs` and the privileged terms (`tool_in_hand`, `patch_contact`, `event_truth`, `nail_state`, `load_truth`, `drive_internals`, `randomization`); M1's placeholder terms for the hold tasks. |
+| `mdp/rewards.py` | The plan's rewards, substep-integrated (M3): I²t, torque roughness about its 50 Hz low-pass, torque above rated, the hand's joint-limit loads, thermal margin, residual size; slip path in the hand (mm, degrees), drift from the reference pose, nail advance, rebound energy; the drop's and the thermal fault's penalties. |
+| `mdp/events.py`, `terminations.py` | M1's bank and `reset_from_state_bank`; `tactile_model_fields` (declares the per-world fields); `base_done`, `tool_left_hand` (2 cm or 30° from the reference pose). |
+| `tasks/` | `hammer.py`: `Tactile-Hammer-VegaWuji-{1000,500,250,100}Hz` and `hammer_scene_env_cfg` (the scene without base or sensors, for the parity scripts); `loadgen.py`: `Tactile-LoadGen-VegaWuji-*` (M3); `common.py`: the groups, rewards, terminations and DR events the tasks share; `rl_cfg.py`: the PPO settings per rate and `teacher_runner_cfg`; `hold.py`: M1's `Tactile-Hold-VegaWuji-*`. |
+| `parity/` | `model_fields` (P0), `one_step` (P1, also on strike states), `taxel_load` (the load model against the CPU's foundation), `strikes` (library entries on the GPU against the CPU), `p3` (M3: the plan's P3 over four conditions). |
+| `tests/rl/` | `test_rl_sensors.py` (codec, readback, rev3, forecast, student observation against the CPU), `test_rl_hammer.py` (the hammer task), `test_rl_loadgen.py` (M3: the load generator against the CPU's, the task, integrated rewards across rates, randomization, the curriculum, the teacher), M1's tests. CPU: `tests/test_base_library.py`, `tests/test_residual_l2.py`. |
 
 ## How to run
 
@@ -47,10 +57,24 @@ On the desktop, the training venv is `~/tactile-encode/.venv-rl` (torch 2.14 cu1
 # GPU tests (training venv), ~10 min (the hammer tests record a small library on the CPU first); -s prints reports
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m pytest -q tests/rl
 
-# the base library: record it in the training venv (MuJoCo 3.11, as the GPU), ~4 swings per episode until the nail
-# is in; 48 episodes give ~200 swings (~5 min on 14 workers). Regenerate it whenever residual_config's base changes.
-PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_sim.behaviors.base_library export \
-    --episodes 48 --strikes 10 --workers 14 --out runs/base_library/hammer_v1.npz
+# the base library (M3: the hard nail, multiccd off, ~8 swings per episode until the nail is in; 100 episodes give
+# 776 swings in ~13 min on 10 workers). Regenerate it whenever residual_config's base or scene changes.
+~/tactile-encode/.venv/bin/python -m tactile_sim.behaviors.base_library export \
+    --episodes 100 --strikes 10 --workers 10 --out runs/base_library/hammer_v2.npz
+
+# P3: the GPU conditions in the training venv, the CPU ones in the validator's, then merged
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.p3 --lib runs/base_library/hammer_v2.npz \
+    --skip cpu_8k_noslip5,cpu_4k --out p3_gpu.json
+PYTHONPATH=. ~/tactile-encode/.venv/bin/python -m tactile_rl.parity.p3 --lib runs/base_library/hammer_v2.npz \
+    --skip gpu_4k,gpu_2k --out p3_cpu.json
+PYTHONPATH=. ~/tactile-encode/.venv/bin/python -m tactile_rl.parity.p3 --lib - --combine p3_cpu.json p3_gpu.json
+
+# the load-generator teacher at 1 kHz (tensorboard under --log-root)
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.train Tactile-LoadGen-VegaWuji-1000Hz \
+    --env.scene.num-envs 4096 --agent.max-iterations 800 --agent.algorithm.entropy-decay-iterations 800 \
+    --log-root runs/rsl_rl
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.throughput --task loadgen --stage 2 \
+    --rate 1000 250 --envs 1024 4096 --seconds 0.2
 
 # reports
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.model_fields        # P0
@@ -109,6 +133,31 @@ loop, grip profile, margin step, hold, post switch); regenerate it then.
   contacts, the base's true plan and the true contact (onset, time since, peak), the nail (depth, resistance, gap,
   approach speed, force), the drives (currents, winding temperatures, fault, latency, low-pass and current-loop
   coefficients), the randomization (25 values including the perturbations). The PPO config trains on `teacher`.
+
+## How the load-generator env works (M3)
+
+- **Scene and episodes.** The hammer task's scene (`residual_training_config`), the nail idle. Episodes of 3 s start
+  from the bank of settled grasps (M1's `reset_from_state_bank`), then the reset randomization draws per env. The
+  drift reference is the tool's pose in the hand at 0.2 s, once the reset has settled; the episode ends on a time-out,
+  a lost grasp (2 cm or 30° from it, −50), a thermal fault (−20) or a non-finite state.
+- **Base.** The hold: the arm on its servos at the hover pose with each env's droop for its randomized gains, the hand
+  at the grip synergy's hold scalar from the read-back angles; the lookahead is zero.
+- **Loads.** A schedule per env and episode, drawn as `tactile_sim.model.loadgen.sample_schedule` draws it (Poisson,
+  2 events per second, from 0.2 s): half-sine impulses of 0.5–5 ms and 50–700 N within 20° of the strike axis; a
+  periodic force along it (5–40 N) or torque about the handle (0.2–1.5 Nm) at 1–100 Hz with a drifting amplitude;
+  steps of 20–90 N (a breakthrough or an appearing push); binds of 0.5–3 Nm for 20–80 ms; pushes of 10–80 N. Before
+  every substep their sum goes on the tool through `xfrc_applied`: the force at the hammer face (tool frame: x along
+  the handle, z from the face into the head, so an impulse pushes back like a blow), the torque about the handle.
+  The batched schedules match the CPU sampler's statistics and give the CPU's wrench and forecast truth to 1e-9 on the
+  same events (`test_rl_loadgen.py`).
+- **Forecast.** The schedule's next event (or the one under way) through the torch ForecastModel; the error model per
+  env from `randomize_forecast`.
+- **Events scored.** An event's slip is the tool's slip path in the hand while it is under way and 50 ms after; within
+  0.7 mm and 1.4° it meets the target (the plan's G3 slip numbers). Logged per episode: events, the fraction within
+  the target, slip per event (`Metrics/base/*`); the curriculum's window: drop rate, events within the target.
+- **Observations.** `teacher` = the student's 740 + 148 privileged (the tool in the hand, patch contacts, the event
+  truth, the wrench on the tool, the drives, the 32 randomization values); the registered task returns `teacher` only
+  (the critic reads it too), the test configurations every group.
 
 ## Results (desktop, RTX 5070 Ti, 2026-10-08)
 

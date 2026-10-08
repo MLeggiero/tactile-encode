@@ -7,8 +7,10 @@ starts in the CPU's state at a library entry's windup, with that entry's randomi
 time, amplitude and start, unless `perturb` is off) until it ends.
 
 Observation groups: `student` is obs_spec's layout exactly (ResidualHandL2.observe, stack_for(rate) deep, `mask_blocks`
-zeroed); `teacher` and `critic` add the privileged state (tactile_rl.mdp.observations). Rewards are placeholders (nail
-advance, slip path, effort, residual size); the plan's rewards, curriculum and teacher architecture come later.
+zeroed); `teacher` and `critic` add the privileged state (tactile_rl.mdp.observations), `aux_labels` the students'
+auxiliary targets. Rewards are the plan's, integrated over the physics substeps (tactile_rl.tasks.common.reward_terms):
++1 per mm of nail advance, -1 per mm and per degree of slip path, drift from the entry's start pose, rebound energy,
+the effort penalties, -50 for a drop and -20 for a thermal fault.
 
 The library: `library`, else $TACTILE_BASE_LIBRARY, else runs/base_library/hammer_v1.npz (python -m
 tactile_sim.behaviors.base_library export).
@@ -31,19 +33,10 @@ from mjlab.viewer import ViewerConfig
 from tactile_rl.mdp.actions import ResidualHandActionCfg, SubstepHooksCfg
 from tactile_rl.mdp.commands import BaseTrajectoryCommandCfg
 from tactile_rl.mdp.events import tactile_model_fields
-from tactile_rl.mdp.observations import (
-    drive_internals,
-    event_truth,
-    nail_state,
-    patch_contact,
-    randomization,
-    student_obs,
-    tool_in_hand,
-)
-from tactile_rl.mdp.rewards import hand_i2, nail_advance, residual_l2, slip_path
-from tactile_rl.mdp.terminations import base_done, nonfinite_state, thermal_fault, tool_left_hand
+from tactile_rl.mdp.rewards import residual_l2
 from tactile_rl.scene.entities import ENTITY, mujoco_cfg, robot_entity_cfg
 from tactile_rl.sensors.hub import TactileHubCfg
+from tactile_rl.tasks.common import ALL_GROUPS, observation_groups, reward_terms, termination_terms
 from tactile_rl.tasks.hold import RATES, decimation_for
 from tactile_sim.sim.training_parts import config_key, residual_training_config
 
@@ -66,15 +59,8 @@ def hammer_env_cfg(rate: float = 1000.0, library: str | None = None, timestep: f
                    num_envs: int = 4096, episode_s: float = 2.5, perturb: bool = True, apply_params: bool = True,
                    mask_blocks: tuple[str, ...] = (), entries: tuple[int, ...] | None = None,
                    assign: str = "random", nconmax: int | None = NCONMAX,
-                   njmax: int | None = NJMAX) -> ManagerBasedRlEnvCfg:
+                   njmax: int | None = NJMAX, obs_groups: tuple[str, ...] = ALL_GROUPS) -> ManagerBasedRlEnvCfg:
     key = hammer_scene_key(rate, timestep)
-    priv = {"tool_in_hand": ObservationTermCfg(func=tool_in_hand),
-            "patch_contact": ObservationTermCfg(func=patch_contact),
-            "event_truth": ObservationTermCfg(func=event_truth),
-            "nail_state": ObservationTermCfg(func=nail_state),
-            "drive_internals": ObservationTermCfg(func=drive_internals),
-            "randomization": ObservationTermCfg(func=randomization)}
-    student = {"obs": ObservationTermCfg(func=student_obs)}
     return ManagerBasedRlEnvCfg(
         decimation=decimation_for(rate, timestep),
         scene=SceneCfg(num_envs=num_envs, env_spacing=2.0, entities={ENTITY: robot_entity_cfg(key)},
@@ -82,27 +68,14 @@ def hammer_env_cfg(rate: float = 1000.0, library: str | None = None, timestep: f
         commands={"base": BaseTrajectoryCommandCfg(scene_key=key, library=library_path(library), perturb=perturb,
                                                    apply_params=apply_params, task="hammer", mask_blocks=mask_blocks,
                                                    entries=entries, assign=assign)},
-        observations={"student": ObservationGroupCfg(dict(student)),
-                      "teacher": ObservationGroupCfg({**student, **priv}),
-                      "critic": ObservationGroupCfg({**student, **priv})},
+        observations=observation_groups("hammer", obs_groups),
         actions={
             "residual": ResidualHandActionCfg(entity_name=ENTITY, scene_key=key, task="hammer"),
             "substep": SubstepHooksCfg(entity_name=ENTITY, scene_key=key),  # after the residual: sees its command
         },
         events={"tactile_fields": EventTermCfg(func=tactile_model_fields, mode="startup")},
-        rewards={
-            "nail_advance": RewardTermCfg(func=nail_advance, weight=1.0),
-            "slip_path": RewardTermCfg(func=slip_path, weight=-1.0),
-            "hand_i2": RewardTermCfg(func=hand_i2, weight=-0.05),
-            "residual_l2": RewardTermCfg(func=residual_l2, weight=-0.01),
-        },
-        terminations={
-            "time_out": TerminationTermCfg(func=time_out, time_out=True),
-            "base_done": TerminationTermCfg(func=base_done, time_out=True),
-            "tool_dropped": TerminationTermCfg(func=tool_left_hand),
-            "thermal_fault": TerminationTermCfg(func=thermal_fault),
-            "nonfinite": TerminationTermCfg(func=nonfinite_state),
-        },
+        rewards=reward_terms("hammer"),
+        terminations=termination_terms("hammer"),
         sim=SimulationCfg(nconmax=nconmax, njmax=njmax, mujoco=mujoco_cfg(residual_training_config(rate, timestep))),
         viewer=ViewerConfig(origin_type=ViewerConfig.OriginType.ASSET_BODY, entity_name=ENTITY, body_name="hand",
                             distance=0.8, elevation=-20.0, azimuth=135.0),

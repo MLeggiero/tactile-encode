@@ -34,9 +34,10 @@ from tactile_sim.behaviors.base_library import (
 
 
 def gpu_replay(library: str, entries: list[int], device: str = "cuda:0", rate: float = 1000.0,
-               perturb: bool = False, copies: int = 1) -> dict:
-    """Replay `entries` on the GPU, `copies` worlds each (perturbed bases draw their own time warp, amplitude and
-    start delay); returns the outcome table (with each world's perturbation) and the capacity peaks."""
+               perturb: bool = False, copies: int = 1, timestep: float = 0.00025) -> dict:
+    """Replay `entries` on the GPU at physics `timestep`, `copies` worlds each (perturbed bases draw their own time
+    warp, amplitude and start delay); returns the outcome table (with each world's perturbation) and the capacity
+    peaks."""
     import torch
     from mjlab.envs import ManagerBasedRlEnv
 
@@ -48,8 +49,9 @@ def gpu_replay(library: str, entries: list[int], device: str = "cuda:0", rate: f
     n = n_e * copies
     lens_e = lib["e_len"][entries].astype(int)
     horizon = float(lens_e.max()) * 1e-3 / (0.8 if perturb else 1.0) + (0.1 if perturb else 0.0)
-    cfg = hammer_env_cfg(rate, library=library, num_envs=n, perturb=perturb, apply_params=True, entries=tuple(entries),
-                         assign="sequential", episode_s=horizon + 0.05, nconmax=64, njmax=192)
+    cfg = hammer_env_cfg(rate, library=library, timestep=timestep, num_envs=n, perturb=perturb, apply_params=True,
+                         entries=tuple(entries), assign="sequential", episode_s=horizon + 0.05, nconmax=64,
+                         njmax=192)
     cfg.terminations = {k: v for k, v in cfg.terminations.items() if k in ("time_out",)}
     env = ManagerBasedRlEnv(cfg, device=device)
     try:

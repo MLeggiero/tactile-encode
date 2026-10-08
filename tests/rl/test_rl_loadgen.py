@@ -1,0 +1,287 @@
+"""Milestone 3: the load generator batched on the GPU (schedules, wrench and forecast truth against
+tactile_sim.model.loadgen), the Tactile-LoadGen task (observation groups, a zero residual, loads on the tool, finite
+substep-integrated rewards the same at every policy rate), the reset randomization, the curriculum's stages, and the
+teacher (zero-initialized GRU actor, the entropy schedule, a short PPO run)."""
+
+import math
+
+import numpy as np
+import pytest
+
+pytestmark = [pytest.mark.rl]  # torch (.venv-rl); the env tests also need mjlab and CUDA
+torch = pytest.importorskip("torch")
+
+from tactile_rl.plants.loadgen import TorchLoadGen  # noqa: E402
+from tactile_sim.config import LoadGenCfg  # noqa: E402
+from tactile_sim.control.obs_spec import REGIMES  # noqa: E402
+from tactile_sim.model.loadgen import KINDS, forecast_truth, sample_schedule, wrench  # noqa: E402
+
+needs_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+
+
+# ---------------------------------------------------------------------------------------------- the load generator
+
+
+def test_batched_schedules_match_the_cpu_sampler_statistically():
+    cfg = LoadGenCfg()
+    n, t_end = 4000, 3.0
+    g = TorchLoadGen(cfg, n, "cpu", slots=24, generator=torch.Generator().manual_seed(0))
+    g.sample(torch.arange(n), t_end, t_start=0.2)
+    assert int(g.overflow.sum()) == 0
+    rng = np.random.default_rng(0)
+    cpu = [sample_schedule(cfg, rng, t_end, t_start=0.2) for _ in range(n)]
+    n_cpu = np.mean([len(s) for s in cpu])
+    n_gpu = float(g.valid.sum(1).double().mean())
+    assert abs(n_gpu - n_cpu) / n_cpu < 0.05
+    kinds_cpu = np.bincount([KINDS.index(e.kind) for s in cpu for e in s], minlength=5) / sum(len(s) for s in cpu)
+    kv = g.kind[g.valid]
+    kinds_gpu = torch.bincount(kv, minlength=5).double().numpy() / len(kv)
+    assert np.abs(kinds_gpu - kinds_cpu).max() < 0.02
+    for k, name in enumerate(KINDS):  # per-kind amplitude and duration means
+        a_cpu = np.mean([e.amp for s in cpu for e in s if e.kind == name])
+        d_cpu = np.mean([e.duration for s in cpu for e in s if e.kind == name])
+        sel = g.valid & (g.kind == k)
+        assert abs(float(g.amp[sel].mean()) - a_cpu) / a_cpu < 0.05
+        assert abs(float(g.dur[sel].mean()) - d_cpu) / d_cpu < 0.05
+    # events never overlap within an episode and stay inside it
+    t0, end = g.t0.clone(), g.end()
+    start = torch.where((g.kind == 2) & (g.sign > 0), t0 - g.dur, t0)
+    ok = g.valid[:, 1:] & g.valid[:, :-1]
+    assert bool((start[:, 1:][ok] >= end[:, :-1][ok] - 1e-9).all())
+    assert bool((t0[g.valid] >= 0.2).all()) and bool((t0[g.valid] < t_end + 1.0).all())
+
+
+def test_wrench_and_forecast_truth_match_the_cpu_schedule():
+    cfg = LoadGenCfg()
+    rng = np.random.default_rng(3)
+    scheds = [sample_schedule(cfg, rng, 4.0) for _ in range(8)]
+    g = TorchLoadGen(cfg, len(scheds), "cpu", slots=24)
+    for e, s in enumerate(scheds):
+        g.set_events(e, s)
+    for t in np.linspace(0.0, 4.2, 1500):
+        f, tq = g.wrench(torch.full((len(scheds),), t, dtype=torch.float64))
+        tr = g.truth(torch.full((len(scheds),), t, dtype=torch.float64))
+        for e, s in enumerate(scheds):
+            fc, tc = wrench(s, t)
+            np.testing.assert_allclose(f[e].numpy(), fc, atol=1e-9)
+            np.testing.assert_allclose(tq[e].numpy(), tc, atol=1e-9)
+            ft = forecast_truth(s, t)
+            assert bool(tr["valid"][e]) == ft.valid
+            if ft.valid:
+                assert float(tr["t_event"][e]) == pytest.approx(ft.t_event)
+                assert REGIMES[int(tr["regime"][e])] == ft.regime
+                assert float(tr["f"][e]) == pytest.approx(ft.f_dom)
+                assert float(tr["amp"][e]) == pytest.approx(ft.amp)
+
+
+def test_amplitude_scale():
+    g = TorchLoadGen(LoadGenCfg(), 64, "cpu", generator=torch.Generator().manual_seed(1))
+    g.sample(torch.arange(64), 3.0, amp_scale=0.25)
+    t = torch.linspace(0.2, 3.0, 2000, dtype=torch.float64)
+    vmax = max(float(g.values(torch.full((64,), float(x), dtype=torch.float64)).abs().max()) for x in t)
+    assert vmax <= 0.25 * 700.0 * 2.0 + 1e-6  # the largest amplitude (with a periodic drift of at most 2), scaled
+
+
+# ---------------------------------------------------------------------------------------------- the teacher's parts
+
+
+def test_zero_initialized_gru_actor_and_the_entropy_schedule():
+    from tensordict import TensorDict
+
+    from tactile_rl.algos.models import ZeroInitRNNModel
+    from tactile_rl.algos.ppo import ScheduledPPO
+    from tactile_rl.tasks.rl_cfg import discount, teacher_runner_cfg
+
+    obs = TensorDict({"teacher": torch.randn(5, 888)}, batch_size=[5])
+    m = ZeroInitRNNModel(obs, {"actor": ["teacher"]}, "actor", 60, hidden_dims=(256, 128), obs_normalization=True,
+                         rnn_type="gru", rnn_hidden_dim=256,
+                         distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.3})
+    assert m.is_recurrent and isinstance(m.rnn.rnn, torch.nn.GRU) and m.rnn.rnn.hidden_size == 256
+    assert torch.equal(m(obs), torch.zeros(5, 60))  # a = 0: the base
+    cfg = teacher_runner_cfg(1000.0, "loadgen", max_iterations=100)
+    assert cfg.actor.rnn_type == "gru" and cfg.critic.hidden_dims == (512, 256, 128)
+    assert cfg.num_steps_per_env == 128 and cfg.obs_groups == {"actor": ("teacher",), "critic": ("teacher",)}
+    gamma, lam = discount(1000.0, "loadgen")
+    assert cfg.algorithm.gamma == pytest.approx(math.exp(-1e-3 / 0.3)) == gamma
+    assert cfg.algorithm.lam == pytest.approx(math.exp(-1e-3 / 0.15)) == lam
+    assert teacher_runner_cfg(250.0, "hammer").algorithm.gamma == pytest.approx(0.9920, abs=1e-4)
+    assert teacher_runner_cfg(100.0, "hammer").num_steps_per_env == 13
+    p = ScheduledPPO.__new__(ScheduledPPO)
+    p.entropy_coef_start, p.entropy_coef_final, p.entropy_decay_iterations = 1e-3, 0.0, 100
+    assert p.entropy_at(0) == 1e-3 and p.entropy_at(50) == pytest.approx(5e-4) and p.entropy_at(500) == 0.0
+
+
+# ---------------------------------------------------------------------------------------------- the task (GPU)
+
+
+def make_env(n, rate=1000.0, **kw):
+    pytest.importorskip("mjlab")
+    from mjlab.envs import ManagerBasedRlEnv
+
+    from tactile_rl.tasks.loadgen import loadgen_env_cfg
+
+    return ManagerBasedRlEnv(loadgen_env_cfg(rate, num_envs=n, **kw), device="cuda:0")
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_loadgen_tasks_register_at_every_rate():
+    pytest.importorskip("mjlab")
+    from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg
+
+    import tactile_rl.tasks  # noqa: F401
+    from tactile_rl.tasks.hold import RATES, decimation_for
+    from tactile_rl.tasks.loadgen import loadgen_task_id
+
+    for rate in RATES:
+        assert loadgen_task_id(rate) in list_tasks()
+        assert load_env_cfg(loadgen_task_id(rate)).decimation == decimation_for(rate, 0.00025)
+        rl = load_rl_cfg(loadgen_task_id(rate))
+        assert rl.actor.rnn_type == "gru" and rl.obs_groups["actor"] == ("teacher",)
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_loadgen_env_observations_loads_and_a_zero_residual():
+    from tactile_rl.mdp.observations import PRIVILEGED_BY_TASK
+    from tactile_sim.control.obs_spec import obs_dim
+
+    env = make_env(16, start_stage=2, max_stage=2)
+    try:
+        obs, _ = env.reset()
+        assert obs["student"].shape == (16, obs_dim(1))
+        assert obs["teacher"].shape == (16, obs_dim(1) + sum(PRIVILEGED_BY_TASK["loadgen"].values()))
+        assert torch.equal(obs["teacher"][:, :obs_dim(1)], obs["student"])
+        cmd = env.command_manager.get_term("base")
+        act = env.action_manager.get_term("residual")
+        zero = torch.zeros(16, env.action_manager.total_action_dim, device=env.device)
+        body = cmd.app.body
+        loaded = torch.zeros(16, dtype=torch.bool, device=env.device)
+        total = torch.zeros(16, device=env.device)
+        for _ in range(600):
+            _, rew, *_ = env.step(zero)
+            total += rew
+            torch.testing.assert_close(act.command, act.base)  # a zero residual passes the base through
+            loaded |= env.sim.data.xfrc_applied[:, body].abs().sum(1) > 0
+        assert bool(torch.isfinite(total).all())
+        # the loads land on the tool exactly when the schedule has one under way
+        assert bool(loaded.any())
+        t = cmd.rt.t
+        f, tq = cmd.gen.wrench(t - env.physics_dt)
+        on = (f.abs().sum(1) + tq.abs().sum(1)) > 0
+        live = env.episode_length_buf > 1  # not reset in the last step
+        applied = env.sim.data.xfrc_applied[:, body].abs().sum(1) > 0
+        assert bool((on == applied)[live].all())
+    finally:
+        env.close()
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_rewards_are_integrated_over_substeps():
+    """The same hold at 1 kHz and at 250 Hz collects the same integrated penalties (a per-step reward would differ
+    four-fold)."""
+    sums = {}
+    for rate in (1000.0, 250.0):
+        env = make_env(32, rate, start_stage=0, max_stage=0, randomize=False)
+        try:
+            env.reset()
+            zero = torch.zeros(32, env.action_manager.total_action_dim, device=env.device)
+            n = int(round(0.4 / env.step_dt))
+            for _ in range(n):
+                env.step(zero)
+            rm = env.reward_manager
+            sums[rate] = {k: float(v.mean()) for k, v in rm._episode_sums.items()}
+        finally:
+            env.close()
+    for k in ("effort_i2t", "pose_drift"):
+        a, b = sums[1000.0][k], sums[250.0][k]
+        assert a < 0 and b < 0
+        assert abs(a - b) / abs(a) < 0.15, (k, a, b)
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_reset_randomization_writes_per_world_parameters():
+    from tactile_rl.mdp.actions import hand_drive
+
+    env = make_env(64, start_stage=2, max_stage=2)
+    try:
+        env.reset()
+        dr = env._tactile_dr
+        c = dr.cfg
+        m = env.sim.model
+        sp = dr.skin_pairs
+        mu = m.pair_friction[:, sp, 0]
+        assert float(mu.min()) >= c.hand_friction[0] - 1e-6 and float(mu.max()) <= c.hand_friction[1] + 1e-6
+        assert float(mu.std()) > 0.05  # per world
+        d0 = m.pair_solimp[:, sp, 0]
+        assert float(d0.min()) >= 0.85 - 1e-6 and float(d0.max()) <= 0.95 + 1e-6
+        hm = dr.v["head_mass"]
+        assert float(hm.min()) >= c.head_mass[0] and float(hm.max()) <= c.head_mass[1]
+        mass = m.body_mass[:, dr.hammer_bid]
+        # the hammer body's mass is the head's plus the handle's (0.10 kg)
+        torch.testing.assert_close(mass.double(), hm + 0.10, atol=2e-3, rtol=0)
+        drive = hand_drive(env.scene["robot"])
+        lat = drive.cmd_latency
+        assert float(lat.min()) >= c.cmd_latency[0] - 1e-9 and float(lat.max()) <= c.cmd_latency[1] + 1e-9
+        rt = env._tactile_rt
+        assert float(rt.scan.f_half.min()) >= c.ts_f_half[0] and float(rt.scan.f_half.max()) <= c.ts_f_half[1]
+        assert float((1 - rt.scan.alive).mean()) <= 0.03
+        fc = env.command_manager.get_term("base").forecaster
+        assert float(fc.latency.min()) >= 0.05 - 1e-9 and float(fc.latency.max()) <= 0.25 + 1e-9
+        assert float(fc.mask_prob.mean()) == pytest.approx(0.25)
+        assert dr.param_vector().shape == (64, 32)
+    finally:
+        env.close()
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_curriculum_stages():
+    env = make_env(16, start_stage=0, max_stage=2, min_episodes=10, min_events=10)
+    try:
+        env.reset()
+        cur = env.curriculum_manager._term_cfgs[0].func
+        cmd = env.command_manager.get_term("base")
+        dr = env._tactile_dr
+        assert cur.stage == 0 and not cmd.enabled and dr.scale == pytest.approx(0.1) and dr.forecast_mode == "clean"
+        dev = env.device
+        cur.win = torch.tensor([100.0, 5.0, 0.0, 0.0], dtype=torch.float64, device=dev)  # 5 % drops: stay
+        cur._evaluate()
+        assert cur.stage == 0
+        cur.win = torch.tensor([100.0, 0.0, 0.0, 0.0], dtype=torch.float64, device=dev)
+        cur._evaluate()
+        assert cur.stage == 1 and cmd.enabled and cmd.amp_scale == pytest.approx(0.25)
+        assert dr.scale == pytest.approx(0.3) and dr.forecast_mode == "clean"
+        cur.win = torch.tensor([100.0, 0.0, 200.0, 150.0], dtype=torch.float64, device=dev)  # 75 % within target
+        cur._evaluate()
+        assert cur.stage == 1
+        cur.win = torch.tensor([100.0, 0.0, 200.0, 170.0], dtype=torch.float64, device=dev)
+        cur._evaluate()
+        assert cur.stage == 2 and cmd.amp_scale == 1.0 and dr.scale == 1.0
+        assert dr.forecast_mode == "noisy" and dr.forecast_masking
+    finally:
+        env.close()
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_short_teacher_ppo_run(tmp_path):
+    from dataclasses import asdict
+
+    from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+
+    from tactile_rl.tasks.rl_cfg import teacher_runner_cfg
+
+    env = make_env(64, start_stage=1, max_stage=1)
+    try:
+        rl = teacher_runner_cfg(1000.0, "loadgen", max_iterations=2)
+        rl.num_steps_per_env = 8
+        runner = MjlabOnPolicyRunner(RslRlVecEnvWrapper(env), asdict(rl), str(tmp_path), "cuda:0")
+        runner.learn(num_learning_iterations=2)
+        assert runner.current_learning_iteration >= 1
+        assert all(torch.isfinite(p).all() for p in runner.alg.actor.parameters())
+        assert runner.alg.entropy_coef < 1e-3  # the schedule moved
+    finally:
+        env.close()

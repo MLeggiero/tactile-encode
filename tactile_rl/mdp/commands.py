@@ -135,6 +135,7 @@ class BaseTrajectoryCommandCfg(CommandTermCfg):
 
 class BaseTrajectoryCommand(CommandTerm):
     cfg: BaseTrajectoryCommandCfg
+    tactile_base = True
 
     def __init__(self, cfg: BaseTrajectoryCommandCfg, env: ManagerBasedRlEnv):
         super().__init__(cfg, env)
@@ -280,6 +281,7 @@ class BaseTrajectoryCommand(CommandTerm):
             self.warp[env_ids], self.amp[env_ids], self.delay[env_ids] = 1.0, 1.0, 0.0
         self.q0[env_ids] = lib.arm_q[e, 0]
         self.ref_rel[env_ids] = lib.hih0[e]
+        self.rt.ref_rel[env_ids] = lib.hih0[e]
         self.hih_prev[env_ids] = lib.hih0[e]
         if self.rt.nail is not None:
             self.depth_prev[env_ids] = lib.qpos[e, self.rt.nail.qadr].double()
