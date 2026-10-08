@@ -58,6 +58,8 @@ PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.one_step 
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.taxel_load          # skin loads
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.strikes --lib runs/base_library/hammer_v1.npz
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.throughput           # M1's hold benchmark
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.throughput --task hammer --seconds 0.25 \
+    --rate 1000 250 --library runs/base_library/hammer_v1.npz                                # the hammer task
 
 # training-style rollouts (tensorboard logs under logs/rsl_rl/); the hammer tasks read the library named by
 # $TACTILE_BASE_LIBRARY (default runs/base_library/hammer_v1.npz)
@@ -130,17 +132,17 @@ taxel distribution), the centre-of-pressure distance (taxel pitches).
 
 | | patch sum: median / p90 / p99 | shape (L1): median / p90 | CoP: median / p90 | patches < 5 % |
 |---|---|---|---|---|
-| GPU model on the CPU's contacts and poses | **3.0e-8** / 8.1e-8 / 1.2e-7 | **1.3e-5** / 2.9e-5 | 6.8e-6 / 1.7e-5 | 100 % |
-| end to end, MuJoCo Warp's contacts, multi-contact on (testbed default) | 1.4e-1 / 3.1e-1 / 1.0 | same | 1.2e-5 / 3.5e-5 | 19 % |
-| end to end, multi-contact off on both sides | **1.3e-3** / 2.3e-2 / 1.0 | same | 1.2e-5 / 3.2e-5 | **95 %** (hold 100 %, strikes 92 %) |
+| GPU model on the CPU's contacts and poses | **3.1e-8** / 7.6e-8 / 1.3e-7 | **1.3e-5** / 2.7e-5 | 6.3e-6 / 1.7e-5 | 100 % |
+| end to end, MuJoCo Warp's contacts, multi-contact on (testbed default) | 1.2e-1 / 2.8e-1 / 1.0 | same | 1.1e-5 / 3.2e-5 | 25 % |
+| end to end, multi-contact off on both sides | **1.6e-3** / 5.5e-2 / 1.0 | same | 1.1e-5 / 3.2e-5 | **89 %** (hold 100 %, strikes 85 %) |
 
 - **The load model is the testbed's**, to float32: given the same contacts the GPU distributes the same force over the
   same taxels (the rays are MuJoCo's `ray_capsule` term for term).
 - **End to end the gap is the simulators' contacts.** MuJoCo Warp gives a capsule/mesh pair (the handle against a hand
   hull) and a cylinder/cylinder pair (the face against the nail head) **one contact**, multi-contact or not; CPU MuJoCo
   with multi-contact gives up to 3 (handle on a fingertip) and 5 (face on nail). The patch loads then split
-  differently (14 % median). With multi-contact off on the CPU too, the patch sums agree to 0.13 % (hold 0.07 %, p99
-  0.2 %); the strike tail (p99 1.0) is states where one side has a contact the other lacks.
+  differently (12 % median). With multi-contact off on the CPU too, the patch sums agree to 0.16 % (hold 0.05 %, p99
+  0.19 %); the strike tail (p99 1.0) is states where one side has a contact the other lacks.
   `PhysicsCfg.multiccd = False` turns it off on both sides (World and `mujoco_cfg`); the default is unchanged.
 
 ### Strikes on the GPU against the CPU (`python -m tactile_rl.parity.strikes --validator --perturbed 4`)
@@ -191,37 +193,42 @@ loss and face/nail solref written per world). Metrics as in milestone 1's P1 (be
 
 | | multi-contact on (testbed default) | multi-contact off on both | floor (CPU vs CPU nudged 1 ulp) |
 |---|---|---|---|
-| states with the same contacts per pair | 7 / 300 | 251 / 300 | 295 / 300 |
-| qacc, M-norm rel, all states: median / p99 | 4.4e-2 / 0.89 | 1.3e-3 / 0.79 | 1.0e-4 / 7.7e-2 |
-| qacc, same contacts: median / p99 | 1.1e-3 / 1.1e-2 | **8.6e-4** / 2.7e-2 | 1.0e-4 / 1.0e-3 |
-| pair normal force rel: median / p99 | 1.2e-1 / 1.0 | **1.5e-3** / 1.0 | 1.9e-4 / 1.7e-2 |
-| hold states (60): qacc median / p99; force median / p99 | 4.3e-2 / 4.7e-2; 0.10 / 0.30 | **2.0e-4 / 4.3e-4; 8.2e-4 / 4.7e-3** | — |
-| strike states (224): qacc median / p99 | 5.2e-2 / 1.5 | 2.2e-3 / 1.4 | — |
-| face/nail force, strike states: both sides in contact | 62 of 100 states, rel median 0.11 | 62 of 100, rel median **1.4e-3**, p90 1.4e-2 | 99 of 100 |
-| face/nail contact on one side only | CPU only: 38 states | CPU only: 38 states (37 of them 1 → 0 contacts) | 1 |
+| states with the same contacts per pair | 4 / 300 | 248 / 300 | 295 / 300 |
+| qacc, M-norm rel, all states: median / p99 | 4.4e-2 / 0.75 | 1.6e-3 / 0.67 | 9.8e-5 / 0.16 |
+| qacc, same contacts: median / p99 | 1.9e-4 / 4.4e-4 (4 states) | **1.1e-3** / 9.9e-2 | 9.6e-5 / 7.4e-4 |
+| pair normal force rel: median / p99 | 1.1e-1 / 1.0 | **1.6e-3** / 1.0 | 1.5e-4 / 9.3e-2 |
+| hold states (60): qacc median / p99; force median / p99 | 4.3e-2 / 4.6e-2; 0.12 / 0.29 | **1.7e-4 / 3.8e-4; 5.4e-4 / 3.8e-3** | — |
+| strike states (224): qacc median / p99; force median | 4.8e-2 / 0.82; 0.11 | 2.4e-3 / 0.73; 3.5e-3 | — |
+| face/nail force, strike states: both sides in contact | 71 of 108 states, rel median 0.11 | 71 of 108, rel median **3.0e-3**, p90 2.1e-2 | 106 of 109 |
+| face/nail contact on one side only | CPU only: 37 states | CPU only: 37 states (1 → 0 contacts) | 3 |
 
 - With multi-contact off on both sides, **the hold states meet the plan's P1 targets** (median ≤ 1e-3, p99 ≤ 1e-2) for
   qacc and contact forces. With it on, almost no state has the same contacts (above).
 - At impact, MuJoCo Warp misses the face/nail contact in 37 of 224 strike states where CPU MuJoCo (single contact) finds
-  one, never the reverse; where both find it, the force agrees to 1.4e-3 at the median. The blows themselves still
+  one, never the reverse; where both find it, the force agrees to 3e-3 at the median. The blows themselves still
   agree (the strike table above).
 
 ### Throughput (hammer task, zero residual, `nconmax` 40, `njmax` 128)
 
-| worlds | policy | ms per env step | simulated s / wall s |
-|---|---|---|---|
-| 1024 | 1 kHz | 55.9 | 18 |
-| 2048 | 1 kHz | 57.5 | 36 |
-| 4096 | 1 kHz | 65.6 | **62** |
-| 4096 | 250 Hz | 218.6 | **75** |
+`python -m tactile_rl.bench.throughput --task hammer --seconds 0.25 --rate 1000 250 --library <lib>` (perturbed library
+swings, every hook running; each configuration in its own process):
 
-The plan's gate is 10 (goal 25): passed at 2048 worlds and up. At 4096 worlds and 1 kHz one substep costs: physics 8.0
-ms; taxel loads 1.5 ms (7.0 ms before compiling the core); TaxelScan 3.7 ms; readback 1.0 ms; nail 0.9 ms; drives
-0.9 ms; arm stream 0.5 ms; the 1 kHz sample 0.4 ms (every fourth substep); per env step the base command 2.0 ms and the
-observations. At 1024 worlds the step is bound by launching the hooks' small kernels (the same 56 ms as at 2048). The
-hooks now cost more than the plan's 15 % threshold: fusing them (CUDA graphs, or Warp kernels) is the next step for
-speed. Peaks over the 203 library swings: 25.2 broadphase candidates and 7.5 contacts per world, 70 constraint rows
-(the defaults leave room for the load generator's contacts).
+| worlds | policy | ms per env step | simulated s / wall s | env GPU memory (GB) |
+|---|---|---|---|---|
+| 1024 | 1 kHz | 33.8 | 30 | 0.88 |
+| 2048 | 1 kHz | 44.9 | 46 | 1.62 |
+| 4096 | 1 kHz | 67.0 | **61** | 3.06 |
+| 1024 | 250 Hz | 110.6 | 37 | 0.91 |
+| 2048 | 250 Hz | 151.2 | 54 | 1.72 |
+| 4096 | 250 Hz | 223.5 | **73** | 3.33 |
+
+The plan's gate is 10 (goal 25): passed everywhere. At 4096 worlds and 1 kHz one substep costs: physics 8.0 ms; taxel
+loads 1.5 ms (7.0 ms before compiling the core); TaxelScan 3.7 ms (frame completion 2.0, emission 1.0, sampling 0.6);
+readback 1.0 ms; nail 0.9 ms; drives 0.9 ms; arm stream 0.5 ms; the 1 kHz sample 0.4 ms (every fourth substep); per env
+step the base command 2.0 ms and the observations. Below 2048 worlds the step is bound by launching the hooks' small
+kernels. The hooks cost more than the plan's 15 % threshold: fusing them (CUDA graphs, Warp kernels, or compiling the
+scan's integer parts, which stay exact) is the next step for speed. Peaks over the library swings: 25 broadphase
+candidates and 7.5 contacts per world, 71 constraint rows (the defaults leave room for the load generator's contacts).
 
 ## Milestone 1 results (hold scene, kept)
 
@@ -341,9 +348,10 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
 - **Contacts per pair (the main CPU/GPU difference on the hammer scene).** MuJoCo Warp generates one contact for
   capsule/mesh, cylinder/cylinder and cylinder/box pairs whatever `multiccd` says; CPU MuJoCo's multi-contact gives
   several. The light hammer is primitives, so every hand/handle contact and the face/nail contact differ: patch loads
-  14 % apart at the median, few states with the same contact set. With multi-contact off on the CPU too the hold meets
-  P1's targets and the skin loads agree to 0.1 %. Choosing `PhysicsCfg(multiccd=False)` for the residual experiments
-  (validator included) is a decision for the experiment; it changes the validator's grasp contacts, not the GPU's.
+  12 % apart at the median, few states with the same contact set. With multi-contact off on the CPU too the hold meets
+  P1's targets and the skin loads agree to 0.16 % at the median. Choosing `PhysicsCfg(multiccd=False)` for the
+  residual experiments (validator included) is a decision for the experiment; it changes the validator's grasp
+  contacts, not the GPU's.
 - **The face/nail contact at impact.** Single contact on both sides, MuJoCo Warp still misses the cylinder/cylinder
   contact in a sixth of the strike states where the CPU finds one. Blows agree to a few percent in advance and peak
   force all the same (above).
