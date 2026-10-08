@@ -333,6 +333,31 @@ def test_openpi_wire_format_round_trips():
 
 
 @requires_vega_wuji
+def test_until_its_first_chunk_the_vla_leaves_the_hand_on_its_grip():
+    import tactile_sim.vla.demos as demos
+    from tactile_sim.vla.action import HAND
+    from tactile_sim.vla.client import Chunk, VlaBase
+
+    cfg, _ = demos.demo_config("drill", 3, fast=True)
+    tb, _, _ = demos.EPISODES["drill"](cfg, 3)
+    hand = tb.world.hand
+
+    class Idle:
+        def reset(self):
+            pass
+
+    vla = VlaBase(tb, Idle(), HandTable.for_hand(hand, cfg), "", camera=None)
+    grip = np.stack(hand.synergy.mit_command(hand.s, tb.sensors["hand_q"].latest().value))
+    # the drill's settled grip squeezes harder than the table's hold, and at t = 0 the hand sensor has no reading:
+    # the table's command would open the hand, so the client keeps the grip's own command until a chunk takes effect
+    assert np.allclose(vla(0.0)[0], grip)
+    q = np.zeros(ACTION_DIM)
+    q[HAND] = 1.0
+    vla.chunks.append(Chunk(0.0, 0.0, 1 / 30, np.tile(q, (16, 1)), q))
+    assert np.allclose(vla(0.0)[0], vla.table.command(q[HAND]))
+
+
+@requires_vega_wuji
 def test_a_replayed_drill_demo_seats_the_screw_through_the_vla_client(tmp_path):
     pytest.importorskip("pyarrow")
     import tactile_sim.vla.demos as demos

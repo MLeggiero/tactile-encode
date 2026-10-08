@@ -299,7 +299,14 @@ class VlaBase:
 
     def __call__(self, t: float) -> tuple[np.ndarray, np.ndarray, bool, np.ndarray]:
         q, _ = self.targets(t)
-        base = self.table.command(q[HAND])
+        if self.active(t) is None:
+            # until the first chunk takes effect the hand keeps the grip it has, commanded as the scripted bases do:
+            # the table's hold need not match it (the drill's settled grip is the full one), and an unread sensor
+            # (the first ms) gives zero angles, targets that would open the hand
+            hand = self.tb.world.hand
+            base = np.stack(hand.synergy.mit_command(hand.s, self.tb.sensors["hand_q"].latest().value))
+        else:
+            base = self.table.command(q[HAND])
         look = []
         for dt in LOOKAHEAD:
             qa, _ = self.targets(t + dt)
