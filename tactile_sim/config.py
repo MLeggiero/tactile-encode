@@ -532,6 +532,8 @@ class ResidualCfg:
     trigger_joints: tuple[str, ...] = ("r_index_finger_mcp_flex", "r_index_finger_pip", "r_index_finger_dip")
     trigger_dq_max: float = 0.05  # rad
     trigger_tau: tuple[float, float] = (-0.1, 0.05)  # Nm, along the closing direction
+    # observation blocks (obs_spec.OBS_BLOCKS names) seen as zeros: the sensing ablation's students
+    mask_blocks: tuple[str, ...] = ()
 
 
 @dataclass

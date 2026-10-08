@@ -34,6 +34,7 @@ from tactile_sim.control.obs_spec import (
     assert_deployable,
     compose,
     obs_dim,
+    obs_slices,
     offsets,
     slew,
     spec_hash,
@@ -100,6 +101,11 @@ class ResidualHandL2:
         self.trig = np.array([hand.joint_names.index(j) for j in c.trigger_joints if j in hand.joint_names], dtype=int)
         self.close_dir = hand.synergy.close_dir
         self.task_vec = np.eye(len(TASKS))[TASKS.index(c.task)]
+        slices = obs_slices(self.stack)
+        unknown = set(c.mask_blocks) - set(slices)
+        if unknown:
+            raise ValueError(f"unknown observation blocks to mask: {sorted(unknown)}")
+        self.masked = [slices[b] for b in c.mask_blocks]
         self.reset()
 
     def check_policy(self, policy) -> None:
@@ -112,6 +118,10 @@ class ResidualHandL2:
             raise ValueError(f"policy {meta.name!r} was trained on interface {meta.spec_hash}, this loop is {want}")
         if abs(meta.rate - self.cfg.rate) > 1e-9:
             raise ValueError(f"policy {meta.name!r} decides at {meta.rate} Hz, the loop runs at {self.cfg.rate} Hz")
+        mask = tuple(meta.extra.get("mask_blocks", ()))
+        if set(mask) != set(self.cfg.mask_blocks):
+            raise ValueError(f"policy {meta.name!r} was trained blind to {sorted(mask)}, the loop masks "
+                             f"{sorted(self.cfg.mask_blocks)}")
 
     def _i_eff(self) -> np.ndarray:
         """Each hand joint's effective inertia (diagonal of the joint-space inertia) at the current pose."""
@@ -175,6 +185,8 @@ class ResidualHandL2:
                                       self.task_vec, [1.0 if trigger else 0.0]])
         if obs.shape != (obs_dim(self.stack),):
             raise ValueError(f"observation has {obs.shape[0]} entries, the spec {obs_dim(self.stack)}")
+        for sl in self.masked:
+            obs[sl] = 0.0
         return obs
 
     def stale(self, t: float) -> bool:

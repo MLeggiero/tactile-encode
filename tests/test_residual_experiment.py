@@ -50,3 +50,21 @@ def test_a_smoke_episode_writes_metrics_and_reports(tmp_path):
     assert set(ps) == {"base", "squeeze"} and ps["squeeze"][0]["i2t"] > ps["base"][0]["i2t"]  # squeezing costs
     text = report("smoke", tmp_path)
     assert "| squeeze | 1 |" in text
+
+
+def test_later_stages_build_their_conditions():
+    from tactile_sim.experiments.residual_experiment import SWEEPS, stage_conditions
+
+    tiny = str(__import__("pathlib").Path(__file__).parent / "data" / "tiny_policy.onnx")
+    e5 = stage_conditions("E5", {"t": tiny})
+    assert len(e5) == 2 * sum(len(v[2]) for v in SWEEPS.values())  # base and the policy at every point
+    lat = next(c for c in e5 if c.name == "residual:t@cmd_latency=0.003")
+    assert lat.overrides["wuji"]["cmd_latency"] == 0.003 and lat.overrides["residual"]["rate"] == 1000.0
+    job = next(j for j in make_jobs("E5", {"t": tiny}) if j.condition.name == "base@taxel_rate=500")
+    cfg, _ = job.config()
+    assert cfg.sensors.ts_rate == 500.0 and "base__taxel_rate-500" in str(job.path(__import__("pathlib").Path(".")))
+    assert cfg.residual.stale_taxel == pytest.approx(0.006)  # two 2 ms frame periods plus latency
+    e6 = stage_conditions("E6", {"t": tiny})
+    heavy = next(c for c in e6 if c.name == "base@heavy_head")
+    assert heavy.overrides["hammer"]["head_mass"] == 0.8
+    assert [c.name for c in stage_conditions("E4", {"t": tiny})] == ["residual:t"]

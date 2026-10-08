@@ -32,7 +32,26 @@ import numpy as np
 from tactile_sim.config import SimConfig, fast_config, residual_config
 
 ROOT = Path("runs/residual")
-STAGES = {"smoke": {"seeds": 2, "strikes": 3, "fast": True}, "E1": {"seeds": 20, "strikes": 10, "fast": False}}
+# seeds x strikes per episode; "fast" runs the 4 kHz physics (smoke tests only)
+STAGES = {"smoke": {"seeds": 2, "strikes": 3, "fast": True}, "E1": {"seeds": 20, "strikes": 10, "fast": False},
+          "E3": {"seeds": 20, "strikes": 10, "fast": False}, "E4": {"seeds": 20, "strikes": 10, "fast": False},
+          "E5": {"seeds": 10, "strikes": 10, "fast": False}, "E6": {"seeds": 20, "strikes": 10, "fast": False}}
+# E4: the observation blocks each sensing variant cannot see
+SENSING = {"touch": ("hand_current",), "current": ("taxel_codes", "patch_features", "board_status"),
+           "proprio": ("hand_current", "taxel_codes", "patch_features", "board_status"), "both": ()}
+# E5: hardware requirement sweeps, one parameter at a time on top of each seed's randomization
+SWEEPS = {
+    "cmd_latency": ("wuji", "cmd_latency", (0.0005, 0.001, 0.002, 0.003, 0.005)),
+    "sdk_lpf_hz": ("wuji", "sdk_lpf_hz", (None, 300.0, 100.0, 50.0)),
+    "effort_limit": ("wuji", "effort_limit_ratio", (0.8, 1.0, 1.2)),
+    "tau_i": ("wuji", "tau_i", (0.0001, 0.0005, 0.002)),
+    "taxel_rate": ("sensors", "ts_rate", (1000.0, 770.0, 500.0, 250.0)),
+    "taxel_latency": ("sensors", "ts_bridge_latency", ((0.000125, 0.001), (0.001, 0.002), (0.003, 0.005))),
+    "taxel_bits": ("sensors", "ts_code_bits", (8, 6)),
+}
+# E6: held-out physics, outside the training ranges
+HELD_OUT = {"heavy_head": {"hammer": {"head_mass": 0.8}}, "slick_skin": {"gripper": {"hand_friction": 0.5}},
+            "stiff_nail": {"plant": {"resistance_0": 400.0}}, "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
 
 
 @dataclass(frozen=True)
@@ -67,7 +86,8 @@ class Job:
     seed: int
 
     def path(self, root: Path) -> Path:
-        return root / self.stage / self.condition.name.replace(":", "_") / f"seed{self.seed}.json"
+        safe = self.condition.name.replace(":", "_").replace("@", "__").replace("=", "-")
+        return root / self.stage / safe / f"seed{self.seed}.json"
 
     def config(self) -> tuple[SimConfig, dict]:
         from tactile_sim.sim.randomize import apply_residual_dr, residual_dr
@@ -81,9 +101,50 @@ class Job:
         return cfg, dr
 
 
+def stage_conditions(stage: str, policies: dict[str, str] | None = None) -> list[Condition]:
+    """The conditions a stage runs. E1/E3/smoke: the baselines plus every policy (E3 passes one per rate); E4: every
+    policy (each run with its sidecar's mask); E5: the base and each policy under every sweep point; E6: the base
+    and each policy under each held-out physics."""
+    if stage in ("smoke", "E1", "E3"):
+        return e1_conditions(policies)
+    pol = e1_conditions(policies)
+    base = pol[0]
+    pol = [c for c in pol if c.name.startswith("residual:")]
+    if stage == "E4":
+        out = []
+        for c in pol:
+            from tactile_sim.control.policy_io import PolicyMeta
+
+            mask = tuple(PolicyMeta.read(c.policy).extra.get("mask_blocks", ()))
+            out.append(Condition(c.name, _merge(c.overrides, {"residual": {"mask_blocks": mask}}), c.policy))
+        return out
+    out = []
+    if stage == "E5":
+        for key, (sec, fld, values) in SWEEPS.items():
+            for v in values:
+                tag = "off" if v is None else (f"{v[0]:g}-{v[1]:g}" if isinstance(v, tuple) else f"{v:g}")
+                ov = {sec: {fld: v}}
+                if key == "taxel_rate":  # slower frames are not stale: scale the guard with the frame period
+                    ov["residual"] = {"stale_taxel": max(0.005, 2.0 / v + 0.002)}
+                for c in [base] + pol:
+                    out.append(Condition(f"{c.name}@{key}={tag}", _merge(c.overrides, ov), c.policy))
+    elif stage == "E6":
+        for key, ov in HELD_OUT.items():
+            for c in [base] + pol:
+                out.append(Condition(f"{c.name}@{key}", _merge(c.overrides, ov), c.policy))
+    return out
+
+
+def _merge(a: dict, b: dict) -> dict:
+    out = {k: dict(v) for k, v in a.items()}
+    for k, v in b.items():
+        out.setdefault(k, {}).update(v)
+    return out
+
+
 def make_jobs(stage: str, policies: dict[str, str] | None = None, only: str | None = None) -> list[Job]:
     st = STAGES[stage]
-    conds = e1_conditions(policies)
+    conds = stage_conditions(stage, policies)
     if only:
         conds = [c for c in conds if c.name == only]
     return [Job(stage, c, s) for c in conds for s in range(st["seeds"])]

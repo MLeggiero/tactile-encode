@@ -225,3 +225,21 @@ def test_a_policy_for_another_interface_or_rate_is_refused(res_tb):
     pol.meta.rate, pol.meta.spec_hash = 1000.0, "0" * 16
     with pytest.raises(ValueError, match="interface"):
         res_tb.residual.check_policy(pol)
+
+
+@requires_wuji
+def test_masked_blocks_read_as_zero_and_must_match_the_policy(res_tb):
+    pytest.importorskip("onnxruntime")
+    from tactile_sim.control.policy_io import OnnxPolicy
+    from tactile_sim.sim.testbed import Testbed
+
+    tb = Testbed(res_cfg(mask_blocks=("taxel_codes", "patch_features", "board_status")))
+    r = tb.residual
+    tb.reset(0)
+    tb.run_for(0.05)
+    sl = obs_slices(1)
+    assert np.all(r.last_obs[sl["taxel_codes"]] == 0) and np.all(r.last_obs[sl["patch_features"]] == 0)
+    assert np.any(r.last_obs[sl["hand_current"]] != 0)  # current-only student: the motor currents stay
+    pol = OnnxPolicy(DATA / "tiny_policy.onnx")  # trained with every block
+    with pytest.raises(ValueError, match="blind"):
+        r.check_policy(pol)
