@@ -147,7 +147,8 @@ class OpenPiPolicy:
 
 
 class ReplayPolicy:
-    """A recorded demo's own actions as chunks: the frame nearest the request time on (held at the end)."""
+    """A recorded demo's own actions as chunks: the recording interpolated at the request time and every frame after
+    (held before the first frame and after the last), so the replay keeps the demo's timing to the millisecond."""
 
     def __init__(self, actions: np.ndarray, fps: float, horizon: int = 16, t_start: float = 0.0):
         self.actions = np.asarray(actions, float)
@@ -157,9 +158,10 @@ class ReplayPolicy:
         pass
 
     def __call__(self, t: float, image: np.ndarray, state: np.ndarray, instruction: str) -> np.ndarray:
-        k = int(round((t - self.t_start) * self.fps))
-        idx = np.clip(np.arange(k, k + self.horizon), 0, len(self.actions) - 1)
-        return self.actions[idx]
+        x = np.clip((t - self.t_start) * self.fps + np.arange(self.horizon), 0, len(self.actions) - 1)
+        k = np.minimum(np.floor(x).astype(int), max(len(self.actions) - 2, 0))
+        w = np.clip(x - k, 0.0, 1.0)[:, None]
+        return (1 - w) * self.actions[k] + w * self.actions[np.minimum(k + 1, len(self.actions) - 1)]
 
 
 # ---------------------------------------------------------------------- chunks
@@ -195,12 +197,24 @@ class ChunkLog:
         return {k: np.asarray(v, float) for k, v in self.__dict__.items()}
 
 
+def smooth_chunk(a: np.ndarray, passes: int) -> np.ndarray:
+    """A chunk low-passed along its horizon by `passes` of the [1, 2, 1]/4 kernel (its ends held): removes the
+    frame-to-frame alternation a policy's samples can carry (the Nyquist rate, 15 Hz at 30 fps), which the arm would
+    otherwise follow as acceleration spikes, and keeps slow motion."""
+    for _ in range(passes):
+        p = np.concatenate([a[:1], a, a[-1:]])
+        a = 0.25 * p[:-2] + 0.5 * p[1:-1] + 0.25 * p[2:]
+    return a
+
+
 # ---------------------------------------------------------------------- the base
 class VlaBase:
     def __init__(self, tb, policy, table: HandTable, instruction: str, camera, latency: float = 0.1,
-                 exec_steps: int = 8, fps: float | None = None):
+                 exec_steps: int = 8, fps: float | None = None, blend: float = 0.0, smooth: int = 0):
         self.tb, self.policy, self.table, self.instruction, self.cam = tb, policy, table, instruction, camera
         self.latency, self.exec_steps = latency, exec_steps
+        self.blend = blend  # s over which a new chunk fades in over the one it replaces (0: it takes over at once)
+        self.smooth = smooth  # passes of smooth_chunk over each chunk before it runs (0: as the policy gave it)
         self.fps = fps or tb.cfg.vla.fps
         self.dt = 1.0 / self.fps
         self.reset()
@@ -244,6 +258,7 @@ class VlaBase:
             a = np.asarray(self.policy(t, image, state, self.instruction), float)
             if a.ndim != 2 or a.shape[1] != ACTION_DIM or not np.all(np.isfinite(a)):
                 raise ValueError(f"policy returned {a.shape} actions (finite: {np.all(np.isfinite(a))})")
+            a = smooth_chunk(a, self.smooth)
             c = Chunk(t, t + self.latency, self.dt, a, state)
             self.chunks.append(c)
             L = self.log
@@ -253,20 +268,30 @@ class VlaBase:
             L.actions.append(a)
         self.k += 1
 
-    def active(self, t: float) -> Chunk | None:
-        for c in reversed(self.chunks):
-            if c.t_eff <= t + 1e-12:
-                return c
+    def active(self, t: float) -> int | None:
+        """Index of the chunk the robot follows at t."""
+        for i in range(len(self.chunks) - 1, -1, -1):
+            if self.chunks[i].t_eff <= t + 1e-12:
+                return i
         return None
 
     # ------------------------------------------------------------------ outputs
     def targets(self, t: float) -> tuple[np.ndarray, np.ndarray]:
-        """The 27 targets and their rates at t: the active chunk, or the pose at the start until one arrives."""
-        c = self.active(t)
-        if c is None:
+        """The 27 targets and their rates at t: the active chunk, faded in over the previous one for `blend` s
+        (smoothstep; consecutive chunks disagree, and a step in the arm's targets jolts the tool in the hand), or
+        the pose at the start until one arrives."""
+        i = self.active(t)
+        if i is None:
             hand = self.q_hand0 if self.q_hand0 is not None else self.tb.sensors["hand_q"].latest().value
             return np.concatenate([self.q_arm0, hand]), np.zeros(ACTION_DIM)
-        return c.at(t)
+        q, qd = self.chunks[i].at(t)
+        s = (t - self.chunks[i].t_eff) / self.blend if self.blend > 0 and i > 0 else 1.0
+        if s < 1.0:
+            q_old, qd_old = self.chunks[i - 1].at(t)
+            w, dw = s * s * (3.0 - 2.0 * s), 6.0 * s * (1.0 - s) / self.blend
+            qd = qd_old + w * (qd - qd_old) + dw * (q - q_old)
+            q = q_old + w * (q - q_old)
+        return q, qd
 
     def arm_stream(self, t: float) -> tuple[np.ndarray, np.ndarray]:
         q, qd = self.targets(t)
@@ -315,7 +340,8 @@ def strike_metrics(truth: dict, pre: float = 0.02, post: float = 0.1) -> list[di
 
 
 def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: int = 8, max_time: float = 30.0,
-                    residual_policy=None, visual_seed: int | None = None, after_done: float = 1.0) -> dict:
+                    residual_policy=None, visual_seed: int | None = None, after_done: float = 1.0,
+                    blend: float = 0.0, smooth: int = 0) -> dict:
     """One episode with the VLA in charge, on the configured task (ResidualCfg.task): until the nail is home or the
     screw seated (then `after_done` more seconds, for the VLA to let go and back out), the tool drops, or max_time.
     The residual runs `residual_policy` (default: the configured one, zero unless set)."""
@@ -342,7 +368,7 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
     if cfg.vla.visual_dr:
         cam.randomize(np.random.default_rng(20_000 + (seed if visual_seed is None else visual_seed)))
     table = HandTable.for_hand(tb.world.hand, cfg)
-    vla = VlaBase(tb, policy, table, INSTRUCTIONS[task], cam, latency, exec_steps)
+    vla = VlaBase(tb, policy, table, INSTRUCTIONS[task], cam, latency, exec_steps, blend=blend, smooth=smooth)
     vla.attach()
     w, plant = tb.world, tb.world.plant
     p0, r0 = w.hammer_in_hand()

@@ -71,6 +71,8 @@ class Job:
     server: str
     latency: float = 0.1
     exec_steps: int = 8
+    blend: float = 0.0
+    smooth: int = 0
 
     def path(self, root: Path) -> Path:
         safe = self.condition.name.replace(":", "_").replace("+", "__")
@@ -91,10 +93,12 @@ def run_job(job: Job, root: str) -> dict:
         cfg = cfg.replace(**job.condition.overrides)
     residual = make_policy(job.condition.policy)
     r = run_vla_episode(cfg, make_vla_policy(job.server), job.seed, latency=job.latency, exec_steps=job.exec_steps,
-                        max_time=MAX_TIME[job.task], residual_policy=residual)
+                        max_time=MAX_TIME[job.task], residual_policy=residual, blend=job.blend,
+                        smooth=job.smooth)
     chunks = r.pop("chunks")
     payload = {"job": {"task": job.task, "condition": job.condition.name, "policy": job.condition.policy,
-                       "seed": job.seed, "server": job.server, "latency": job.latency, "exec_steps": job.exec_steps},
+                       "seed": job.seed, "server": job.server, "latency": job.latency, "exec_steps": job.exec_steps,
+                       "blend": job.blend, "smooth": job.smooth},
                **r, "draw": draw, "wall_s": time.time() - t0}
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(out.with_suffix(".chunks.npz"), **chunks)
@@ -181,12 +185,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--latency", type=float, default=0.1, help="s from observation to the chunk taking effect")
     ap.add_argument("--exec-steps", type=int, default=8, help="frames executed per chunk")
+    ap.add_argument("--blend", type=float, default=0.0, help="s over which a new chunk fades in over the last")
+    ap.add_argument("--smooth", type=int, default=0, help="passes of a [1, 2, 1]/4 filter along each chunk")
     ap.add_argument("--policy", action="append", default=[], help="NAME=PATH of an exported residual policy")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     root = Path(a.out)
     conds = conditions(dict(p.split("=", 1) for p in a.policy))
-    jobs = [Job(a.task, c, a.seed0 + s, a.server, a.latency, a.exec_steps) for c in conds for s in range(a.seeds)]
+    jobs = [Job(a.task, c, a.seed0 + s, a.server, a.latency, a.exec_steps, a.blend, a.smooth) for c in conds
+            for s in range(a.seeds)]
     if a.cmd == "list":
         for j in jobs:
             print(j.condition.name, j.seed, "done" if j.path(root).exists() else "")

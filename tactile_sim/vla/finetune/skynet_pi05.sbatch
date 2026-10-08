@@ -5,6 +5,8 @@
 #
 #   sbatch ~/scratch/DexVLA/tactile/finetune/skynet_pi05.sbatch
 #   sbatch --export=ALL,CONFIG=pi05_vega_wuji_lora --gres=gpu:a40:1 --cpus-per-task=6 .../skynet_pi05.sbatch   # LoRA
+#   sbatch --export=ALL,EXP=smoke,STEPS=20 --time=01:00:00 .../skynet_pi05.sbatch                              # smoke
+# DATASET picks the dataset under ../data (default vega_wuji_tools); its norm stats are recomputed when it changes.
 #SBATCH --job-name=tactile-pi05
 #SBATCH --account=overcap
 #SBATCH --partition=overcap
@@ -28,9 +30,13 @@ ln -sfn "$work/data/${DATASET:-vega_wuji_tools}" "$HF_LEROBOT_HOME/local/vega_wu
 cd "$work/openpi"
 nvidia-smi > "$work/logs/gpus-$SLURM_JOB_ID.txt"
 stats="assets/$config/local/vega_wuji_tools/norm_stats.json"
-if [[ ! -f "$stats" ]]; then
+src="$(readlink -f "$HF_LEROBOT_HOME/local/vega_wuji_tools")"
+if [[ ! -f "$stats" || "$(cat "$stats.src" 2>/dev/null)" != "$src" ]]; then
     .venv/bin/python scripts/compute_norm_stats.py --config-name "$config"
     .venv/bin/python -c "from openpi.policies.vega_wuji_policy import widen_norm_stats as w; w('$stats')"
+    echo "$src" > "$stats.src"
 fi
-if [[ -d "checkpoints/$config/vega_wuji" ]]; then flag=--resume; else flag=--overwrite; fi
-.venv/bin/python scripts/train.py "$config" --exp-name=vega_wuji "$flag" --fsdp-devices="${SLURM_GPUS_ON_NODE:-4}"
+exp="${EXP:-vega_wuji}"
+if [[ -d "checkpoints/$config/$exp" ]]; then flag=--resume; else flag=--overwrite; fi
+.venv/bin/python scripts/train.py "$config" --exp-name="$exp" "$flag" --fsdp-devices="${SLURM_GPUS_ON_NODE:-4}" \
+    ${STEPS:+--num-train-steps="$STEPS" --save-interval="$STEPS"}

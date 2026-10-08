@@ -36,6 +36,7 @@ INSTRUCTIONS = {"hammer": "hammer the nail into the board", "drill": "drive the 
 TASK_SHIFT = 0.03  # m, uniform on each horizontal axis: the whole task (board, nail, hover) moved on the table
 STRIKE_SPEED = (0.85, 1.15)  # x the nominal strike speed
 MAX_STRIKES = 20  # an episode ends when the nail is home, or after this many strikes
+APPROACH_TIME = 0.05  # s, the swing's hold before the first windup (its default 0.6, plus 0.1)
 DRILL_T_MAX = 10.0  # s: a screw that has not seated by then is a failed demo
 VIDEO_KEY = "observation.images.ego_view"
 START = 0.02  # s: recording starts after the grip loop and the arm's first commands have run
@@ -175,7 +176,10 @@ def demo_config(task: str, seed: int, fast: bool = False):
     shift = rng.uniform(-TASK_SHIFT, TASK_SHIFT, 2)
     over = {"scene": {"hover_tcp": tuple(float(v) for v in np.asarray(cfg.scene.hover_tcp) + [*shift, 0.0])}}
     if task == "hammer":
-        over["swing"] = {"v_strike": float(cfg.swing.v_strike * rng.uniform(*STRIKE_SPEED))}
+        # the first windup starts at once: an idle hold looks the same in every frame, so a policy cannot tell when
+        # it ends (the grasp has settled before the clock starts, in World.reset)
+        over["swing"] = {"v_strike": float(cfg.swing.v_strike * rng.uniform(*STRIKE_SPEED)),
+                         "approach_time": APPROACH_TIME}
     return cfg.replace(**over), {"dr": dr, "overrides": over}
 
 

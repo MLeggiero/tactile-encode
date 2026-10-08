@@ -32,6 +32,7 @@ export PATH="$meta/.runtime/gr00t17/bin:$meta/.pixi/envs/data/bin:$PATH"
 export LD_LIBRARY_PATH="$meta/.pixi/envs/data/lib:${LD_LIBRARY_PATH:-}"
 export HF_HUB_CACHE="$meta/data/hf-cache/hub" HF_HUB_OFFLINE=1 WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 DS_BUILD_OPS=0 TRITON_CACHE_DIR="$work/.runtime/triton-cache"
+mkdir -p "$TRITON_CACHE_DIR"
 cd "$meta/repos/Isaac-GR00T"
 ds="$work/data/${DATASET:-vega_wuji_tools}"
 # GR00T's own statistics (relative actions included), by this GR00T version, once per dataset
