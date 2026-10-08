@@ -14,6 +14,10 @@ and tracks them with its own PD servos; it takes no torque commands. So the host
 
 Stiffness is whatever the servos have (factory gains x dexcontrol's P multiplier); the L2 command's
 Cartesian stiffness is not applied.
+
+A joint stream (set_joint_stream, e.g. a VLA's action chunk interpolated to the command rate) replaces the
+Cartesian reference and the IK: each command tick takes the stream's joint targets and velocities one command
+period ahead, and keeps the rate limit, the droop offset and the holds.
 """
 
 from __future__ import annotations
@@ -60,6 +64,7 @@ class PositionL1:
         self.detector.reset()
         self.supervisor.reset()
         self.cmd: L2Command | None = None
+        self.stream = None
         self.last_event = None
         self.gate_until = -np.inf
         self.grip_setpoint = self.cfg.controller.grip_hold
@@ -73,6 +78,11 @@ class PositionL1:
 
     def set_command(self, cmd: L2Command) -> None:
         self.cmd = cmd
+
+    def set_joint_stream(self, stream) -> None:
+        """Joint targets from `stream(t) -> (q, qd)` (rad, rad/s; before droop compensation) instead of the Cartesian
+        command; None returns to the Cartesian command."""
+        self.stream = stream
 
     def hold_here(self, t: float, F_grip: float | None = None) -> L2Command:
         p, R = self.world.ctrl_pose()
@@ -128,16 +138,20 @@ class PositionL1:
     def _command(self, t: float, flagged: bool) -> None:
         w = self.world
         x_now, R_now = w.ctrl_pose()
-        cmd = self.supervisor.filter(self.cmd, t, x_now, R_now)
-        if cmd.ref is not None and not self.supervisor.frozen:
-            t_flag = None
-            if self.last_event is not None and self.last_event.t_flag >= getattr(cmd.ref, "t_armed", -np.inf):
-                t_flag = self.last_event.t_flag
-            # one command period ahead: the target holds (ZOH) until the next tick
-            x, xd, _, mode = cmd.ref.evaluate(t + self.dt_cmd, t_flag, x_now)
-            cmd.x_eq, cmd.xd_eq, cmd.mode = x, xd, mode
-            cmd.R_eq = getattr(cmd.ref, "R", cmd.R_eq)
-        q, qd = self._ik(cmd.x_eq, cmd.R_eq, cmd.xd_eq)
+        if self.stream is not None:
+            q, qd = (np.asarray(v, float) for v in self.stream(t + self.dt_cmd))
+            cmd = self.cmd if self.cmd is not None else self.hold_here(t)
+        else:
+            cmd = self.supervisor.filter(self.cmd, t, x_now, R_now)
+            if cmd.ref is not None and not self.supervisor.frozen:
+                t_flag = None
+                if self.last_event is not None and self.last_event.t_flag >= getattr(cmd.ref, "t_armed", -np.inf):
+                    t_flag = self.last_event.t_flag
+                # one command period ahead: the target holds (ZOH) until the next tick
+                x, xd, _, mode = cmd.ref.evaluate(t + self.dt_cmd, t_flag, x_now)
+                cmd.x_eq, cmd.xd_eq, cmd.mode = x, xd, mode
+                cmd.R_eq = getattr(cmd.ref, "R", cmd.R_eq)
+            q, qd = self._ik(cmd.x_eq, cmd.R_eq, cmd.xd_eq)
         # never command a joint faster than 90 % of its velocity limit (a reference step, e.g. an aim
         # correction, would otherwise become a servo step)
         v_lim = 0.9 * w.arm_spec.velocity

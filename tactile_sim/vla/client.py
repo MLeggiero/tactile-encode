@@ -1,0 +1,303 @@
+"""Closed loop with a served VLA in the CPU testbed: the VLA drives the arm and gives the residual its base.
+
+VlaBase, on the 1 kHz host clock:
+
+- at VlaCfg.fps it renders the head camera and reads the state, as the demos record them (vla.demos); every
+  `exec_steps` frames it asks the policy for a chunk (H, 27) of absolute targets at the frame times from the
+  request on;
+- the chunk takes effect `latency` later in simulated time (the simulator waits for the server in wall time, so
+  the server's own speed does not matter); from then the robot follows it, linearly interpolated between frames
+  and held at its last action, until the next chunk takes effect;
+- the arm through PositionL1's joint stream (the host still adds droop compensation and the rate limit); the hand
+  as the residual's base command: the chunk's hand targets under the dataset's HandTable (vla.action);
+- the lookahead block from the chunk (hand targets relative to now, arm targets relative to the arm's current
+  target, at +10/+25/+50 ms); no forecast (the VLA has no forecast head), no trigger.
+
+Every chunk is logged (request time, effect time, state, actions) so VLA runs become residual bases.
+
+Policies: GrootPolicy speaks GR00T's policy server protocol (ZeroMQ REQ, msgpack, numpy as .npy bytes;
+gr00t/eval/run_gr00t_server.py); ReplayPolicy serves a recorded demo's own actions, which checks the plumbing
+without a model.
+"""
+
+from __future__ import annotations
+
+import io
+from dataclasses import dataclass, field
+
+import numpy as np
+
+from tactile_sim.control.obs_spec import FORECAST_DIM, LOOKAHEAD, N_ARM, N_JOINTS
+from tactile_sim.vla.action import ACTION_DIM, ARM, HAND, HandTable
+
+
+# ---------------------------------------------------------------------- policies
+class GrootPolicy:
+    """A GR00T N1.7 policy server (run_gr00t_server.py) for the Vega U + WUJI modality config."""
+
+    def __init__(self, host: str = "localhost", port: int = 5555, timeout_ms: int = 120_000,
+                 language_key: str = "annotation.human.task_description"):
+        import zmq
+
+        self.zmq = zmq
+        self.ctx = zmq.Context()
+        self.addr = f"tcp://{host}:{port}"
+        self.timeout_ms = timeout_ms
+        self.language_key = language_key
+        self._connect()
+
+    def _connect(self) -> None:
+        self.sock = self.ctx.socket(self.zmq.REQ)
+        self.sock.setsockopt(self.zmq.RCVTIMEO, self.timeout_ms)
+        self.sock.setsockopt(self.zmq.SNDTIMEO, self.timeout_ms)
+        self.sock.setsockopt(self.zmq.LINGER, 0)
+        self.sock.connect(self.addr)
+
+    @staticmethod
+    def _encode(obj):
+        if isinstance(obj, np.ndarray):
+            buf = io.BytesIO()
+            np.save(buf, obj, allow_pickle=False)
+            return {"__ndarray_class__": True, "as_npy": buf.getvalue()}
+        return obj
+
+    @staticmethod
+    def _decode(obj):
+        if isinstance(obj, dict) and "__ndarray_class__" in obj:
+            return np.load(io.BytesIO(obj["as_npy"]), allow_pickle=False)
+        return obj
+
+    def call(self, endpoint: str, data: dict | None = None):
+        import msgpack
+
+        req = {"endpoint": endpoint}
+        if data is not None:
+            req["data"] = data
+        try:
+            self.sock.send(msgpack.packb(req, default=self._encode))
+            msg = self.sock.recv()
+        except self.zmq.error.Again:
+            self.sock.close()
+            self._connect()  # a REQ socket that timed out cannot send again
+            raise
+        out = msgpack.unpackb(msg, object_hook=self._decode)
+        if isinstance(out, dict) and "error" in out:
+            raise RuntimeError(f"policy server: {out['error']}")
+        return out
+
+    def reset(self) -> None:
+        self.call("reset", {"options": None})
+
+    def __call__(self, t: float, image: np.ndarray, state: np.ndarray, instruction: str) -> np.ndarray:
+        s = np.asarray(state, np.float32)
+        obs = {"video": {"ego_view": np.asarray(image, np.uint8)[None, None]},
+               "state": {"right_arm": s[None, None, ARM], "right_hand": s[None, None, HAND]},
+               "language": {self.language_key: [[instruction]]}}
+        action, _ = self.call("get_action", {"observation": obs, "options": None})
+        return np.concatenate([action["right_arm"][0], action["right_hand"][0]], axis=-1).astype(float)
+
+
+class ReplayPolicy:
+    """A recorded demo's own actions as chunks: the frame nearest the request time on (held at the end)."""
+
+    def __init__(self, actions: np.ndarray, fps: float, horizon: int = 16, t_start: float = 0.0):
+        self.actions = np.asarray(actions, float)
+        self.fps, self.horizon, self.t_start = fps, horizon, t_start
+
+    def reset(self) -> None:
+        pass
+
+    def __call__(self, t: float, image: np.ndarray, state: np.ndarray, instruction: str) -> np.ndarray:
+        k = int(round((t - self.t_start) * self.fps))
+        idx = np.clip(np.arange(k, k + self.horizon), 0, len(self.actions) - 1)
+        return self.actions[idx]
+
+
+# ---------------------------------------------------------------------- chunks
+@dataclass
+class Chunk:
+    t_req: float  # time of the observation, and of action 0
+    t_eff: float  # when the robot starts following it
+    dt: float  # between actions
+    actions: np.ndarray  # (H, 27)
+    state: np.ndarray  # (27,) at the request
+
+    def at(self, t: float) -> tuple[np.ndarray, np.ndarray]:
+        """Targets and their rate at time t: linear between actions, held before the first and after the last."""
+        x = (t - self.t_req) / self.dt
+        H = len(self.actions)
+        if x <= 0:
+            return self.actions[0].copy(), np.zeros(ACTION_DIM)
+        if x >= H - 1:
+            return self.actions[-1].copy(), np.zeros(ACTION_DIM)
+        k = int(np.floor(x))
+        a, b = self.actions[k], self.actions[k + 1]
+        return a + (x - k) * (b - a), (b - a) / self.dt
+
+
+@dataclass
+class ChunkLog:
+    t_req: list = field(default_factory=list)
+    t_eff: list = field(default_factory=list)
+    state: list = field(default_factory=list)
+    actions: list = field(default_factory=list)
+
+    def arrays(self) -> dict[str, np.ndarray]:
+        return {k: np.asarray(v, float) for k, v in self.__dict__.items()}
+
+
+# ---------------------------------------------------------------------- the base
+class VlaBase:
+    def __init__(self, tb, policy, table: HandTable, instruction: str, camera, latency: float = 0.1,
+                 exec_steps: int = 8, fps: float | None = None):
+        self.tb, self.policy, self.table, self.instruction, self.cam = tb, policy, table, instruction, camera
+        self.latency, self.exec_steps = latency, exec_steps
+        self.fps = fps or tb.cfg.vla.fps
+        self.dt = 1.0 / self.fps
+        self.reset()
+
+    def reset(self) -> None:
+        self.policy.reset()
+        self.chunks: list[Chunk] = []
+        self.log = ChunkLog()
+        self.k = 0  # frames seen
+        self.t0: float | None = None
+        l1 = self.tb.l1
+        self.q_arm0 = l1.q_ref.copy()
+        self.q_hand0: np.ndarray | None = None
+
+    def attach(self) -> None:
+        """Hand the arm and the residual's base to the VLA: no scripted swing, the arm on the joint stream, this
+        object as the residual's base_fn, and a 1 kHz frame task (registered after the residual's)."""
+        tb = self.tb
+        tb.l2_callbacks[:] = []
+        tb.l1.set_joint_stream(self.arm_stream)
+        tb.residual.base_fn = self
+        tb.sched.register("vla", 1000.0, self.frame)
+
+    # ------------------------------------------------------------------ frames and requests
+    def state(self) -> np.ndarray:
+        sen = self.tb.sensors
+        return np.concatenate([sen["joint_pos"].latest().value, sen["hand_q"].latest().value]).astype(float)
+
+    def frame(self, t: float) -> None:
+        sen = self.tb.sensors
+        if self.t0 is None:
+            if sen["joint_pos"].latest().seq < 0 or sen["hand_q"].latest().seq < 0:
+                return
+            self.t0 = t
+            self.q_hand0 = np.asarray(sen["hand_q"].latest().value, float)
+        if t + 1e-9 < self.t0 + self.k * self.dt:
+            return
+        if self.k % self.exec_steps == 0:
+            state = self.state()
+            image = self.cam.render(self.tb.world.data)
+            a = np.asarray(self.policy(t, image, state, self.instruction), float)
+            if a.ndim != 2 or a.shape[1] != ACTION_DIM or not np.all(np.isfinite(a)):
+                raise ValueError(f"policy returned {a.shape} actions (finite: {np.all(np.isfinite(a))})")
+            c = Chunk(t, t + self.latency, self.dt, a, state)
+            self.chunks.append(c)
+            L = self.log
+            L.t_req.append(t)
+            L.t_eff.append(c.t_eff)
+            L.state.append(state)
+            L.actions.append(a)
+        self.k += 1
+
+    def active(self, t: float) -> Chunk | None:
+        for c in reversed(self.chunks):
+            if c.t_eff <= t + 1e-12:
+                return c
+        return None
+
+    # ------------------------------------------------------------------ outputs
+    def targets(self, t: float) -> tuple[np.ndarray, np.ndarray]:
+        """The 27 targets and their rates at t: the active chunk, or the pose at the start until one arrives."""
+        c = self.active(t)
+        if c is None:
+            hand = self.q_hand0 if self.q_hand0 is not None else self.tb.sensors["hand_q"].latest().value
+            return np.concatenate([self.q_arm0, hand]), np.zeros(ACTION_DIM)
+        return c.at(t)
+
+    def arm_stream(self, t: float) -> tuple[np.ndarray, np.ndarray]:
+        q, qd = self.targets(t)
+        return q[ARM], qd[ARM]
+
+    def __call__(self, t: float) -> tuple[np.ndarray, np.ndarray, bool, np.ndarray]:
+        q, _ = self.targets(t)
+        base = self.table.command(q[HAND])
+        look = []
+        for dt in LOOKAHEAD:
+            qa, _ = self.targets(t + dt)
+            look.append(np.concatenate([qa[HAND] - q[HAND], qa[ARM] - self.tb.l1.q_ref]))
+        look = np.concatenate(look)
+        assert look.shape == ((N_JOINTS + N_ARM) * len(LOOKAHEAD),)
+        return base, look, False, np.zeros(FORECAST_DIM)
+
+
+# ---------------------------------------------------------------------- episodes
+def strike_events(truth: dict, thresh: float = 5.0, gap: float = 0.15) -> list[int]:
+    """Indices into the truth log where hammer-nail contact starts (force above thresh after gap of none)."""
+    t, f = truth["t"], truth["contact_force"]
+    on = np.flatnonzero(f > thresh)
+    out, last = [], -np.inf
+    for i in on:
+        if t[i] - last > gap:
+            out.append(int(i))
+        last = t[i]
+    return out
+
+
+def strike_metrics(truth: dict, pre: float = 0.02, post: float = 0.1) -> list[dict]:
+    """Per strike: nail advance, and the tool's slip in the hand from just before contact to `post` after."""
+    t = truth["t"]
+    out = []
+    ev = strike_events(truth)
+    for n, i in enumerate(ev):
+        i0 = max(0, int(np.searchsorted(t, t[i] - pre)) - 1)
+        i1 = min(len(t) - 1, int(np.searchsorted(t, t[i] + post)))
+        j = ev[n + 1] if n + 1 < len(ev) else len(t) - 1
+        p, r = truth["hammer_in_hand_pos"], truth["hammer_in_hand_rotvec"]
+        out.append({"t_contact": float(t[i]), "peak_force": float(truth["contact_force"][i:i1 + 1].max()),
+                    "advance": float(truth["nail_depth"][j] - truth["nail_depth"][i0]),
+                    "slip_trans": float(np.linalg.norm(p[i1] - p[i0])),
+                    "slip_rot_deg": float(np.degrees(np.linalg.norm(r[i1] - r[i0])))})
+    return out
+
+
+def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: int = 8, max_time: float = 30.0,
+                    residual_policy=None, visual_seed: int | None = None) -> dict:
+    """One episode with the VLA in charge, until the nail is home, the tool drops, or max_time. The residual runs
+    `residual_policy` (default: the configured one, zero unless set)."""
+    from tactile_sim.episode import Episode
+    from tactile_sim.vla.camera import EgoCamera
+    from tactile_sim.vla.demos import INSTRUCTIONS
+
+    ep = Episode(cfg, seed=seed)
+    tb = ep.tb
+    if residual_policy is not None:
+        tb.residual.check_policy(residual_policy)
+        tb.residual.policy = residual_policy
+    cam = EgoCamera(tb.world.model, cfg)
+    if cfg.vla.visual_dr:
+        cam.randomize(np.random.default_rng(20_000 + (seed if visual_seed is None else visual_seed)))
+    table = HandTable.for_hand(tb.world.hand, cfg)
+    vla = VlaBase(tb, policy, table, INSTRUCTIONS[cfg.residual.task], cam, latency, exec_steps)
+    vla.attach()
+    n_max = int(round(max_time / tb.world.dt))
+    try:
+        for _ in range(n_max):
+            tb.step()
+            ep._step_cb(tb)  # noqa: SLF001 - the episode's truth recorder, without its scripted swing
+            if tb.world.plant.done() or tb.grip.dropped:
+                break
+    finally:
+        cam.close()
+    truth = ep.truth.arrays()
+    strikes = strike_metrics(truth)
+    plant = tb.world.plant
+    return {"seed": seed, "t_end": float(tb.world.t), "done": bool(plant.done()), "dropped": bool(tb.grip.dropped),
+            "depth": float(plant.depth), "strikes": strikes, "n_chunks": len(vla.chunks),
+            "residual": {"ticks": tb.residual.n_ticks, "stale": tb.residual.n_stale,
+                         "nonfinite": tb.residual.n_nonfinite},
+            "chunks": vla.log.arrays()}

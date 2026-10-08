@@ -155,6 +155,19 @@ def _scene_setup(root: ET.Element, cfg: SimConfig) -> tuple[ET.Element, ET.Eleme
     return wb, contact
 
 
+def add_ego_camera(root: ET.Element, cfg: SimConfig) -> None:
+    """The VLA's view: a camera on the head's left ZED imager (VlaCfg). The URDF gives that frame as a ROS optical
+    frame (z forward, y down); a MuJoCo camera looks along its -z with y up, hence the half turn about x."""
+    v = cfg.vla
+    sub(find_body(root, names.EGO_CAMERA_BODY), "camera", name=names.EGO_CAMERA, quat=(0, 1, 0, 0), fovy=v.cam_fovy)
+    vis = root.find("visual")
+    vis = sub(root, "visual") if vis is None else vis
+    glob = vis.find("global")
+    glob = sub(vis, "global") if glob is None else glob
+    for k, n in (("offwidth", v.cam_width), ("offheight", v.cam_height)):
+        glob.set(k, str(max(int(glob.get(k, "0")), n)))
+
+
 def build_scene(cfg: SimConfig) -> SceneSpec:
     if cfg.scene.reduced:
         return build_reduced_scene(cfg)
@@ -165,6 +178,8 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
     else:
         root, source = load_arm_tree(cfg.arm)
     wb, contact = _scene_setup(root, cfg)
+    if cfg.arm.robot.startswith("vega"):
+        add_ego_camera(root, cfg)
 
     g = cfg.gripper
     hand_info = None

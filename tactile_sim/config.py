@@ -658,6 +658,28 @@ class DRCfg:
 
 
 @dataclass
+class VlaCfg:
+    """The slow policy's view and clock (tactile_sim.vla): the Vega's head ego camera and the rate the VLA records
+    demos and runs at.
+
+    The camera is the left imager of the head's ZED stereo pair (Dexmate's URDF: 50 mm baseline, as on a ZED X
+    Mini), rectified, 2.2 mm lens: 105 x 78 deg at 16:10. The lens is an assumption until the unit is known."""
+    fps: float = 30.0
+    cam_width: int = 384
+    cam_height: int = 240
+    cam_fovy: float = 78.0  # deg, vertical
+    # the head joints (head_j1, head_j2, head_j3) while the VLA works; None = aimed at the tool's working point
+    # (vla.camera.aim_head), the way an operator would point the head before a task
+    head_pose: tuple[float, float, float] | None = None
+    # per-episode visual randomization (vla.camera.VisualDR); off = the nominal scene
+    visual_dr: bool = True
+    cam_pos_jitter: float = 0.01  # m, each axis
+    cam_rot_jitter: float = 1.0  # deg, each axis
+    light_jitter: float = 0.3  # fraction of the nominal intensity
+    color_jitter: float = 0.15  # rgb, each channel, on the tool, the workpiece, the table and the floor
+
+
+@dataclass
 class LoggingCfg:
     truth_decim: int = 1
     compress: bool = True
@@ -683,6 +705,7 @@ class SimConfig:
     loadgen: LoadGenCfg = field(default_factory=LoadGenCfg)
     residual_dr: ResidualDRCfg = field(default_factory=ResidualDRCfg)
     dr: DRCfg = field(default_factory=DRCfg)
+    vla: VlaCfg = field(default_factory=VlaCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 
     def to_dict(self) -> dict[str, Any]:
@@ -851,7 +874,10 @@ def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfi
     """The residual experiments' configuration: WUJI Hand 2 with MIT-mode drives on the robot (default the Vega U),
     the TaxelScan fast profile at its target 7.8 us per taxel, the tool for `task` ("hammer": the light hammer and
     its nail; "drill": the pistol driver, VEGA_DRILL_OVERRIDES) with grasps cached at its nominal masses, and the
-    residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics."""
+    residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics.
+
+    The base holds the tool the way a VLA's hand targets would: a constant grip, open loop (no grip law on the
+    pads, no slip feedback from the simulator's truth), so whatever reacts to touch is the residual."""
     if task not in ("hammer", "drill"):
         raise ValueError(f"unknown task {task!r} (expected 'hammer' or 'drill')")
     cfg = hand_config("wuji2", base or SimConfig(), robot=robot)
@@ -861,6 +887,7 @@ def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfi
         sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
         residual={"enabled": True, "rate": rate},
         # the base has no impact flag: the arm switches to its post-impact reference on the clock
-        controller={"impact_sources": ()}, swing={"post_switch": "time"},
+        controller={"impact_sources": (), "grip_loop": "open"},
+        swing={"post_switch": "time", "grip_profile": "constant", "grip_margin_step": 0.0},
     )
     return cfg.replace(**sections) if sections else cfg

@@ -16,6 +16,8 @@ dev = ["pytest", "ruff"]
 # GPU training (tactile_rl): mjlab on MuJoCo Warp; mjlab 1.6.0 pins MuJoCo / MuJoCo Warp 3.11 (the validator .venv
 # keeps MuJoCo 3.14)
 rl = ["mjlab==1.6.0", "onnx", "onnxruntime"]
+# the VLA in simulation (tactile_sim.vla): LeRobot datasets (parquet, h264 via a bundled ffmpeg) and policy servers
+vla = ["pyarrow", "imageio-ffmpeg", "pyzmq", "msgpack"]
 
 [tool.setuptools.packages.find]
 include = ["tactile_sim*", "tactile_rl*"]
