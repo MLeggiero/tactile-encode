@@ -126,6 +126,14 @@ def tool_contact_geoms(cfg: SimConfig) -> list[str]:
     return handle_segment_geoms(cfg.hammer)
 
 
+def hand_friction_caps(cfg: SimConfig) -> dict[str, float] | None:
+    """Hand bodies whose skin friction on the tool is capped (wuji.contact_pairs): the trigger finger on a pistol
+    with a trigger part, at DrillCfg.trigger_finger_friction."""
+    if cfg.plant.kind == "drill" and cfg.drill.form == "pistol" and cfg.drill.trigger_mode == "finger":
+        return {"r_index_finger": cfg.drill.trigger_finger_friction}
+    return None
+
+
 def trigger_contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], cfg: SimConfig) -> None:
     """Hand-trigger contact pairs when the pistol has a trigger part (DrillCfg.trigger_mode "finger"): the hand's skin
     on the trigger's smooth face, at DrillCfg.trigger_friction."""
@@ -332,7 +340,7 @@ def _add_wuji(root, cfg: SimConfig, contact, left_hand: bool = True) -> dict:
                               tcp_q=grasp.hammer_quat, patches=patches)
     wb = root.find("worldbody")
     info["hammer_source"] = add_tool(wb, cfg, root)
-    wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), g)
+    wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), g, caps=hand_friction_caps(cfg))
     trigger_contact_pairs(contact, info["col_geoms"], cfg)
     info["grasp"] = grasp
     if left_hand and cfg.arm.robot.startswith("vega") and cfg.arm.left_hand:

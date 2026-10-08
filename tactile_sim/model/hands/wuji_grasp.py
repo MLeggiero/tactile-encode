@@ -152,10 +152,11 @@ def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:
     base = sub(wb, "body", name="flange", pos=(0, 0, 0.5), quat=q_base)
     info = wuji.add_wuji_hand(base, root, cfg.gripper, hand_path, (0, 0, 0),
                               tcp_q=wuji.tcp_quat(wuji.hand_tcp_rotation(cfg)))
-    from tactile_sim.model.builder import add_tool, tool_contact_geoms, trigger_contact_pairs
+    from tactile_sim.model.builder import add_tool, hand_friction_caps, tool_contact_geoms, trigger_contact_pairs
 
     add_tool(wb, cfg, root)
-    wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), cfg.gripper)
+    wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), cfg.gripper,
+                       caps=hand_friction_caps(cfg))
     trigger_contact_pairs(contact, info["col_geoms"], cfg)
     eq = sub(root, "equality")
     sub(eq, "weld", name=names.GRASP_WELD, body1=names.HAND_BODY, body2=names.HAMMER_BODY, active="false",

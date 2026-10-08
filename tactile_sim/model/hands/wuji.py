@@ -214,12 +214,15 @@ def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, han
 
 
 def contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], handle_geoms: list[str],
-                  g: GripperCfg, self_pairs: bool = True) -> None:
-    skin = dict(condim=4, friction=(g.hand_friction, g.hand_friction, g.pad_torsion, 0.0001, 0.0001),
-                solref=g.hand_solref, solimp=g.pad_solimp)
+                  g: GripperCfg, self_pairs: bool = True, caps: dict[str, float] | None = None) -> None:
+    """Hand-tool skin pairs at the hand friction; a body whose name contains a key of `caps` at most that
+    friction. Then (self_pairs) the pairs that keep the wrap from passing through itself."""
     for bname, geoms in col_geoms.items():
         if bname.endswith("_mount"):
             continue
+        mu = min([g.hand_friction] + [c for k, c in (caps or {}).items() if k in bname])
+        skin = dict(condim=4, friction=(mu, mu, g.pad_torsion, 0.0001, 0.0001), solref=g.hand_solref,
+                    solimp=g.pad_solimp)
         for gm in geoms:
             for hg in handle_geoms:
                 sub(contact, "pair", geom1=gm, geom2=hg, **skin)

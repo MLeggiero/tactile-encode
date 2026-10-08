@@ -293,6 +293,9 @@ class DrillCfg:
     trigger_angle: float = 0.32  # rad
     trigger_half: tuple[float, float, float] = (0.0045, 0.0035, 0.007)  # m: along the grip, radial, across
     trigger_friction: float = 0.05  # skin on the trigger's smooth face (more and the finger's edge contact sticks)
+    # the trigger finger on the rest of the drill, whatever the hand friction drawn: from about 1.25 its tip locks on
+    # the grip below the trigger and the finger cannot curl far enough to pull it (the motor never runs)
+    trigger_finger_friction: float = 0.9
     trigger_travel: float = 0.006  # m
     trigger_gap: float = 0.001  # m between the fully pulled trigger and the grip
     trigger_force: tuple[float, float] = (8.0, 15.0)  # N of spring at rest and at full travel
@@ -983,10 +986,11 @@ VEGA_DRILL_OVERRIDES: dict[str, dict[str, Any]] = {
 
 # The previous drill model (plants/drill_v2.py) with its values, for results made before the 12 V drivetrain:
 # cfg.replace(drill=DRILL_V2_PRESET) on the FR3's inline driver, VEGA_DRILL_V2_PRESET after VEGA_DRILL_OVERRIDES
-# (and v2's scripted feed: backing out as the trigger is let go)
+# (and v2's scripted feed: backing out as the trigger is let go; and its hand contacts: no cap on the trigger
+# finger's friction)
 DRILL_V2_PRESET: dict[str, Any] = {"model": "v2", "drive": "phillips", "stall_torque": 8.0, "free_speed": 50.0,
                                    "trigger_slew": 6.0, "brake_torque": 0.4, "clutch_torque": 1.8,
-                                   "engage_radius": 0.003, "release_hold": 0.0}
+                                   "engage_radius": 0.003, "release_hold": 0.0, "trigger_finger_friction": 1e3}
 VEGA_DRILL_V2_PRESET: dict[str, Any] = {**DRILL_V2_PRESET, "stall_torque": 3.0, "clutch_torque": 1.5,
                                         "drill_torque_per_feed": 1500.0}
 
