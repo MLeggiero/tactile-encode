@@ -54,7 +54,7 @@ SWEEPS = {
 }
 # E6: held-out physics, outside the training ranges
 HELD_OUT = {"heavy_head": {"hammer": {"head_mass": 0.8}}, "slick_skin": {"gripper": {"hand_friction": 0.5}},
-            "stiff_nail": {"plant": {"resistance_0": 400.0}}, "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
+            "stiff_nail": {"plant": {"resistance_0": 250.0}}, "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
 HELD_OUT_DRILL = {"heavy_battery": {"drill": {"pistol_battery_mass": 0.75}},
                   "slick_skin": {"gripper": {"hand_friction": 0.5}},
                   "strong_clutch": {"drill": {"clutch_torque": 1.9}},

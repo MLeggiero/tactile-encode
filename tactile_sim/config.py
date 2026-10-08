@@ -204,6 +204,11 @@ class NailPlantCfg:
     damping: float = 20.0  # Ns/m, rate-dependent crushing
     limit_solref: tuple[float, float] = (0.0005, 1.0)
     friction_solref: tuple[float, float] = (0.0005, 1.0)
+    # the resistance's constraint impedance: hard (d -> 1). At MuJoCo's default (d 0.9) a tenth of any load leaks
+    # past the Coulomb constraint, so the nail creeps under its own weight, under a resting hammer and after every
+    # blow, and the noslip post-pass (the validator has it, MuJoCo Warp does not) changes how far a blow drives by
+    # 4x. Hard, the advance per blow is the same with and without noslip, at 0.25 and 0.125 ms
+    friction_solimp: tuple[float, float, float, float, float] = (0.9999, 0.9999, 0.001, 0.5, 2.0)
     # velocity-dependent restitution: dampratio = zeta0 + zeta1 * approach speed (clipped)
     vdr_enabled: bool = True
     vdr_zeta0: float = 0.3
@@ -656,8 +661,8 @@ class ResidualDRCfg:
     head_mass: tuple[float, float] = (0.25, 0.70)  # kg
     hand_friction: tuple[float, float] = (0.6, 1.4)
     hand_solref_tc: tuple[float, float] = (0.0015, 0.004)  # s, hand-tool contact time constant
-    nail_resistance_0: tuple[float, float] = (80.0, 300.0)  # N
-    nail_resistance_per_m: tuple[float, float] = (2.5e3, 1.0e4)  # N/m
+    nail_resistance_0: tuple[float, float] = (50.0, 150.0)  # N, around the light hammer's 80 N nail
+    nail_resistance_per_m: tuple[float, float] = (2.5e3, 7.5e3)  # N/m
     face_timeconst: tuple[float, float] = (0.001, 0.003)  # s
     vdr_zeta0: tuple[float, float] = (0.2, 0.5)
     cmd_latency: tuple[float, float] = (0.0005, 0.003)  # s, WUJI host -> driver
@@ -893,7 +898,7 @@ def fast_config(**sections: dict[str, Any]) -> SimConfig:
 LIGHT_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
     "hammer": {"model": "primitive", "head_mass": 0.23, "handle_mass": 0.10, "head_radius": 0.011,
                "head_half_len": 0.04, "handle_radius": 0.013, "handle_len": 0.28, "grip_from_head": 0.17},
-    "plant": {"resistance_0": 150.0, "resistance_per_m": 5000.0},
+    "plant": {"resistance_0": 80.0, "resistance_per_m": 5000.0},  # ~2 mm a blow, 20 mm in ~10 (hard nail)
 }
 
 
@@ -927,6 +932,9 @@ def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfi
         residual={"enabled": True, "rate": rate},
         # the base has no impact flag: the arm switches to its post-impact reference on the clock
         controller={"impact_sources": (), "grip_loop": "open"},
+        # one contact per convex pair, as MuJoCo Warp generates (the GPU training sim): the validator's grasp
+        # measures the same with or without the extra contacts
+        physics={"multiccd": False},
         swing={"post_switch": "time", "grip_profile": "constant", "grip_margin_step": 0.0},
     )
     return cfg.replace(**sections) if sections else cfg

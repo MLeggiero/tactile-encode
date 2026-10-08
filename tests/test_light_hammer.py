@@ -15,7 +15,8 @@ def test_residual_config_composes_the_experiment():
     assert cfg.arm.robot == "vega_1u" and cfg.gripper.hand == "wuji2" and cfg.gripper.hand_control == "mit"
     assert cfg.sensors.ts_model == "rev3" and cfg.residual.enabled and cfg.residual.rate == 250.0
     assert cfg.hammer.model == "primitive" and cfg.hammer.head_mass + cfg.hammer.handle_mass <= 0.35
-    assert cfg.plant.resistance_0 == 150.0  # a small nail the light hammer can drive
+    assert cfg.plant.resistance_0 == 80.0  # a small nail the light hammer can drive (~2 mm a blow)
+    assert not cfg.physics.multiccd  # one contact per convex pair, as on the GPU
     assert cfg.physics.timestep == 0.000125  # the 8 kHz validator unless a base is given
     assert residual_config(base=fast_config()).physics.timestep == 0.00025
 
