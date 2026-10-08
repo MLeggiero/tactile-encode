@@ -86,8 +86,8 @@ sbatch --export=ALL,DATASET=vega_wuji_tools_v2 finetune/skynet_pi05.sbatch
 
 - **GR00T** (1 A40): reuses the DexVLA `meta` runtime and weights read-only, and runs offline from a local copy of
   the backbone. Each checkpoint names that copy, so before serving one elsewhere point it back at the hub id (the
-  `sed` line in the header of `skynet_gr00t.sbatch`). About 1 s per step at batch 32; each checkpoint with its
-  optimizer state is ~20 GB.
+  `sed` line in the header of `skynet_gr00t.sbatch`). 1.21 steps/s at batch 32 (20k steps in about 4.5 h); each
+  checkpoint with its optimizer state is ~20 GB.
 - **π0.5**: built once by `skynet_openpi_env.sbatch`, a CPU job. `skynet_openpi_prep.sbatch` (CPU) fetches the base
   checkpoint and computes the norm stats, so the 4-A40 job (`skynet_pi05.sbatch`, FSDP) starts training at once.
 - **Smoke first**: `RUN=smoke MAX_STEPS=20 SAVE_STEPS=10 --time=00:30:00` (GR00T), or `EXP=smoke STEPS=20
