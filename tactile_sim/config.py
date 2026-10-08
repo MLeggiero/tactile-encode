@@ -311,37 +311,84 @@ class DrillCfg:
     clearance: float = 0.01  # bit tip short of the screw head / board at the hover pose
     board_thickness: float = 0.038
     board_half: tuple[float, float] = (0.12, 0.12)
-    # motor and clutch: tau = stall * (trigger - w / w_free), clutch slips above clutch_torque with n_detents per rev
-    stall_torque: float = 8.0
-    free_speed: float = 50.0  # rad/s (~480 rpm: low gear, for driving screws)
-    hole_free_speed: float = 140.0  # rad/s (~1340 rpm: high gear, for drilling)
-    rotor_inertia: float = 2.0e-4
-    trigger_slew: float = 6.0  # per second: the variable-speed trigger's soft start
-    brake_torque: float = 0.4  # Nm: the electronic brake when the trigger is released
+    # "12v": the 12 V drill/driver on low gear (plants/drill.py, its drivetrain in plants/drivetrain.py); "v2": the
+    # previous model (plants/drill_v2.py, with DRILL_V2_PRESET)
+    model: str = "12v"
+    # The drivetrain, at the chuck. Nominal: a brushed 12 V drill/driver with a mechanical clutch (Bosch GSR 12V-15,
+    # Makita DF333D class: 400-450 rpm in low gear, 14-15 Nm soft-joint and 30 Nm hard-joint torque by ISO 5393,
+    # 0.95-1.2 kg, ~20 clutch settings), on low gear for screws and holes alike. tau = stall (u - w / free_speed);
+    # stall_torque is the quasi-static (soft-joint) torque; the hard joint's extra comes from the spindle inertia,
+    # set so the virtual dyno's ISO 5393 hard joint gives 30 Nm (python -m tactile_sim.calibrate drill)
+    stall_torque: float = 15.0
+    free_speed: float = 44.5  # rad/s (425 rpm)
+    gear_ratio: float = 40.0  # motor (~17,000 rpm no-load) to chuck
+    spindle_inertia: float = 6.0e-3  # kg m^2 at the chuck, J_r N^2 + J_chuck (a ~5e-6 rotor through 35-40:1)
+    chuck_inertia: float = 3.0e-5  # kg m^2: the chuck and bit
+    trigger_slew: float = 0.0  # per second: a soft start (0: none, a brushed drill's PWM trigger)
+    brake_torque: float = 2.0  # Nm cap of the dynamic brake (the shorted motor) on release: stops in ~0.15 s
     spindle_drag: float = 1.0e-3
-    clutch_torque: float = 1.8
+    # the clutch: balls in ramps on the last stage's ring gear. Rigid below clutch_torque (clutch_overshoot more to
+    # break away from rest); slipping, each ramp's torque climbs from clutch_low to 1 x clutch_torque over
+    # clutch_duty of a detent, then drops; the ring turns clutch_ring_ratio x the spindle speed, clutch_detents
+    # ratchets a turn. clutch_torque is a low setting, where a 4 mm screw seats without twisting off
+    clutch_torque: float = 1.5
     clutch_detents: int = 6
-    # screw (#8 wood screw in pine, pre-started): torque grows with depth, rises steeply once the head seats
+    clutch_ring_ratio: float = 1.25  # (R + S) / R of the last planetary stage
+    clutch_duty: float = 0.7
+    clutch_low: float = 0.6
+    clutch_overshoot: float = 0.1
+    clutch_lock: bool = False  # drill mode: no clutch (the dyno's hard joint; the tasks drill with the clutch on)
+    # the screw: a 4 x 40 mm Torx (T20) wood screw in pine, pre-started; torque grows with depth, rises steeply
+    # once the head seats (1.13 Nm at flush: inside ETA wood-screw data, mean insertion torque <= f_tor,k / 1.5 ~
+    # 1.5-2 Nm for 4 mm screws). "phillips": a #2 Phillips recess and its cam-out (v2)
+    drive: str = "torx"
     screw_len: float = 0.022  # head proud of the surface at the start
     pitch: float = 0.0021
     screw_torque0: float = 0.25
     screw_torque_per_m: float = 40.0
     seat_stiffness: float = 3000.0  # Nm per m past flush
-    engage_radius: float = 0.003  # bit tip within this of the screw axis to engage the recess (a #2 Phillips
-    # recess, ~6 mm across, steers a pressed bit that lands within about its radius into the cross)
-    cam_ratio: float = 0.03  # cam-out when torque > cam_ratio * axial push (Phillips)
+    strip_torque: float = 3.0  # Nm: the wood's threads strip out and the screw spins (wood panels: 1.5-6.5)
+    strip_residual: float = 0.3  # of strip_torque, to turn a spun screw
+    screw_twist_off: float = 2.8  # Nm: the screw breaks (ETA f_tor,k 2.2-3.0 Nm for 4 mm)
+    engage_radius: float = 0.002  # bit tip within this of the screw axis to engage the recess (a T20 recess is
+    # ~3.9 mm across; a #2 Phillips's cone steers a pressed bit from ~3 mm)
+    lobe_gap: float = 1.047  # rad: the Torx bit turns up to 60 deg free before its lobes catch
+    torx_max_angle: float = 0.2  # rad of bit tilt past which a loaded Torx bit walks out of the recess
+    torx_min_push: float = 1.0  # N: with less push a loaded Torx bit rides out
+    torx_pop_torque: float = 0.3  # Nm a tilted or unpressed Torx bit holds before it pops out
+    cam_ratio: float = 0.03  # Phillips: cam-out when torque > cam_ratio * axial push
     cam_max_angle: float = 0.26  # rad of bit misalignment at which cam-out needs no torque
     cam_time: float = 0.015
     cam_kick: float = 15.0  # N pushing the bit back out of the recess while it cams out
-    strip_after: int = 6  # cam-outs before the recess strips
-    # hole drilling: thrust supports the tip; feed per rev grows with thrust above f0; torque with the feed
+    strip_after: int = 6  # Phillips: cam-outs before the recess strips
+    # the hole: a 4 mm brad-point bit, clutch engaged. Feed per rev f from the thrust, F = thrust_chisel +
+    # thrust_k D f; torque = bit_drag + cut_energy D^2 f / 8 + flute_friction_per_m * depth (cutting energy scaled
+    # from a 25 mm spur bit in southern pine, ~4 Nm, and a 10 mm bit in wood panels, 0.2-0.5 Nm at 0.1-0.7 mm/rev)
+    bit_diameter: float = 0.004
+    thrust_chisel: float = 10.0  # N
+    thrust_k: float = 3.0e7  # N / m^2
+    cut_energy: float = 1.0e8  # N / m^2 (100 N/mm^2)
+    flute_friction_per_m: float = 2.0  # Nm per m of hole
+    bit_drag: float = 0.02  # Nm
+    exit_len: float = 0.002  # support fades over the last exit_len; the bit grabs (catch) on the way out
+    catch_gain: float = 2.5
+    catch_feed: float = 0.0003  # m/rev: the flutes pull the bit through the last exit_len
+    # vibration: the motor's unbalance (kg m, a lateral force (N w)^2 x this at the chuck turning with the rotor; a
+    # 60 g rotor balanced to ISO 1940 G16), the bit's runout (m), the load's band-limited relative noise. These are
+    # estimates, randomized x0.3-3: a drill's declared vibration (a_h < 2.5 m/s^2) only bounds them from above, its
+    # Wh weighting nearly ignoring the motor's ~270 Hz
+    vib_unbalance: float = 5.0e-7
+    vib_runout: float = 1.0e-4
+    vib_noise: float = 0.08
+    vib_noise_hz: float = 150.0
+    noise_seed: int = 0  # the lobes' catch angles and the load noise
+    # v2 only (DRILL_V2_PRESET): the high-gear hole speed, one inertia for spindle and housing, the hole's linear laws
+    hole_free_speed: float = 140.0
+    rotor_inertia: float = 2.0e-4
     thrust_f0: float = 20.0
     feed_stiffness: float = 1.5e5  # N per (m/rev)
     drill_torque0: float = 0.15
     drill_torque_per_feed: float = 2500.0  # Nm per (m/rev)
-    exit_len: float = 0.002  # support fades over the last exit_len; the bit grabs (catch) on the way out
-    catch_gain: float = 2.5
-    catch_feed: float = 0.0003  # m/rev: the flutes pull the bit through the last exit_len
     # contact between the bit and the screw head / hole bottom
     k_axial: float = 4.0e4
     d_axial: float = 80.0
@@ -359,6 +406,10 @@ class DrillCfg:
     trigger_delay: float = 0.1
     trigger_level: float = 1.0  # how far the base pulls the variable-speed trigger (0..1)
     release_delay: float = 0.3  # s the trigger stays pulled after the tool reports done (the clutch ratchets)
+    # then the trigger is let go and the bit held where it is until the spindle stops (|w| < 1 rad/s), at most
+    # release_hold s, before the base backs out: a bit pulled out of the recess while it still turns pops out (0: back
+    # out at once, as v2 did)
+    release_hold: float = 0.5
     # aim the bit from where the tool settled in the hand (one look before the task), not from the grasp keyframe:
     # turn the hand so the bit lines up with the work and shift the path onto its axis (a degree of tool rotation in
     # the hand moves the tip ~4 mm, twice the screw recess's catch, and a tilted bit cams out of the recess sooner)
@@ -681,12 +732,30 @@ class ResidualDRCfg:
     ts_bridge_hi: tuple[float, float] = (0.0005, 0.001)  # s, upper end of the host-bridge latency
     servo_p_mult: tuple[float, float] = (0.7, 1.4)  # Vega arm stiffness multiplier
     sensor_noise_scale: tuple[float, float] = (0.5, 2.0)  # log-uniform
-    # the drill (plant kind "drill"), as multiples of its configured values unless noted
+    # the drill (plant kind "drill"), DrillCfg.model "12v": the 12 V low-gear drill/driver class (Bosch GSR 12V-15,
+    # Makita DF333D, Milwaukee M12 drill/drivers: 400-470 rpm, 14-20 Nm soft joint, 28-45 Nm hard), absolute values
+    drill_free_speed: tuple[float, float] = (42.0, 49.0)  # rad/s
+    drill_stall: tuple[float, float] = (12.0, 20.0)  # Nm
+    drill_spindle_inertia: tuple[float, float] = (3e-3, 1.2e-2)  # kg m^2, log-uniform
+    drill_gear_ratio: tuple[float, float] = (35.0, 55.0)
+    # the clutch setting, drawn at least 1.1 x the drawn screw's torque at flush (set so it seats) and at most 0.9 x
+    # the weaker of the wood's strip-out and the screw's twist-off over the breakaway (set so it does not ruin it)
+    drill_clutch: tuple[float, float] = (1.0, 2.2)  # Nm
+    drill_clutch_detents: tuple[int, int] = (6, 12)  # inclusive
+    drill_ring_ratio: tuple[float, float] = (1.2, 1.35)
+    drill_clutch_duty: tuple[float, float] = (0.5, 0.9)
+    drill_clutch_overshoot: tuple[float, float] = (0.0, 0.25)
+    drill_screw_scale: tuple[float, float] = (0.7, 1.3)  # the screw's run-down torque (pine density, pilot hole)
+    drill_strip_torque: tuple[float, float] = (2.0, 5.0)  # Nm
+    drill_twist_off: tuple[float, float] = (2.4, 3.4)  # Nm
+    drill_cut_energy: tuple[float, float] = (5e7, 1.5e8)  # N/m^2
+    drill_vib_scale: tuple[float, float] = (0.3, 3.0)  # each vibration source, log-uniform
+    # DrillCfg.model "v2" (its draws unchanged), as multiples of its configured values
     drill_stall_scale: tuple[float, float] = (0.75, 1.25)
     drill_clutch_scale: tuple[float, float] = (0.7, 1.1)  # higher needs more push than the Vega's press gives
     drill_detents: tuple[int, int] = (4, 12)  # clutch detents per revolution, inclusive
     drill_cam_scale: tuple[float, float] = (0.8, 1.3)
-    drill_exit_len: tuple[float, float] = (0.001, 0.004)  # m, the hole's breakthrough
+    drill_exit_len: tuple[float, float] = (0.001, 0.004)  # m, the hole's breakthrough (both models)
     pistol_mass_scale: tuple[float, float] = (0.85, 1.3)  # the housing and the battery
 
 
@@ -902,15 +971,24 @@ LIGHT_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
-# The drill task on the Vega U + WUJI: a compact 12 V pistol driver (1.12 kg, 3 Nm stall in low gear) driving a small
-# screw or drilling a pine board, fed straight down (no arc), with the arm pushing through its position servos
-# (press 12 mm past contact: ~80 N) and drilling holes at a fixed feed rate.
+# The drill task on the Vega U + WUJI: a compact 12 V pistol drill/driver (1.12 kg; DrillCfg's drivetrain, on low
+# gear with the clutch at a low setting) driving a small Torx screw or drilling a pine board, fed straight down (no
+# arc), with the arm pushing through its position servos (press 12 mm past contact: ~80 N) and drilling holes at a
+# fixed feed rate.
 VEGA_DRILL_OVERRIDES: dict[str, dict[str, Any]] = {
     "plant": {"kind": "drill"},
-    "drill": {"form": "pistol", "mode": "screw", "stall_torque": 3.0, "clutch_torque": 1.5, "press_depth": 0.012,
-              "drill_torque_per_feed": 1500.0, "trigger_mode": "finger"},
+    "drill": {"form": "pistol", "mode": "screw", "clutch_torque": 1.5, "press_depth": 0.012, "trigger_mode": "finger"},
     "swing": {"arc_radius": 0.0},
 }
+
+# The previous drill model (plants/drill_v2.py) with its values, for results made before the 12 V drivetrain:
+# cfg.replace(drill=DRILL_V2_PRESET) on the FR3's inline driver, VEGA_DRILL_V2_PRESET after VEGA_DRILL_OVERRIDES
+# (and v2's scripted feed: backing out as the trigger is let go)
+DRILL_V2_PRESET: dict[str, Any] = {"model": "v2", "drive": "phillips", "stall_torque": 8.0, "free_speed": 50.0,
+                                   "trigger_slew": 6.0, "brake_torque": 0.4, "clutch_torque": 1.8,
+                                   "engage_radius": 0.003, "release_hold": 0.0}
+VEGA_DRILL_V2_PRESET: dict[str, Any] = {**DRILL_V2_PRESET, "stall_torque": 3.0, "clutch_torque": 1.5,
+                                        "drill_torque_per_feed": 1500.0}
 
 
 def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,

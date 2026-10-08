@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from tactile_sim.config import fast_config, task_config
-from tactile_sim.model.plants import DrillPlant, SawPlant
+from tactile_sim.config import DRILL_V2_PRESET, fast_config, task_config
+from tactile_sim.model.plants import DrillPlant, DrillPlantV2, SawPlant
 
 
 def saw_cfg(**over):
@@ -30,8 +30,23 @@ def test_screw_model():
     taus = [p.screw_torque(z) for z in np.linspace(0, dc.screw_len, 5)]
     assert np.all(np.diff(taus) > 0) and taus[-1] < dc.clutch_torque  # drives in under the clutch setting
     assert p.screw_torque(dc.screw_len + 0.001) > dc.clutch_torque  # seating: the clutch must slip
+    assert dc.drive == "torx" and p.cam_limit(60.0, 0.0) == np.inf  # a pressed, aligned Torx bit holds
+    assert p.cam_limit(60.0, dc.torx_max_angle) == p.cam_limit(0.5, 0.0) == dc.torx_pop_torque  # tilted, or loose
+    ph = DrillPlant(drill_cfg(drill={"drive": "phillips"}))
+    assert ph.cam_limit(60.0, 0.0) == pytest.approx(dc.cam_ratio * 60.0)
+    assert ph.cam_limit(60.0, 0.1) < ph.cam_limit(60.0, 0.0)  # a tilted bit cams out sooner
+    assert ph.cam_limit(60.0, dc.cam_max_angle) == 0.0
+    assert p.feed_per_rev(dc.thrust_chisel) == 0.0 < p.feed_per_rev(dc.thrust_chisel + 50)
+    assert p.motor_torque(1.0, 0.0) == dc.stall_torque and p.motor_torque(1.0, dc.free_speed) == 0.0
+
+
+def test_screw_model_v2():
+    p = DrillPlantV2(drill_cfg(drill=DRILL_V2_PRESET))
+    dc = p.cfg.drill
+    taus = [p.screw_torque(z) for z in np.linspace(0, dc.screw_len, 5)]
+    assert np.all(np.diff(taus) > 0) and taus[-1] < dc.clutch_torque
+    assert p.screw_torque(dc.screw_len + 0.001) > dc.clutch_torque
     assert p.cam_limit(60.0, 0.0) == pytest.approx(dc.cam_ratio * 60.0)
-    assert p.cam_limit(60.0, 0.1) < p.cam_limit(60.0, 0.0)  # a tilted bit cams out sooner
     assert p.cam_limit(60.0, dc.cam_max_angle) == 0.0
     assert p.feed_per_rev(dc.thrust_f0) == 0.0 < p.feed_per_rev(dc.thrust_f0 + 50)
     assert p.motor_torque(1.0, 0.0) == dc.stall_torque and p.motor_torque(1.0, dc.free_speed) == 0.0
@@ -82,19 +97,17 @@ def test_driver_seats_a_screw(screw_run):
     assert s["done"] and s["cam_outs"] == 0
     assert s["progress"] >= 0.022 - 1e-4
     assert np.any(T["clutch_slipping"] > 0)  # seating ends with the clutch ratcheting
-    assert s["peak_torque"] <= 1.05 * screw_run_clutch()
-    # the clutch's ratchet peaks (~2.5 Nm) beat the pads' hold about the bit for a moment: a few degrees of roll
+    dc = drill_cfg().drill
+    assert s["peak_torque"] <= dc.clutch_torque * (1 + dc.clutch_overshoot) + 1e-9  # the breakaway, at most
+    # the clutch's ratchet beats the pads' hold about the bit for a moment: a few degrees of roll
     assert np.degrees(s["net_slip_rot"]) < 4.0 and s["limit_violations"] == ""
 
 
-def screw_run_clutch() -> float:
-    return drill_cfg().drill.clutch_torque
-
-
 def test_light_push_cams_out():
-    res = run(drill_cfg(drill={"push_force": 35.0}), 4.0)
+    res = run(drill_cfg(drill={"push_force": 35.0, "drive": "phillips"}), 4.0)
     s = res.summary
-    assert s["cam_outs"] >= 1 and not s["done"]  # the screw's torque outgrows what a 35 N push holds in the recess
+    # a Phillips bit: the screw's torque outgrows what a 35 N push holds in the recess
+    assert s["cam_outs"] >= 1 and not s["done"]
     assert s["state"] == "stripped"
 
 

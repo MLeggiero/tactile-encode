@@ -83,15 +83,43 @@ def residual_dr(cfg: SimConfig, rng: np.random.Generator) -> dict[str, dict]:
                      "face_timeconst": u(r.face_timeconst)},
     }
     if cfg.plant.kind == "drill":  # drawn after everything else, so the hammer's draws for a seed are unchanged
-        dc = cfg.drill
-        mass = u(r.pistol_mass_scale)
-        out["drill"] = {"stall_torque": dc.stall_torque * u(r.drill_stall_scale),
-                        "clutch_torque": dc.clutch_torque * u(r.drill_clutch_scale),
-                        "clutch_detents": int(rng.integers(r.drill_detents[0], r.drill_detents[1] + 1)),
-                        "cam_ratio": dc.cam_ratio * u(r.drill_cam_scale), "exit_len": u(r.drill_exit_len),
-                        "pistol_housing_mass": dc.pistol_housing_mass * mass,
-                        "pistol_battery_mass": dc.pistol_battery_mass * mass}
+        out["drill"] = _drill_dr(cfg, r, rng, u)
     return out
+
+
+def _drill_dr(cfg: SimConfig, r, rng: np.random.Generator, u) -> dict:
+    dc = cfg.drill
+    mass = u(r.pistol_mass_scale)
+    if dc.model == "v2":
+        return {"stall_torque": dc.stall_torque * u(r.drill_stall_scale),
+                "clutch_torque": dc.clutch_torque * u(r.drill_clutch_scale),
+                "clutch_detents": int(rng.integers(r.drill_detents[0], r.drill_detents[1] + 1)),
+                "cam_ratio": dc.cam_ratio * u(r.drill_cam_scale), "exit_len": u(r.drill_exit_len),
+                "pistol_housing_mass": dc.pistol_housing_mass * mass,
+                "pistol_battery_mass": dc.pistol_battery_mass * mass}
+
+    def logu(lohi):
+        return float(np.exp(rng.uniform(*np.log(lohi))))
+
+    o = {"free_speed": u(r.drill_free_speed), "stall_torque": u(r.drill_stall),
+         "spindle_inertia": logu(r.drill_spindle_inertia), "gear_ratio": u(r.drill_gear_ratio),
+         "clutch_detents": int(rng.integers(r.drill_clutch_detents[0], r.drill_clutch_detents[1] + 1)),
+         "clutch_ring_ratio": u(r.drill_ring_ratio), "clutch_duty": u(r.drill_clutch_duty),
+         "clutch_overshoot": u(r.drill_clutch_overshoot), "strip_torque": u(r.drill_strip_torque),
+         "screw_twist_off": u(r.drill_twist_off), "cut_energy": u(r.drill_cut_energy),
+         "exit_len": u(r.drill_exit_len), "pistol_housing_mass": dc.pistol_housing_mass * mass,
+         "pistol_battery_mass": dc.pistol_battery_mass * mass}
+    k = u(r.drill_screw_scale)
+    o.update(screw_torque0=dc.screw_torque0 * k, screw_torque_per_m=dc.screw_torque_per_m * k)
+    # the clutch set the way a person sets it: enough to seat the drawn screw, not enough to ruin it
+    flush = o["screw_torque0"] + o["screw_torque_per_m"] * dc.screw_len
+    lo = max(r.drill_clutch[0], 1.1 * flush)
+    hi = min(r.drill_clutch[1], 0.9 * min(o["strip_torque"], o["screw_twist_off"]) / (1.0 + o["clutch_overshoot"]))
+    o["clutch_torque"] = float(rng.uniform(lo, hi)) if hi > lo else lo
+    o.update(vib_unbalance=dc.vib_unbalance * logu(r.drill_vib_scale),
+             vib_runout=dc.vib_runout * logu(r.drill_vib_scale), vib_noise=dc.vib_noise * logu(r.drill_vib_scale),
+             noise_seed=int(rng.integers(2 ** 31)))
+    return o
 
 
 def apply_residual_dr(cfg: SimConfig, overrides: dict[str, dict]) -> SimConfig:

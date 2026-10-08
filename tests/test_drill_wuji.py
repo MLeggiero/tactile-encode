@@ -53,8 +53,14 @@ def test_the_index_finger_pulls_and_lets_go_of_the_trigger():
     p0, r0 = w.hammer_in_hand()
 
     def settle(level, t=0.3):
-        syn.s_trigger = level
-        tb.step(int(t / w.dt))
+        # the finger closes or opens over trigger_pull_time, as the base pulls: snapped, a drill with no soft start
+        # spins up at its stall torque and kicks the hand with about the motor shaft's (~0.4 Nm for ~20 ms)
+        n = int(dc.trigger_pull_time / w.dt)
+        s0 = syn.s_trigger
+        for i in range(n):
+            syn.s_trigger = s0 + (level - s0) * (i + 1) / n
+            tb.step(1)
+        tb.step(int(t / w.dt) - n)
         return w.plant.trigger
 
     assert settle(dc.trigger_rest) == 0.0  # resting on the trigger without running the motor

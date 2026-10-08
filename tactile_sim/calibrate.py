@@ -3,6 +3,8 @@
     python -m tactile_sim.calibrate pulse        # sweep hammer-face solref timeconst x dampratio
     python -m tactile_sim.calibrate resistance   # sweep nail resistance x strike speed
     python -m tactile_sim.calibrate depth        # advance per strike as the nail goes in
+    python -m tactile_sim.calibrate drill        # the drill's drivetrain on the virtual dyno (plants/drill_dyno.py)
+    python -m tactile_sim.calibrate drill --fit-hard 30   # and the spindle inertia for a 30 Nm hard-joint rating
 """
 
 from __future__ import annotations
@@ -79,11 +81,14 @@ def _row(st: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=["pulse", "resistance", "depth"])
+    ap.add_argument("what", choices=["pulse", "resistance", "depth", "drill"])
+    ap.add_argument("--fit-hard", type=float, default=None, help="drill: fit the spindle inertia to this rating (Nm)")
     ap.add_argument("--v", type=float, default=2.5)
     ap.add_argument("--dt", type=float, default=None)
     ap.add_argument("--arm", default="auto")
     args = ap.parse_args(argv)
+    if args.what == "drill":
+        return _drill(args.fit_hard)
     base = SimConfig().replace(arm={"source": args.arm})
     if args.dt:
         base = base.replace(physics={"timestep": args.dt})
@@ -104,6 +109,24 @@ def main(argv: list[str] | None = None) -> int:
         for depth in np.arange(0.0, 0.021, 0.004):
             st = free_strike(base, args.v, depth0=float(depth))
             print(f"depth {depth * 1e3:4.1f} mm: " + _row(st))
+    return 0
+
+
+def _drill(fit_hard: float | None) -> int:
+    from dataclasses import replace
+
+    from tactile_sim.config import DrillCfg
+    from tactile_sim.model.plants import drill_dyno
+    from tactile_sim.model.plants.drivetrain import DrivetrainParams
+
+    p = DrivetrainParams.from_cfg(DrillCfg())
+    if fit_hard is not None:
+        J = drill_dyno.fit_spindle_inertia(p, fit_hard)
+        print(f"spindle inertia for a {fit_hard:g} Nm hard joint: {J:.3e} kg m^2 (configured {p.spindle_inertia:.3e})")
+        p = replace(p, spindle_inertia=J)
+    # the nominal tool's ratings: Bosch GSR 12V-15 (15 / 30 Nm soft / hard, 400 rpm), Makita DF333D (14 / 30, 450)
+    for row in drill_dyno.report(p, hard_spec=30.0, soft_spec=15.0):
+        print(row)
     return 0
 
 

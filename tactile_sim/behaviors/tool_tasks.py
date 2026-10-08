@@ -15,6 +15,7 @@ from __future__ import annotations
 import numpy as np
 
 from tactile_sim.control.interface import L2Command
+from tactile_sim.model.plants.drill import FAILED  # the screw can no longer be driven (v2: stripped)
 
 
 def _min_jerk(x: float) -> float:
@@ -144,7 +145,7 @@ class DrillFeed(_ToolBehavior):
                 self.ft_base = self._axial_ft()
                 self.lat0 = self.x0.copy()
                 self._set_phase("press", t)
-        if self.phase in ("press", "drive"):
+        if self.phase in ("press", "drive", "release"):
             ramp = min((t - self.t_phase) / 0.2, 1.0) if self.phase == "press" else 1.0
             # soft along the bit (the push is feedforward), stiff across it to hold the bit on the axis
             along = float((x_now - self.lat0) @ a) + 0.005
@@ -158,8 +159,10 @@ class DrillFeed(_ToolBehavior):
                 plant.trigger = 1.0
                 self.t_trigger = t
                 self._set_phase("drive", t)
-            if self.phase == "drive" and (plant.done() or plant.state == "stripped" or t - self.t0 > self.t_max):
+            if self.phase == "drive" and (plant.done() or plant.state in FAILED or t - self.t0 > self.t_max):
                 plant.trigger = 0.0
+                self._set_phase("release", t)  # keep pushing until the spindle stops
+            if self.phase == "release" and (abs(plant.w) < 1.0 or t - self.t_phase >= dc.release_hold):
                 self.back_from = x_now.copy()
                 self._set_phase("retract", t)
             if self.phase == "press" and t - self.t_phase > 2.0:  # never touched: give up
@@ -179,8 +182,10 @@ class PositionDrillFeed(_ToolBehavior):
     (or the board), then command it press_depth past where it is so the servos push, ramped over press_time; pull
     the trigger trigger_delay later; keep the target press_depth ahead of the bit as the screw goes in (a hole: advance
     at feed_rate); release release_delay after the tool reports the screw seated (clutch slipping) or the bit
-    through; back out. The bit is the pistol driver's -y axis or the inline driver's +z. With DrillCfg.aim_from_tool
-    the hand's orientation and path are corrected once, at the start, for where the tool settled (aim_from_tool)."""
+    through, holding the bit there (a screw: still pressed) until the trigger is out and the spindle has stopped, at
+    most release_hold; back out. The bit is the pistol driver's -y axis or the inline driver's +z. With
+    DrillCfg.aim_from_tool the hand's orientation and path are corrected once, at the start, for where the tool
+    settled (aim_from_tool)."""
 
     def reset(self) -> None:
         self.R = self.w.tcp_R_nominal.copy()  # a reset aims afresh from the nominal frame
@@ -233,6 +238,8 @@ class PositionDrillFeed(_ToolBehavior):
             if dc.mode == "hole" and self.phase == "drive":  # feed-rate control
                 return self.lat0 + self.a * (dc.press_depth + dc.feed_rate * (t - self.t_trigger))
             return self.lat0 + self.a * (self.along + dc.press_depth * ramp)
+        if self.phase == "release":  # a screw stays pressed; a bit through the board stays where it is
+            return self.release_x.copy() if dc.mode == "hole" else self.lat0 + self.a * (self.along + dc.press_depth)
         if self.phase == "retract":
             s = _min_jerk((t - self.t_phase) / 0.6)
             return self.back_from + (self.x0 - self.back_from) * s
@@ -257,10 +264,14 @@ class PositionDrillFeed(_ToolBehavior):
             if self.phase == "drive" and plant.done() and np.isnan(self.t_done_seen):
                 self.t_done_seen = t  # the clutch clicks; the trigger stays pulled release_delay longer
             released = not np.isnan(self.t_done_seen) and t - self.t_done_seen >= dc.release_delay
-            if self.phase == "drive" and (released or plant.state == "stripped" or t - self.t0 > self.t_max):
+            if self.phase == "drive" and (released or plant.state in FAILED or t - self.t0 > self.t_max):
                 self.trigger = 0.0
-                self.back_from = x_now.copy()
-                self._set_phase("retract", t)
+                self.release_x = self.target(t)
+                self._set_phase("release", t)
+        if self.phase == "release" and ((plant.trigger <= 0.0 and abs(plant.w) < 1.0)
+                                        or t - self.t_phase >= dc.release_hold):
+            self.back_from = x_now.copy()
+            self._set_phase("retract", t)
         if self.phase == "retract" and t - self.t_phase >= 0.6:
             self._set_phase("done", t)
         if getattr(plant, "trigger_qadr", -1) >= 0:

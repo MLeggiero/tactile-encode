@@ -34,7 +34,7 @@ tactile_sim/
   config.py        # dataclasses: SimConfig{physics, arm, gripper, hammer, plant, sensors, controller, swing, dr, logging}
   names.py         # canonical body/site/geom/joint/actuator names
   assets/  fetch_menagerie.py MANIFEST.json (pinned sha + file hashes) fallback_arm.xml hammer.xml nail_board.xml gripper_pads.xml
-  model/   builder.py arm.py gripper.py tool_hammer.py sensors_mjcf.py plants/{base,nail,drill(stub)}.py
+  model/   builder.py arm.py gripper.py tool_hammer.py sensors_mjcf.py plants/{base,nail,saw,drill,drivetrain,drill_v2}.py
   sim/     world.py scheduler.py truth.py randomize.py
   sensors/ base.py ft.py accel.py pressure.py joints.py camera.py(optional)
   control/ interface.py kinematics.py impedance.py reference_spreading.py momentum_observer.py gripper.py supervisor.py
@@ -89,7 +89,7 @@ Groups `/physics` (truth at physics rate: hammer pose/vel, nail depth, hammer–
 | M6 | Swing FSM + reference spreading, full strike loop | 10 strikes: hit ≥ 90 %, ≥ 1 mm/strike, no drop, slip ≤ 0.7 cm / 1.4°, grip ramp ≥ 150 ms before contact, q̇ gated 50 ms; ringing energy post-impact ≥ 5× pre and ≥ 3× `rigid` mode |
 | M7 | HDF5 writer + `run_strikes` CLI | CLI writes all groups, 3 strike rows, rates match spec |
 | M8 | Gym env + domain randomization | reset/step contracts, seeded DR reproducible, in-range params |
-| M9 | Drill plant stub + README | stub raises `NotImplementedError` |
+| M9 | Drill plant stub + README | stub raises `NotImplementedError` (since built: the 12 V drill/driver, README) |
 
 M2 and M3 can proceed in parallel after M1; M6 needs M4 + M5.
 
@@ -137,7 +137,8 @@ The package follows the plan above. These are the places where building it chang
   strike is a 1.2 m/s setting tap.
 - **Defaults from tuning.** Impedance 3000 N/m and 150 Nm/rad (joint friction held the arm ~7 mm off at
   1500 N/m); strike speed 2.2 m/s (the FR3's torque limits cap the face at ~2.2 m/s anyway).
-- **Not built.** Series-elastic joint mode, the drill plant (stub), cameras beyond an optional renderer.
+- **Not built.** Series-elastic joint mode, cameras beyond an optional renderer. (The drill plant, a stub
+  here, was built later: `plants/drill.py` on `plants/drivetrain.py`.)
 - **Tool and tactile arrays.** The hammer is the YCB 048_hammer scan (`tactile_sim/assets/ycb.py`
   fetches it by sha256 and cuts contact hulls and a mass split from it). The pad pressure arrays are
   8 x 8 per pad at 1 kHz, binned from contacts in Python with a 3 mm spread: MuJoCo's touch sensor also

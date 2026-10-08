@@ -375,7 +375,9 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
 ## What remains
 
 - **The GPU load generator** (`model/loadgen.py`) and **the drill** (plant, pistol driver, trigger, DrillBase): the
-  interlock is ready for task "drill".
+  interlock is ready for task "drill". The drill to port is the 12 V model: `plants/drivetrain.py` (a small ODE,
+  written to vectorize) plus the tip contact and screw/hole laws of `plants/drill.py`; parity against the CPU
+  plant, and the dyno's ratings (`model/plants/drill_dyno.py`), on the batched version.
 - **Rewards** from the plan (substep-integrated slip path, nail advance, rebound energy, I²t, thermal margin,
   smoothness): the hammer's are placeholders.
 - **Randomization events** independent of the library (the library entries carry one `residual_dr` draw each, applied at
