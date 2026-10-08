@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Build openpi (pi0.5) for this project on GT's Skynet, as a CPU job (Skynet keeps installs off the login nodes):
-# openpi cloned under ~/scratch/DexVLA/tactile/openpi, its uv environment there, uv itself from the DexVLA
-# project's pixi env. Adds the Vega U + WUJI policy module and its config entry (openpi_vega_wuji.py).
+# openpi cloned under ~/scratch/DexVLA/tactile/openpi, its uv environment there (uv: $UV_BIN, else ~/.local/bin/uv). Adds the Vega U + WUJI policy module and its config entry (openpi_vega_wuji.py).
 #
 #   sbatch ~/scratch/DexVLA/tactile/finetune/skynet_openpi_env.sbatch
 #SBATCH --job-name=tactile-openpi-env
@@ -15,7 +14,7 @@
 #SBATCH --output=/nethome/%u/scratch/DexVLA/tactile/logs/%x-%j.log
 set -euo pipefail
 work="$HOME/scratch/DexVLA/tactile"
-uv="$HOME/scratch/DexVLA/meta/.pixi/envs/sft/bin/uv"
+uv="${UV_BIN:-$HOME/.local/bin/uv}"
 export UV_CACHE_DIR="$work/.runtime/uv-cache" UV_PYTHON_INSTALL_DIR="$work/.runtime/uv-python" GIT_LFS_SKIP_SMUDGE=1
 cd "$work"
 [[ -d openpi ]] || git clone --depth 1 https://github.com/Physical-Intelligence/openpi.git

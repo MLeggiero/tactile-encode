@@ -48,9 +48,13 @@ On the 96 GB GPU: the same with `--profile full`, and π0.5 per the header of `f
   under the physics randomization and ran out of strikes; 13 dropped the hammer) → `runs/lerobot/vega_wuji_hammer`
   on the desktop, 195 episodes, 90,183 frames (50 min at 30 Hz), 113 MB. GR00T's loader and stats tool read it;
   openpi's LeRobot reads it and computes norm stats.
-- **GR00T N1.7 on the 5070 Ti**, `16gb` profile: 327 M trainable parameters, 13.2 GB peak when the GPU is
-  otherwise free, loss falling over a 20-step probe, ~6.5 samples/s (a 5k-step batch-32 run is ~7 h and blocks the
-  GPU for RL; it does not fit next to RL training or the demo renderers).
+- **GR00T N1.7, `16gb` profile** (diffusion transformer frozen): 327 M trainable parameters, 12.7–13.2 GB. Steady
+  state on g1's RTX 5080: 1.84 optimizer steps/s at micro-batch 4 × 8 accumulation (~59 samples/s), so 5k steps at
+  batch 32 take ~45 min (a 20-step probe is dominated by start-up and suggests far less). It does not fit next to
+  RL training or the demo renderers on one 16 GB card.
+- **Compute (2026-10-08)**: g1 (RTX 5080, 20 cores) runs GR00T fine-tunes/serving and the CPU testbed (env at
+  `g1:~/tactile-encode/.venv`, MuJoCo 3.14.0); Skynet (A40s, overcap) runs the full recipes via
+  `vla/finetune/skynet_*.sbatch` (`~/scratch/DexVLA/tactile`).
 - **π0.5 on the 5070 Ti**: openpi's JAX 0.5.3 trains on Blackwell (sm_120) with `XLA_PYTHON_CLIENT_MEM_FRACTION=0.9`;
   `pi05_vega_wuji_debug` (tiny model, dataset v1, the real transforms and norm stats) runs and checkpoints. The real
   model needs the 96 GB GPU.
