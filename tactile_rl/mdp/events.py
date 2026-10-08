@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 
 import torch
 import warp as wp
+from mjlab.managers.event_manager import requires_model_fields
 
 from tactile_rl.mdp.action_map import TorchSynergy
 from tactile_rl.mdp.actions import hand_drive, joint_ids
@@ -165,3 +166,17 @@ def reset_from_state_bank(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None, 
     robot.data.joint_pos_target[env_ids[:, None], arm_ids] = torch.as_tensor(parts.arm_target, dtype=torch.float32,
                                                                               device=env.device)
     st.ref_rel[env_ids] = bank.hammer_rel[idx]
+
+
+# the model fields the tactile hooks and the base library's randomization write per world (the hammer tasks)
+TACTILE_FIELDS = ("body_mass", "body_ipos", "body_iquat", "body_inertia", "body_invweight0", "dof_invweight0",
+                  "pair_friction", "pair_solref", "actuator_gainprm", "actuator_biasprm", "dof_frictionloss")
+
+
+@requires_model_fields(*TACTILE_FIELDS)
+def tactile_model_fields(env: ManagerBasedRlEnv, env_ids: torch.Tensor | None) -> None:
+    """Startup event that only declares TACTILE_FIELDS, so mjlab allocates them per world before the terms that write
+    them are built (the nail plant: dof_frictionloss and the face/nail pair_solref every substep; the base library's
+    entries: the hammer's inertial, the skin pairs' friction and solref, the arm servo gains). The values are written
+    by those terms (derived constants included: they come from the CPU model), so nothing is recomputed."""
+    del env, env_ids

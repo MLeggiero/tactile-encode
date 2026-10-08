@@ -3,8 +3,12 @@ noslip), on the same reduced-scene model.
 
 States are sampled along CPU runs of the reduced scene (World, training configuration): the welded settle, the free
 hold, and a perturbed hold (random wrenches on the hammer, random residual MIT commands on the hand, random arm
-targets). They are rounded to float32 (the GPU state's precision) and both sides start from the rounded state; each
-state gets its own GPU world, and one forward pass and one step run in all of them at once.
+targets). `run_p1_strikes` samples the hammer scene (residual_training_config: the light hammer, the small nail)
+along a scripted hammering episode instead: the hold before the first windup, the 2 ms before each blow, and the
+face/nail impacts (every step from the face meeting the nail to 20 ms after), each with the nail plant's per-state
+model fields (friction loss, the face/nail pair's restitution). States are rounded to float32 (the GPU state's
+precision) and both sides start from the rounded state; each state gets its own GPU world, and one forward pass and
+one step run in all of them at once.
 
 Compared, per state:
 
@@ -19,7 +23,7 @@ Compared, per state:
 The same metrics between the CPU and itself, with the state nudged by one float32 ulp (`noise_floor`), measure how
 ill-conditioned the grasp is: GPU-vs-CPU differences at that level are float32 arithmetic, not model differences.
 
-    python -m tactile_rl.parity.one_step      # prints the report (multi-contact on, as the testbed runs, and off)
+    python -m tactile_rl.parity.one_step [--scene hold|strikes|both]   # the report, multi-contact on and off
 """
 
 from __future__ import annotations
@@ -46,16 +50,23 @@ class States:
     eq_active: np.ndarray
     xfrc_applied: np.ndarray
     labels: list[str] = field(default_factory=list)
+    # model fields the plants change while running, per state (the nail's friction loss, the face/nail pair's solref)
+    model: dict[str, np.ndarray] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return self.qpos.shape[0]
 
     def subset(self, idx) -> States:
-        return States(*(getattr(self, k)[idx] for k in STATE_FIELDS), labels=[self.labels[i] for i in idx])
+        return States(*(getattr(self, k)[idx] for k in STATE_FIELDS), labels=[self.labels[i] for i in idx],
+                      model={k: v[idx] for k, v in self.model.items()})
 
     def float32(self) -> States:
         return replace(self, **{k: getattr(self, k).astype(np.float32).astype(np.float64) for k in STATE_FIELDS
-                                if k != "eq_active"})
+                                if k != "eq_active"},
+                       model={k: v.astype(np.float32).astype(np.float64) for k, v in self.model.items()})
+
+
+MODEL_FIELDS = ("dof_frictionloss", "pair_solref")
 
 
 def sample_cpu_states(cfg: SimConfig, n_weld: int = 40, n_hold: int = 60, n_perturbed: int = 100,
@@ -150,10 +161,13 @@ def cpu_one_step(m: mujoco.MjModel, s: States) -> StepResult:
 
     qacc, sm, pf, pc, q1, v1, nefc, Ms = [], {k: [] for k in SMOOTH}, [], [], [], [], [], []
     d = mujoco.MjData(m)
+    saved = {k: getattr(m, k).copy() for k in s.model}
     for i in range(len(s)):
         mujoco.mj_resetData(m, d)
         for k in STATE_FIELDS:
             getattr(d, k)[:] = getattr(s, k)[i]
+        for k, v in s.model.items():
+            getattr(m, k)[:] = v[i]
         mujoco.mj_forward(m, d)
         qacc.append(d.qacc.copy())
         for k in SMOOTH:
@@ -173,6 +187,8 @@ def cpu_one_step(m: mujoco.MjModel, s: States) -> StepResult:
         mujoco.mj_step(m, d)
         q1.append(d.qpos.copy())
         v1.append(d.qvel.copy())
+    for k, v in saved.items():
+        getattr(m, k)[:] = v
     return StepResult(np.array(qacc), {k: np.array(v) for k, v in sm.items()}, pf, pc, np.array(q1), np.array(v1),
                       np.array(nefc), np.array(Ms))
 
@@ -193,6 +209,11 @@ def gpu_one_step(env, s: States) -> StepResult:
             getattr(d, k)[:] = torch.as_tensor(getattr(s, k), dtype=torch.float32, device=dev)
         d.eq_active[:] = torch.as_tensor(s.eq_active, dtype=torch.bool, device=dev)
         d.time[:] = 0.0
+        for k, v in s.model.items():  # per-world model fields (the env expands them: tactile_model_fields)
+            field_ = getattr(sim.model, k)
+            if field_.shape[0] != n:
+                raise RuntimeError(f"model field {k} is not per world in this env")
+            field_[:] = torch.as_tensor(v, dtype=torch.float32, device=dev)
 
     load()
     sim.forward()
@@ -284,14 +305,17 @@ def run_p1(n_weld: int = 40, n_hold: int = 60, n_perturbed: int = 100, seed: int
 
     n = n_weld + n_hold + n_perturbed
     cfg = hold_env_cfg(num_envs=n, nconmax=128, njmax=512)
-    if not multiccd:
-        cfg.sim.mujoco.disableflags = (*cfg.sim.mujoco.disableflags, "multiccd")
     sim_cfg = config_from_key(cfg.actions["residual"].scene_key)
     states, m = sample_cpu_states(sim_cfg, n_weld, n_hold, n_perturbed, seed)
+    return _run_p1(ManagerBasedRlEnv, cfg, states, m, multiccd, seed, device)
+
+
+def _run_p1(env_cls, cfg, states: States, m: mujoco.MjModel, multiccd: bool, seed: int, device: str) -> dict:
     states = states.float32()
     if not multiccd:
+        cfg.sim.mujoco.disableflags = (*cfg.sim.mujoco.disableflags, "multiccd")
         m.opt.disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
-    env = ManagerBasedRlEnv(cfg, device=device)
+    env = env_cls(cfg, device=device)
     try:
         cpu = cpu_one_step(m, states)
         gpu = gpu_one_step(env, states)
@@ -308,7 +332,120 @@ def run_p1(n_weld: int = 40, n_hold: int = 60, n_perturbed: int = 100, seed: int
                               None if r.M is None else r.M[idx])
 
         by_label[lab] = compare(sub(cpu), sub(gpu))
-    return {"gpu": compare(cpu, gpu), "floor": compare(cpu, nudged), "by_label": by_label}
+    return {"gpu": compare(cpu, gpu), "floor": compare(cpu, nudged), "by_label": by_label,
+            "results": {"cpu": cpu, "gpu": gpu, "floor": nudged}, "labels": list(states.labels)}
+
+
+# ---------------------------------------------------------------------------------------------- strikes
+
+
+def sample_strike_states(cfg: SimConfig, n_hold: int = 60, n_strike: int = 240, strikes: int = 2, seed: int = 0,
+                         pre: float = 0.002, post: float = 0.020) -> tuple[States, object]:
+    """States along a CPU hammering episode of the residual scene (SwingBase base, zero residual): `hold` states
+    before the first windup, `approach` states in the `pre` seconds before each blow, `strike` states from the face
+    meeting the nail to `post` after; each with the plant's model fields (the nail's friction loss, the face/nail
+    pair's restitution solref) as they were. Also returns the episode's World (its model, and for the CPU's taxel
+    loads)."""
+    from collections import deque
+
+    from tactile_sim.behaviors.base_sources import SwingBase
+    from tactile_sim.episode import Episode
+    from tactile_sim.sim.truth import pair_force
+
+    ep = Episode(cfg, seed=seed)
+    tb = ep.tb
+    w = tb.world
+    m, d = w.model, w.data
+    tb.residual.base_fn = SwingBase(tb, ep.swing, rng=np.random.default_rng(seed + 1))
+    g_face, g_nail = m.geom(names.HAMMER_FACE_GEOM).id, m.geom(names.NAIL_HEAD_GEOM).id
+    cand: dict[str, list] = {"hold": [], "approach": [], "strike": []}
+    n_pre = max(1, int(round(pre / w.dt)))
+    hist: deque = deque(maxlen=n_pre)
+    st = {"t_contact": -np.inf, "k": 0}
+
+    def snap():
+        return ({k: getattr(d, k).copy() for k in STATE_FIELDS}, {k: getattr(m, k).copy() for k in MODEL_FIELDS})
+
+    step_cb = ep._step_cb
+
+    def cb(tb_):
+        step_cb(tb_)
+        t = w.t
+        f, _ = pair_force(m, d, g_face, g_nail)
+        if f > 0:
+            if t - st["t_contact"] > post:
+                cand["approach"].extend(hist)
+                hist.clear()
+            cand["strike"].append(snap())
+            st["t_contact"] = t
+        elif t - st["t_contact"] <= post:
+            cand["strike"].append(snap())
+        else:
+            hist.append(snap())
+            if ep.swing.phase == "approach" and st["k"] % 20 == 0:
+                cand["hold"].append(snap())
+        st["k"] += 1
+
+    ep._step_cb = cb
+    ep.run(strikes)
+    n_app = min(len(cand["approach"]), max(1, n_strike // 8))
+    want = {"hold": n_hold, "approach": n_app, "strike": n_strike - n_app}
+    rec: dict[str, list] = {k: [] for k in STATE_FIELDS}
+    model: dict[str, list] = {k: [] for k in MODEL_FIELDS}
+    labels = []
+    for lab, items in cand.items():
+        if not items or want[lab] <= 0:
+            continue
+        idx = np.unique(np.linspace(0, len(items) - 1, min(want[lab], len(items))).round().astype(int))
+        for i in idx:
+            s, mf = items[i]
+            for k in STATE_FIELDS:
+                rec[k].append(s[k])
+            for k in MODEL_FIELDS:
+                model[k].append(mf[k])
+            labels.append(lab)
+    return States(**{k: np.array(v) for k, v in rec.items()}, labels=labels,
+                  model={k: np.array(v) for k, v in model.items()}), w
+
+
+def pair_compare(cpu: StepResult, gpu: StepResult, pair: tuple[int, int], idx=None) -> dict:
+    """One geom pair's summed normal force, GPU against CPU, over the states where either side has it."""
+    idx = range(len(cpu.pair_force)) if idx is None else idx
+    a = np.array([cpu.pair_force[i].get(pair, 0.0) for i in idx])
+    b = np.array([gpu.pair_force[i].get(pair, 0.0) for i in idx])
+    on = (a > 0) | (b > 0)
+    rel = np.abs(b - a)[on] / np.maximum(np.maximum(a, b)[on], 1e-9)
+    both = (a > 0) & (b > 0)
+    out = {"states": int(on.sum()), "both": int(both.sum()), "cpu_only": int(((a > 0) & ~(b > 0)).sum()),
+           "gpu_only": int((~(a > 0) & (b > 0)).sum())}
+    if on.any():
+        out.update(rel_median=float(np.median(rel)), rel_p90=float(np.percentile(rel, 90)),
+                   cpu_mean=float(a[on].mean()), gpu_mean=float(b[on].mean()))
+    if both.any():
+        r2 = np.abs(b - a)[both] / np.maximum(a, b)[both]
+        out.update(rel_both_median=float(np.median(r2)), rel_both_p90=float(np.percentile(r2, 90)))
+    return out
+
+
+def run_p1_strikes(n_hold: int = 60, n_strike: int = 240, seed: int = 0, multiccd: bool = True,
+                   device: str = "cuda:0") -> dict:
+    """P1 on the hammer scene (residual_training_config): hold states and face/nail impacts. As run_p1, plus the
+    face/nail pair's force on its own."""
+    from mjlab.envs import ManagerBasedRlEnv
+
+    from tactile_rl.tasks.hammer import hammer_scene_env_cfg
+    from tactile_sim.sim.training_parts import residual_training_config
+
+    states, w = sample_strike_states(residual_training_config(), n_hold, n_strike, seed=seed)
+    m = w.model
+    cfg = hammer_scene_env_cfg(len(states))
+    r = _run_p1(ManagerBasedRlEnv, cfg, states, m, multiccd, seed, device)
+    pair = _pair(m.geom(names.HAMMER_FACE_GEOM).id, m.geom(names.NAIL_HEAD_GEOM).id)
+    res = r["results"]
+    strike = [i for i, lab in enumerate(states.labels) if lab == "strike"]
+    r["face_nail"] = {"gpu": pair_compare(res["cpu"], res["gpu"], pair, strike),
+                      "floor": pair_compare(res["cpu"], res["floor"], pair, strike)}
+    return r
 
 
 def format_report(r: dict, title: str, model: mujoco.MjModel | None = None) -> str:
@@ -340,15 +477,27 @@ def format_report(r: dict, title: str, model: mujoco.MjModel | None = None) -> s
     return "\n".join(lines)
 
 
-def main() -> None:  # pragma: no cover - report script
-    from tactile_sim.sim.training_parts import training_config
+def main(argv: list[str] | None = None) -> None:  # pragma: no cover - report script
+    import argparse
+
+    from tactile_sim.sim.training_parts import residual_training_config, training_config
     from tactile_sim.sim.world import World
 
-    model = World(training_config()).model
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--scene", choices=("hold", "strikes", "both"), default="both")
+    a = ap.parse_args(argv)
     for multiccd in (True, False):
-        r = run_p1(multiccd=multiccd)
-        print(format_report(r, f"P1 one-step parity, multi-contact {'on (as the testbed)' if multiccd else 'off'}",
-                            model))
+        mc = "on (as the testbed)" if multiccd else "off"
+        if a.scene in ("hold", "both"):
+            r = run_p1(multiccd=multiccd)
+            print(format_report(r, f"P1 one-step parity, hold scene, multi-contact {mc}",
+                                World(training_config()).model))
+        if a.scene in ("strikes", "both"):
+            r = run_p1_strikes(multiccd=multiccd)
+            print(format_report(r, f"P1 one-step parity, hammer scene with strikes, multi-contact {mc}",
+                                World(residual_training_config()).model))
+            for side in ("gpu", "floor"):
+                print(f"  face/nail pair force in strike states, {side}: {r['face_nail'][side]}")
 
 
 if __name__ == "__main__":  # pragma: no cover

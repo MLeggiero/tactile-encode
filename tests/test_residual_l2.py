@@ -164,7 +164,11 @@ def test_nonfinite_actions_and_stale_inputs_zero_the_residual(res_tb):
 
 @requires_wuji
 def test_trigger_joints_only_open_while_the_trigger_is_disabled(res_tb):
-    r = res_tb.residual
+    from dataclasses import replace
+
+    from tactile_sim.control.residual_l2 import ResidualHandL2
+
+    r = ResidualHandL2(res_tb, cfg=replace(res_tb.cfg.residual, task="drill"))
     j = r.trig
     assert len(j) == 3
     off = np.zeros((3, N_JOINTS))
@@ -179,6 +183,20 @@ def test_trigger_joints_only_open_while_the_trigger_is_disabled(res_tb):
     assert np.allclose(r._trigger_guard(opening, trigger=False)[0, j], -r.cfg.trigger_dq_max * r.close_dir[j])
     others = np.setdiff1d(np.arange(20), j)
     assert np.array_equal(r._trigger_guard(off, False)[:, others], off[:, others])
+
+
+@requires_wuji
+def test_the_trigger_interlock_is_the_drill_tasks_only(res_tb):
+    from tactile_sim.config import ResidualCfg
+    from tactile_sim.control.residual_l2 import trigger_indices
+
+    r = res_tb.residual  # task "hammer": no trigger, no interlock
+    assert r.cfg.task == "hammer" and len(r.trig) == 0
+    off = np.random.default_rng(0).uniform(-1.0, 1.0, (3, N_JOINTS))
+    for trigger in (False, True):
+        assert np.array_equal(r._trigger_guard(off, trigger), off)
+    names = r.hand.joint_names
+    assert [len(trigger_indices(ResidualCfg(task=t), names)) for t in ("hammer", "loadgen", "drill")] == [0, 0, 3]
 
 
 @requires_wuji

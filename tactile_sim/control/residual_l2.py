@@ -9,8 +9,9 @@ Two scheduler tasks drive it (Testbed registers them when ResidualCfg.enabled):
 - `tick` at ResidualCfg.rate builds the observation, runs the policy, bounds the result and sends the command.
 
 Safety, applied every tick in this order: non-finite actions become zero; the action is clipped to [-1, 1];
-offsets on the drill-trigger joints are capped, and may only open the finger while the base disables the
-trigger; if any input is stale the offsets decay to zero instead; the offsets' slew is limited per second.
+on the drill task, offsets on the trigger joints are capped, and may only open the finger while the base disables
+the trigger (the interlock exists only where there is a trigger: task "drill"); if any input is stale the offsets
+decay to zero instead; the offsets' slew is limited per second. The GPU training env (tactile_rl) mirrors this.
 """
 
 from __future__ import annotations
@@ -56,6 +57,14 @@ class ZeroPolicy:
         return np.zeros(3 * N_JOINTS)
 
 
+def trigger_indices(cfg, joint_names: list[str]) -> np.ndarray:
+    """Hand joints under the drill-trigger interlock (ResidualCfg.trigger_joints): only on the drill task, the only
+    one with a trigger; none elsewhere. Shared with the GPU training env, so both apply the same interlock."""
+    if cfg.task != "drill":
+        return np.zeros(0, dtype=int)
+    return np.array([joint_names.index(j) for j in cfg.trigger_joints if j in joint_names], dtype=int)
+
+
 def make_policy(name: str):
     """"zero", or the path of an exported policy (.onnx with its sidecar)."""
     if name == "zero":
@@ -98,7 +107,7 @@ class ResidualHandL2:
         self.board_sensors = [by_board[b] for b in sorted(by_board)]
         self.q_sensor, self.i_sensor = sens["hand_q"], sens["hand_current"]
         self.i_rated = hand.drive.i_rated
-        self.trig = np.array([hand.joint_names.index(j) for j in c.trigger_joints if j in hand.joint_names], dtype=int)
+        self.trig = trigger_indices(c, hand.joint_names)
         self.close_dir = hand.synergy.close_dir
         self.task_vec = np.eye(len(TASKS))[TASKS.index(c.task)]
         slices = obs_slices(self.stack)

@@ -1,19 +1,24 @@
 """Action terms of the tactile residual env.
 
-- `ResidualHandAction` (60-D), once per policy step: the policy's actions, squashed by tanh, become the residual's
-  offsets (obs_spec.offsets), slewed per second over the policy period (obs_spec.slew) and composed with the base
-  hand command (obs_spec.compose) into the MIT command the host sends the WUJI drives. As on the testbed
-  (control.residual_l2.ResidualHandL2.tick): a non-finite action vector counts as zero, and the drill-trigger
-  interlock caps the index finger's offsets (only opening while the base disables the trigger). The base for this
-  milestone is the grip synergy as MIT commands at the constant hold scalar World.reset ends with, from the joints'
-  present angles.
+- `ResidualHandAction` (60-D), once per policy step, as the testbed's ResidualHandL2.tick: a non-finite action vector
+  counts as zero; the actions are squashed by tanh (the exported policy carries the tanh) and become the residual's
+  offsets (obs_spec.offsets); on the drill task the trigger interlock caps the index finger's offsets (only opening
+  while the base disables the trigger; no interlock elsewhere: residual_l2.trigger_indices); if any input is stale
+  (the TaxelScan boards' newest frames older than stale_taxel, the joint readback older than stale_joint) the offsets
+  decay toward zero with decay_tau instead; the offsets' slew is limited per second over the policy period
+  (obs_spec.slew); the result is composed with the base hand command (obs_spec.compose) into the MIT command the host
+  sends the WUJI drives. The base: with a base-trajectory command (the hammer tasks), the grip synergy at the
+  library's scalar from the joint angles the host last read (the readback); without one (the hold tasks of milestone
+  1), the synergy at the constant hold scalar World.reset ends with, from the joints' true angles, and no sensors.
 - `SubstepHooks` (0-D), every physics substep before MuJoCo steps (mjlab runs every action term's apply_actions
-  there): the arm's servo targets (hover pose + gravity droop, as World._hold_arm) and one step of the WUJI drives
-  (TorchWujiDrive.step), whose torque the hand actuator then writes to ctrl.
+  there): the arm's servo targets (the base's 100 Hz stream, or the hover pose + gravity droop), the plant's pre-step
+  hook (the tactile runtime's) and one step of the WUJI drives (TorchWujiDrive.step), whose torque the hand actuator
+  then writes to ctrl.
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -23,6 +28,7 @@ from mjlab.managers.action_manager import ActionTerm, ActionTermCfg
 from tactile_rl.actuators.wuji_mit import TorchWujiDrive, WujiMitActuator
 from tactile_rl.mdp.action_map import TorchActionMap, TorchSynergy
 from tactile_sim.control.obs_spec import N_JOINTS, ActionSpec, JointParams
+from tactile_sim.control.residual_l2 import trigger_indices
 from tactile_sim.sim.training_parts import TrainingParts, training_parts
 
 if TYPE_CHECKING:
@@ -40,6 +46,18 @@ def joint_ids(entity, names: tuple[str, ...], device) -> torch.Tensor:
     """Entity-local indices of `names`, in that order."""
     idx = {n: i for i, n in enumerate(entity.joint_names)}
     return torch.tensor([idx[n] for n in names], dtype=torch.long, device=device)
+
+
+def base_command_term(env: ManagerBasedRlEnv):
+    """The env's base-trajectory command term, or None (the hold tasks)."""
+    from tactile_rl.mdp.commands import BaseTrajectoryCommand
+
+    cm = getattr(env, "command_manager", None)
+    for name in getattr(cm, "active_terms", []) or []:
+        term = cm.get_term(name)
+        if isinstance(term, BaseTrajectoryCommand):
+            return term
+    return None
 
 
 @dataclass(kw_only=True)
@@ -67,19 +85,26 @@ class ResidualHandAction(ActionTerm):
         self.spec = ActionSpec()
         jp = JointParams.for_joints(list(parts.hand_joints), parts.hand_tau_rated, sim_cfg.wuji.kp_nom, parts.i_eff)
         res = sim_cfg.residual
-        trig = [list(parts.hand_joints).index(j) for j in res.trigger_joints if j in parts.hand_joints]
+        self.res = res
+        self.task = cfg.task
+        trig = trigger_indices(type(res)(**{**res.__dict__, "task": cfg.task}), list(parts.hand_joints))
         self.map = TorchActionMap(self.spec, jp, dev, close_dir=parts.synergy.close_dir, trigger_idx=trig,
                                   residual=res)
         self.synergy = TorchSynergy(parts.synergy, dev)
         self.policy_dt = env.step_dt
+        self.decay = math.exp(-self.policy_dt / res.decay_tau)
         n = self.num_envs
         self.s = torch.full((n,), parts.s_hold, dtype=torch.float32, device=dev)
         self.trigger = torch.zeros(n, dtype=torch.bool, device=dev)
         self._raw = torch.zeros(n, self.action_dim, device=dev)
+        self.a_sq = torch.zeros(n, self.action_dim, device=dev)  # the squashed action the policy took (last_action)
         self.off = torch.zeros(n, 3, N_JOINTS, device=dev)
         self.base = torch.zeros(n, 5, N_JOINTS, device=dev)
         self.command = torch.zeros(n, 5, N_JOINTS, device=dev)
         self.n_nonfinite = torch.zeros(n, dtype=torch.long, device=dev)
+        self.n_stale = torch.zeros(n, dtype=torch.long, device=dev)
+        self.base_cmd = base_command_term(env)
+        self.rt = getattr(env, "_tactile_rt", None)
 
     @property
     def action_dim(self) -> int:
@@ -90,7 +115,9 @@ class ResidualHandAction(ActionTerm):
         return self._raw
 
     def base_command(self) -> torch.Tensor:
-        """The base MIT command now: the grip synergy at the hold scalar from the hand's present joint angles."""
+        """The base MIT command now (see the module doc)."""
+        if self.base_cmd is not None:
+            return self.synergy.mit_command(self.base_cmd.s_now, self.rt.rb_q.value.float())
         q = self._entity.data.joint_pos[:, self.hand_ids]
         return self.synergy.mit_command(self.s, q)
 
@@ -99,8 +126,14 @@ class ResidualHandAction(ActionTerm):
         bad = ~torch.isfinite(actions).all(dim=1)
         self.n_nonfinite += bad.long()
         a = torch.where(bad[:, None], torch.zeros_like(actions), actions)
-        a_sq = torch.tanh(a)
-        target = self.map.trigger_guard(self.map.offsets(a_sq), self.trigger)
+        self.a_sq = torch.clamp(torch.tanh(a), -1.0, 1.0)
+        if self.base_cmd is not None:
+            self.trigger = self.base_cmd.trigger
+        target = self.map.trigger_guard(self.map.offsets(self.a_sq), self.trigger)
+        if self.rt is not None:
+            stale = self.rt.stale()
+            self.n_stale += stale.long()
+            target = torch.where(stale[:, None, None], self.off * self.decay, target)
         self.off = self.map.trigger_guard(self.map.slew(self.off, target, self.policy_dt), self.trigger)
         self.base = self.base_command()
         self.command = self.map.compose(self.base, self.off)
@@ -112,8 +145,10 @@ class ResidualHandAction(ActionTerm):
     def reset(self, env_ids: torch.Tensor | slice | None = None) -> None:
         ids = slice(None) if env_ids is None else env_ids
         self._raw[ids] = 0.0
+        self.a_sq[ids] = 0.0
         self.off[ids] = 0.0
         self.n_nonfinite[ids] = 0
+        self.n_stale[ids] = 0
 
 
 @dataclass(kw_only=True)
@@ -138,6 +173,8 @@ class SubstepHooks(ActionTerm):
         self.arm_ids = joint_ids(self._entity, parts.arm_joints, dev)
         self.arm_target = torch.as_tensor(parts.arm_target, dtype=torch.float32, device=dev)
         self._raw = torch.zeros(self.num_envs, 0, device=dev)
+        self.base_cmd = base_command_term(env)
+        self.rt = getattr(env, "_tactile_rt", None)
 
     @property
     def action_dim(self) -> int:
@@ -152,5 +189,10 @@ class SubstepHooks(ActionTerm):
 
     def apply_actions(self) -> None:
         d = self._entity.data
-        d.joint_pos_target[:, self.arm_ids] = self.arm_target
+        if self.base_cmd is not None:
+            d.joint_pos_target[:, self.arm_ids] = self.base_cmd.arm_target(self.rt.t_pre)
+        else:
+            d.joint_pos_target[:, self.arm_ids] = self.arm_target
+        if self.rt is not None:
+            self.rt.pre_substep()
         self.drive.step(d.joint_pos[:, self.hand_ids], d.joint_vel[:, self.hand_ids])

@@ -5,13 +5,30 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import torch
-from mjlab.utils.lab_api.math import axis_angle_from_quat, quat_from_matrix
+from mjlab.utils.lab_api.math import axis_angle_from_quat
 
 from tactile_rl.scene.entities import ENTITY
 from tactile_sim.sim.training_parts import training_parts
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
+
+
+def quat_from_matrix(R: torch.Tensor) -> torch.Tensor:
+    """Quaternions (w, x, y, z) of rotation matrices (..., 3, 3): mjlab's quat_from_matrix (pytorch3d's best-conditioned
+    candidate), selected with a gather instead of a boolean mask, so no host synchronization."""
+    batch = R.shape[:-2]
+    m00, m01, m02, m10, m11, m12, m20, m21, m22 = R.reshape(batch + (9,)).unbind(-1)
+    q2 = torch.stack([1.0 + m00 + m11 + m22, 1.0 + m00 - m11 - m22, 1.0 - m00 + m11 - m22, 1.0 - m00 - m11 + m22], -1)
+    q_abs = torch.sqrt(torch.clamp(q2, min=0.0))
+    cand = torch.stack([
+        torch.stack([q_abs[..., 0] ** 2, m21 - m12, m02 - m20, m10 - m01], -1),
+        torch.stack([m21 - m12, q_abs[..., 1] ** 2, m10 + m01, m02 + m20], -1),
+        torch.stack([m02 - m20, m10 + m01, q_abs[..., 2] ** 2, m12 + m21], -1),
+        torch.stack([m10 - m01, m20 + m02, m21 + m12, q_abs[..., 3] ** 2], -1),
+    ], -2) / (2.0 * torch.clamp(q_abs, min=0.1))[..., None]
+    idx = q_abs.argmax(-1)[..., None, None].expand(batch + (1, 4))
+    return cand.gather(-2, idx).squeeze(-2)
 
 
 def rotvec_from_matrix(R: torch.Tensor) -> torch.Tensor:

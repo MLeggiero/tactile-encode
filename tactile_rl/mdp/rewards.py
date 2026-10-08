@@ -33,3 +33,30 @@ def residual_l2(env: ManagerBasedRlEnv, action_name: str = "residual") -> torch.
     """Squared size of the residual's squashed action (the plan's residual-size penalty)."""
     a = env.action_manager.get_term(action_name).raw_action
     return torch.sum(torch.tanh(a) ** 2, dim=1)
+
+
+# ---------------------------------------------------------------------------------------------- hammer (placeholders)
+# The plan's rewards (substep-integrated slip path, nail advance, rebound energy, I^2 t, thermal margin, smoothness)
+# are not milestone 2; these stand in so the hammer tasks run end to end.
+
+
+def nail_advance(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """Nail driven since the previous policy step (mm)."""
+    from tactile_rl.mdp.actions import base_command_term
+
+    cmd = base_command_term(env)
+    depth = cmd.rt.nail.depth().double()
+    r = (depth - cmd.depth_prev) * 1e3
+    cmd.depth_prev = depth.clone()
+    return r.float()
+
+
+def slip_path(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """The hammer's motion in the hand since the previous policy step: mm + degrees."""
+    from tactile_rl.mdp.actions import base_command_term
+
+    cmd = base_command_term(env)
+    rel = cmd.rt.hammer_in_hand()
+    d = rel - cmd.hih_prev
+    cmd.hih_prev = rel.clone()
+    return torch.linalg.norm(d[:, :3], dim=1) * 1e3 + torch.rad2deg(torch.linalg.norm(d[:, 3:], dim=1))
