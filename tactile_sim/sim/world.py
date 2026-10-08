@@ -77,12 +77,14 @@ class World:
         if self.position_arm:
             from tactile_sim.model.robots import vega_hold_pose
 
-            # every joint of the robot other than the striking arm holds a pose on its own servo
-            self.held = {n: v for n, v in vega_hold_pose(self.cfg.arm).items()}
-            self.held_qadr = np.array([m.joint(n).qposadr[0] for n in self.held])
-            self.held_dofs = np.array([m.joint(n).dofadr[0] for n in self.held])
-            self.held_act = np.array([m.actuator(f"m_{n}").id for n in self.held])
-            self.held_q = np.array(list(self.held.values()))
+            # every joint of the robot other than the striking arm holds a pose on its own servo (the reduced scene
+            # has none of them)
+            self.held = {n: v for n, v in vega_hold_pose(self.cfg.arm).items()
+                         if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n) >= 0}
+            self.held_qadr = np.array([m.joint(n).qposadr[0] for n in self.held], dtype=int)
+            self.held_dofs = np.array([m.joint(n).dofadr[0] for n in self.held], dtype=int)
+            self.held_act = np.array([m.actuator(f"m_{n}").id for n in self.held], dtype=int)
+            self.held_q = np.array(list(self.held.values()), dtype=float)
             self.servo_kp = m.actuator_gainprm[self.arm_act, 0].copy()
             self.servo_kd = -m.actuator_biasprm[self.arm_act, 2].copy()
             self.left_hand_act = np.array([m.actuator(i).id for i in range(m.nu)
@@ -363,6 +365,12 @@ class World:
     # ------------------------------------------------------------------ reset
     def reset(self, seed: int | None = None, settle_weld: float = 0.15, settle_free: float = 0.25) -> None:
         """Put the arm at the hover pose with the hammer grasped and settled; time restarts at 0."""
+        self.reset_pose()
+        self.settle(settle_weld, settle_free)
+
+    def reset_pose(self) -> None:
+        """The start of reset: the arm at the hover pose, the hand at the grasp keyframe, the hammer on the tool frame
+        and welded to the hand there, the hand's drives reset. `settle` then seats the grasp."""
         m, d = self.model, self.data
         mujoco.mj_resetData(m, d)
         if self.position_arm:
@@ -399,6 +407,11 @@ class World:
         eq[6:10] = rel_q
         eq[10] = 1.0
         d.eq_active[self.weld_id] = 1
+
+    def settle(self, settle_weld: float = 0.15, settle_free: float = 0.25) -> None:
+        """The rest of reset: the hand closes on the welded hammer (the grip ramping to its hold over the first half of
+        `settle_weld`), the weld lets go and the tool seats under gravity for `settle_free`; time restarts at 0."""
+        d = self.data
         hold = self.cfg.controller.grip_hold
         n_weld = int(round(settle_weld / self.dt))
         for i in range(n_weld):

@@ -107,13 +107,8 @@ def add_tool(wb, cfg: SimConfig, root) -> str:
     return add_hammer(wb, cfg.hammer, root)
 
 
-def build_scene(cfg: SimConfig) -> SceneSpec:
-    if cfg.arm.robot.startswith("vega"):
-        from tactile_sim.model.robots import load_vega_tree
-
-        root, source = load_vega_tree(cfg.arm)
-    else:
-        root, source = load_arm_tree(cfg.arm)
+def _scene_setup(root: ET.Element, cfg: SimConfig) -> tuple[ET.Element, ET.Element]:
+    """Options, memory, light, floor and camera every scene shares; returns the worldbody and the contact section."""
     root.set("model", "tactile_testbed")
     ph = cfg.physics
     opt = root.find("option")
@@ -136,11 +131,24 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
     sub(wb, "geom", name="floor", type="plane", size=(2, 2, 0.05), rgba=(0.3, 0.3, 0.32, 1), contype=0,
         conaffinity=0)
     sub(wb, "camera", name="scene_cam", pos=(1.3, -0.9, 0.9), xyaxes=(0.57, 0.82, 0, -0.35, 0.24, 0.9))
-
-    g = cfg.gripper
     contact = root.find("contact")
     if contact is None:
         contact = sub(root, "contact")
+    return wb, contact
+
+
+def build_scene(cfg: SimConfig) -> SceneSpec:
+    if cfg.scene.reduced:
+        return build_reduced_scene(cfg)
+    if cfg.arm.robot.startswith("vega"):
+        from tactile_sim.model.robots import load_vega_tree
+
+        root, source = load_vega_tree(cfg.arm)
+    else:
+        root, source = load_arm_tree(cfg.arm)
+    wb, contact = _scene_setup(root, cfg)
+
+    g = cfg.gripper
     hand_info = None
     pad_sites = None
     if g.hand == "franka" and cfg.arm.robot != "fr3":
@@ -174,7 +182,84 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
                      hammer_source=hammer_source, hand_info=hand_info)
 
 
-def _add_wuji(root, cfg: SimConfig, contact) -> dict:
+REDUCED_ROBOTS = ("vega_1u",)
+
+
+def build_reduced_scene(cfg: SimConfig, sensors: bool = True, markers: bool = True, visual: bool = False) -> SceneSpec:
+    """The reduced training scene (SceneCfg.reduced): the Vega U on its fixed pedestal with only the striking (right)
+    arm, the right WUJI Hand 2 on torque motors, the hammer, and the nail plant with its board and table.
+
+    Compared with build_scene: no left arm, no left hand and no head (the lift and the torso flip are fixed joints,
+    so the removed branches never move the right arm's base and its dynamics are unchanged); no visual-only meshes
+    unless `visual` (every body keeps its explicit inertial, so masses and inertias are unchanged); the hammer body is
+    the first in the worldbody, so its free joint leads qpos (mjlab takes an entity's leading free joint as its root).
+
+    `sensors` adds the MuJoCo sensors the testbed reads (wrist F/T and accelerometers: sim-only, and costly on the
+    GPU); `markers` adds a site per taxel (for the viewer). The GPU training env builds this scene without either
+    (see tactile_sim.sim.training_parts).
+    """
+    if cfg.arm.robot not in REDUCED_ROBOTS or cfg.gripper.hand != "wuji2" or cfg.plant.kind != "nail":
+        raise ValueError(f"the reduced training scene is the WUJI Hand 2 with the hammer on a {REDUCED_ROBOTS} "
+                         f"(got robot {cfg.arm.robot!r}, hand {cfg.gripper.hand!r}, plant {cfg.plant.kind!r})")
+    from tactile_sim.model.robots import VEGA_HEAD, VEGA_LEFT_ARM, load_vega_tree
+
+    root, source = load_vega_tree(cfg.arm)
+    removed = set(VEGA_HEAD) | set(VEGA_LEFT_ARM)
+    # the head and the left arm: every body whose own joint is one of theirs, with its subtree
+    _remove_children(root, "body", lambda b: any(j.get("name") in removed for j in b.findall("joint")))
+    act = root.find("actuator")
+    for a in [a for a in act if a.get("joint") in removed]:
+        act.remove(a)
+    wb, contact = _scene_setup(root, cfg)
+    hand_info = _add_wuji(root, cfg, contact, left_hand=False)
+    hammer = find_body(root, names.HAMMER_BODY)
+    wb.remove(hammer)
+    wb.insert(0, hammer)
+    add_grasp_weld(root)
+    plant = make_plant(cfg)
+    plant.add_mjcf(root, wb, *tool_target(cfg))
+    pad_sites = {p.name: f"patch_{p.name}" for p in hand_info["patches"] if getattr(p, "accel", True)}
+    sensor_list = add_sensors(root, pad_sites) if sensors else []
+    if not markers:
+        _remove_children(root, "site", lambda s: s.get("name", "").startswith("taxel_"))
+    if not visual:
+        _strip_visual_meshes(root)
+    ET.indent(root)
+    return SceneSpec(xml=ET.tostring(root, encoding="unicode"), arm_source=source, plant=plant,
+                     hover_tcp=hover_tcp_position(cfg), sensors=sensor_list, hand_source="wuji2",
+                     hammer_source=hand_info["hammer_source"], hand_info=hand_info)
+
+
+def _remove_children(root: ET.Element, tag: str, doomed) -> None:
+    """Remove every `tag` child of a body (or of the worldbody) for which `doomed(child)` holds, subtree included."""
+    hits = [(parent, child) for parent in root.iter() if parent.tag in ("body", "worldbody")
+            for child in parent.findall(tag) if doomed(child)]
+    for parent, child in hits:
+        if any(c is child for c in parent):  # an ancestor may already have been removed with its subtree
+            parent.remove(child)
+
+
+def _strip_visual_meshes(root: ET.Element) -> None:
+    """Drop the mesh geoms that only draw (visual group 2, no collisions) and the mesh assets nothing uses any more.
+    A geom is dropped only if it cannot carry mass: its body has an explicit inertial, or the geom is massless."""
+    inertial = {id(b) for b in root.iter("body") if b.find("inertial") is not None}
+
+    def visual_only(parent_has_inertial: bool, g: ET.Element) -> bool:
+        draws_only = g.get("type") == "mesh" and g.get("group") == "2" and g.get("contype") == "0" and \
+            g.get("conaffinity") == "0"
+        return draws_only and (parent_has_inertial or g.get("mass") == "0")
+
+    hits = [(b, g) for b in root.iter("body") for g in b.findall("geom") if visual_only(id(b) in inertial, g)]
+    for b, g in hits:
+        b.remove(g)
+    used = {g.get("mesh") for g in root.iter("geom") if g.get("mesh")}
+    asset = root.find("asset")
+    if asset is not None:
+        for mesh in [m for m in asset.findall("mesh") if m.get("name") not in used]:
+            asset.remove(mesh)
+
+
+def _add_wuji(root, cfg: SimConfig, contact, left_hand: bool = True) -> dict:
     from tactile_sim.assets.fetch_hands import hand_xml
     from tactile_sim.model.hands import wuji
     from tactile_sim.model.hands.wuji_grasp import wrap_grasp
@@ -201,7 +286,7 @@ def _add_wuji(root, cfg: SimConfig, contact) -> dict:
     info["hammer_source"] = add_hammer(wb, cfg.hammer, root)
     wuji.contact_pairs(contact, info["col_geoms"], handle_segment_geoms(cfg.hammer), g)
     info["grasp"] = grasp
-    if cfg.arm.robot.startswith("vega") and cfg.arm.left_hand:
+    if left_hand and cfg.arm.robot.startswith("vega") and cfg.arm.left_hand:
         left = hand_xml("wuji2_left")
         if left is None:
             raise FileNotFoundError("WUJI Hand 2 (left) not cached; run `python -m tactile_sim.assets.fetch_hands`")

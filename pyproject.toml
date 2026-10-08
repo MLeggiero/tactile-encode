@@ -13,9 +13,12 @@ dependencies = ["mujoco>=3.2,<4", "numpy", "scipy", "h5py"]
 [project.optional-dependencies]
 gym = ["gymnasium>=1.0"]
 dev = ["pytest", "ruff"]
+# GPU training (tactile_rl): mjlab on MuJoCo Warp; mjlab 1.6.0 pins MuJoCo / MuJoCo Warp 3.11 (the validator .venv
+# keeps MuJoCo 3.14)
+rl = ["mjlab==1.6.0", "onnx", "onnxruntime"]
 
 [tool.setuptools.packages.find]
-include = ["tactile_sim*"]
+include = ["tactile_sim*", "tactile_rl*"]
 
 [tool.setuptools.package-data]
 "tactile_sim.assets" = ["*.xml", "*.json"]
@@ -26,6 +29,8 @@ testpaths = ["tests"]
 markers = [
   "network: needs outbound HTTPS to raw.githubusercontent.com",
   "slow: full strike episodes (tens of seconds)",
+  "gpu: needs torch, mjlab and a CUDA device (the .venv-rl training env); skipped otherwise",
+  "rl: GPU training env tests (tactile_rl)",
 ]
 
 [tool.ruff]
