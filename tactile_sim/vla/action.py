@@ -51,10 +51,23 @@ class HandTable:
 
     @classmethod
     def for_hand(cls, hand, cfg) -> HandTable:
-        """The table for a testbed's hand: the synergy at the configured hold grip (ControllerCfg.grip_hold, capped
-        at the hand's hold limit), the WUJI's nominal Kp."""
-        s_ref = min(cfg.controller.grip_hold, hand.grip_hold_max) / hand.f_full
+        """The table for a testbed's hand, built when the task starts: the synergy at the grip its scripted base
+        holds, the WUJI's nominal Kp. The hammer's swing holds the configured grip (ControllerCfg.grip_hold, capped at
+        the hand's hold limit); the drill feed sets none and keeps the grasp's settled grip (hand.s, full). A table
+        at the base's own grip makes the demos' hand targets the joints' angles while the grip holds."""
+        if cfg.plant.kind == "drill":
+            s_ref = float(hand.s)
+        else:
+            s_ref = min(cfg.controller.grip_hold, hand.grip_hold_max) / hand.f_full
         return cls.from_synergy(hand.synergy, s_ref, list(hand.joint_names), cfg.wuji.kp_nom)
+
+    def hold(self, q: np.ndarray | None) -> np.ndarray:
+        """Base MIT command (5, n) that holds the hand where it is under this table, at the table's squeeze; with no
+        reading of the angles yet, the squeeze alone (no stiffness)."""
+        if q is None:
+            return np.stack([np.zeros_like(self.kp), np.zeros_like(self.kp), np.zeros_like(self.kp), self.kd,
+                             self.tau])
+        return self.command(q)
 
     def command(self, q_star: np.ndarray) -> np.ndarray:
         """Base MIT command (5, n) rows q, qd, kp, kd, tau for the VLA's hand targets."""

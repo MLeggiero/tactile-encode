@@ -333,28 +333,48 @@ def test_openpi_wire_format_round_trips():
 
 
 @requires_vega_wuji
-def test_until_its_first_chunk_the_vla_leaves_the_hand_on_its_grip():
+def test_the_hand_table_holds_at_each_base_grip_and_the_vla_holds_until_its_first_chunk():
     import tactile_sim.vla.demos as demos
     from tactile_sim.vla.action import HAND
     from tactile_sim.vla.client import Chunk, VlaBase
-
-    cfg, _ = demos.demo_config("drill", 3, fast=True)
-    tb, _, _ = demos.EPISODES["drill"](cfg, 3)
-    hand = tb.world.hand
 
     class Idle:
         def reset(self):
             pass
 
-    vla = VlaBase(tb, Idle(), HandTable.for_hand(hand, cfg), "", camera=None)
-    grip = np.stack(hand.synergy.mit_command(hand.s, tb.sensors["hand_q"].latest().value))
-    # the drill's settled grip squeezes harder than the table's hold, and at t = 0 the hand sensor has no reading:
-    # the table's command would open the hand, so the client keeps the grip's own command until a chunk takes effect
-    assert np.allclose(vla(0.0)[0], grip)
-    q = np.zeros(ACTION_DIM)
-    q[HAND] = 1.0
-    vla.chunks.append(Chunk(0.0, 0.0, 1 / 30, np.tile(q, (16, 1)), q))
-    assert np.allclose(vla(0.0)[0], vla.table.command(q[HAND]))
+    for task, seed in (("hammer", 11), ("drill", 3)):
+        cfg, _ = demos.demo_config(task, seed, fast=True)
+        tb, _, _ = demos.EPISODES[task](cfg, seed)
+        hand = tb.world.hand
+        table = HandTable.for_hand(hand, cfg)
+        # the table squeezes as its task's base does: the swing's configured hold, the drill's settled full grip
+        s = hand.s if task == "drill" else min(cfg.controller.grip_hold, hand.grip_hold_max) / hand.f_full
+        assert table.tau == pytest.approx(np.asarray(hand.synergy.mit_command(s, np.zeros(len(table.kp)))[4]))
+        vla = VlaBase(tb, Idle(), table, "", camera=None)
+        # before the hand's first reading (t = 0) the squeeze alone: zero angles would be targets that open it
+        cmd = vla(0.0)[0]
+        assert not cmd[2].any() and cmd[4] == pytest.approx(table.tau)
+        tb.step(int(0.002 / tb.world.dt))
+        q = np.asarray(tb.sensors["hand_q"].latest().value, float)
+        assert vla(0.002)[0] == pytest.approx(table.command(q))  # then it holds where it is under the table
+        a = np.zeros(ACTION_DIM)
+        a[HAND] = 1.0
+        vla.chunks.append(Chunk(0.002, 0.002, 1 / 30, np.tile(a, (16, 1)), a))
+        assert vla(0.002)[0] == pytest.approx(table.command(a[HAND]))  # and the first chunk takes over
+
+
+def test_e2_reads_a_datasets_hand_tables(tmp_path):
+    from tactile_sim.experiments.vla_experiment import dataset_table
+    from tactile_sim.vla.demos import INSTRUCTIONS
+
+    t = {"kp": [0.5] * 20, "kd": [0.01] * 20, "tau": [0.2] * 20}
+    (tmp_path / "meta").mkdir()
+    (tmp_path / "meta" / "vega_wuji.json").write_text(json.dumps({"hand_tables": {INSTRUCTIONS["drill"]: t}}))
+    assert dataset_table(str(tmp_path), "drill").tau == pytest.approx(t["tau"])
+    assert dataset_table(None, "drill") is None
+    (tmp_path / "meta" / "vega_wuji.json").write_text(json.dumps({"hand_table": t}))  # one table for every task
+    with pytest.raises(ValueError, match="one hand table"):
+        dataset_table(str(tmp_path), "drill")
 
 
 @requires_vega_wuji

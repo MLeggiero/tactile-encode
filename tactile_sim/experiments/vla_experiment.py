@@ -73,6 +73,7 @@ class Job:
     exec_steps: int = 8
     blend: float = 0.0
     smooth: int = 0
+    hand_tables: str | None = None  # a LeRobot dataset (or its sidecar): the hand tables it was recorded under
 
     def path(self, root: Path) -> Path:
         safe = self.condition.name.replace(":", "_").replace("+", "__")
@@ -94,11 +95,11 @@ def run_job(job: Job, root: str) -> dict:
     residual = make_policy(job.condition.policy)
     r = run_vla_episode(cfg, make_vla_policy(job.server), job.seed, latency=job.latency, exec_steps=job.exec_steps,
                         max_time=MAX_TIME[job.task], residual_policy=residual, blend=job.blend,
-                        smooth=job.smooth)
+                        smooth=job.smooth, table=dataset_table(job.hand_tables, job.task))
     chunks = r.pop("chunks")
     payload = {"job": {"task": job.task, "condition": job.condition.name, "policy": job.condition.policy,
                        "seed": job.seed, "server": job.server, "latency": job.latency, "exec_steps": job.exec_steps,
-                       "blend": job.blend, "smooth": job.smooth},
+                       "blend": job.blend, "smooth": job.smooth, "hand_tables": job.hand_tables},
                **r, "draw": draw, "wall_s": time.time() - t0}
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(out.with_suffix(".chunks.npz"), **chunks)
@@ -106,6 +107,23 @@ def run_job(job: Job, root: str) -> dict:
     tmp.write_text(json.dumps(payload, default=_jsonable))
     tmp.rename(out)
     return {"status": "ok", "path": str(out), "wall_s": payload["wall_s"]}
+
+
+def dataset_table(path: str | None, task: str):
+    """The hand table a dataset recorded the task under (its LeRobot sidecar, meta/vega_wuji.json), or None (the
+    task's own, as the demos build it now)."""
+    if path is None:
+        return None
+    from tactile_sim.vla.action import HandTable
+    from tactile_sim.vla.demos import INSTRUCTIONS
+
+    f = Path(path)
+    if f.is_dir():
+        f = f / "meta" / "vega_wuji.json"
+    tables = json.loads(f.read_text()).get("hand_tables")
+    if tables is None:
+        raise ValueError(f"{f} keeps one hand table for all tasks (exported before 4d0b3a3): omit --hand-tables")
+    return HandTable.from_dict(tables[INSTRUCTIONS[task]])
 
 
 def _jsonable(o):
@@ -188,13 +206,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--exec-steps", type=int, default=8, help="frames executed per chunk")
     ap.add_argument("--blend", type=float, default=0.0, help="s over which a new chunk fades in over the last")
     ap.add_argument("--smooth", type=int, default=0, help="passes of a [1, 2, 1]/4 filter along each chunk")
+    ap.add_argument("--hand-tables", default=None,
+                    help="the VLA's training dataset (or its meta/vega_wuji.json): run its hands under the tables it "
+                         "was recorded with (default: the task's own)")
     ap.add_argument("--policy", action="append", default=[], help="NAME=PATH of an exported residual policy")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     root = Path(a.out)
     conds = conditions(dict(p.split("=", 1) for p in a.policy))
-    jobs = [Job(a.task, c, a.seed0 + s, a.server, a.latency, a.exec_steps, a.blend, a.smooth) for c in conds
-            for s in range(a.seeds)]
+    jobs = [Job(a.task, c, a.seed0 + s, a.server, a.latency, a.exec_steps, a.blend, a.smooth, a.hand_tables)
+            for c in conds for s in range(a.seeds)]
     if a.cmd == "list":
         for j in jobs:
             print(j.condition.name, j.seed, "done" if j.path(root).exists() else "")

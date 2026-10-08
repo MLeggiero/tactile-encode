@@ -300,11 +300,11 @@ class VlaBase:
     def __call__(self, t: float) -> tuple[np.ndarray, np.ndarray, bool, np.ndarray]:
         q, _ = self.targets(t)
         if self.active(t) is None:
-            # until the first chunk takes effect the hand keeps the grip it has, commanded as the scripted bases do:
-            # the table's hold need not match it (the drill's settled grip is the full one), and an unread sensor
-            # (the first ms) gives zero angles, targets that would open the hand
-            hand = self.tb.world.hand
-            base = np.stack(hand.synergy.mit_command(hand.s, self.tb.sensors["hand_q"].latest().value))
+            # until the first chunk takes effect the hand holds where it is at the table's squeeze (the scripted base's
+            # own grip, HandTable.for_hand); an unread sensor (the first ms) gives zero angles, targets that would open
+            # the hand, so until its first reading the squeeze alone
+            reading = self.tb.sensors["hand_q"].latest()
+            base = self.table.hold(np.asarray(reading.value, float) if reading.seq >= 0 else None)
         else:
             base = self.table.command(q[HAND])
         look = []
@@ -348,7 +348,7 @@ def strike_metrics(truth: dict, pre: float = 0.02, post: float = 0.1) -> list[di
 
 def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: int = 8, max_time: float = 30.0,
                     residual_policy=None, visual_seed: int | None = None, after_done: float = 1.0,
-                    blend: float = 0.0, smooth: int = 0) -> dict:
+                    blend: float = 0.0, smooth: int = 0, table: HandTable | None = None) -> dict:
     """One episode with the VLA in charge, on the configured task (ResidualCfg.task): until the nail is home or the
     screw seated (then `after_done` more seconds, for the VLA to let go and back out), the tool drops, or max_time.
     The residual runs `residual_policy` (default: the configured one, zero unless set)."""
@@ -374,7 +374,9 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
     cam = EgoCamera(tb.world.model, cfg)
     if cfg.vla.visual_dr:
         cam.randomize(np.random.default_rng(20_000 + (seed if visual_seed is None else visual_seed)))
-    table = HandTable.for_hand(tb.world.hand, cfg)
+    # the hand table the VLA's actions were recorded under: the given one (a dataset's, LeRobot sidecar
+    # meta/vega_wuji.json "hand_tables"), else the task's own (as the demos build it)
+    table = table or HandTable.for_hand(tb.world.hand, cfg)
     vla = VlaBase(tb, policy, table, INSTRUCTIONS[task], cam, latency, exec_steps, blend=blend, smooth=smooth)
     vla.attach()
     w, plant = tb.world, tb.world.plant
