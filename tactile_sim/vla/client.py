@@ -16,8 +16,9 @@ VlaBase, on the 1 kHz host clock:
 Every chunk is logged (request time, effect time, state, actions) so VLA runs become residual bases.
 
 Policies: GrootPolicy speaks GR00T's policy server protocol (ZeroMQ REQ, msgpack, numpy as .npy bytes;
-gr00t/eval/run_gr00t_server.py); ReplayPolicy serves a recorded demo's own actions, which checks the plumbing
-without a model.
+gr00t/eval/run_gr00t_server.py); OpenPiPolicy speaks openpi's (websocket, msgpack with raw numpy buffers;
+scripts/serve_policy.py); ReplayPolicy serves a recorded demo's own actions, which checks the plumbing without a
+model.
 """
 
 from __future__ import annotations
@@ -95,6 +96,54 @@ class GrootPolicy:
                "language": {self.language_key: [[instruction]]}}
         action, _ = self.call("get_action", {"observation": obs, "options": None})
         return np.concatenate([action["right_arm"][0], action["right_hand"][0]], axis=-1).astype(float)
+
+
+class OpenPiPolicy:
+    """A pi0.5 policy served by openpi (scripts/serve_policy.py; websocket, msgpack with numpy as raw buffers -- the
+    openpi_client wire format) for the Vega U + WUJI config in vla/finetune/openpi_vega_wuji.py."""
+
+    def __init__(self, host: str = "localhost", port: int = 8000, timeout: float = 120.0):
+        import websockets.sync.client
+
+        self.ws = websockets.sync.client.connect(f"ws://{host}:{port}", compression=None, max_size=None,
+                                                 open_timeout=timeout)
+        self.timeout = timeout
+        self.metadata = self._unpack(self.ws.recv(timeout=timeout))
+
+    @staticmethod
+    def _pack(obj):
+        if isinstance(obj, np.ndarray):
+            return {b"__ndarray__": True, b"data": obj.tobytes(), b"dtype": obj.dtype.str, b"shape": obj.shape}
+        if isinstance(obj, np.generic):
+            return {b"__npgeneric__": True, b"data": obj.item(), b"dtype": obj.dtype.str}
+        return obj
+
+    @staticmethod
+    def _unhook(obj):
+        if b"__ndarray__" in obj:
+            return np.ndarray(buffer=obj[b"data"], dtype=np.dtype(obj[b"dtype"]), shape=obj[b"shape"])
+        if b"__npgeneric__" in obj:
+            return np.dtype(obj[b"dtype"]).type(obj[b"data"])
+        return obj
+
+    def _unpack(self, data):
+        import msgpack
+
+        if isinstance(data, str):
+            raise RuntimeError(f"policy server: {data}")
+        return msgpack.unpackb(data, object_hook=self._unhook)
+
+    def reset(self) -> None:
+        pass
+
+    def __call__(self, t: float, image: np.ndarray, state: np.ndarray, instruction: str) -> np.ndarray:
+        import msgpack
+
+        obs = {"observation/image": np.asarray(image, np.uint8), "observation/state": np.asarray(state, np.float32),
+               "prompt": instruction}
+        self.ws.send(msgpack.packb(obs, default=self._pack))
+        out = self._unpack(self.ws.recv(timeout=self.timeout))
+        return np.asarray(out["actions"], float)[:, :ACTION_DIM]
 
 
 class ReplayPolicy:
@@ -266,15 +315,26 @@ def strike_metrics(truth: dict, pre: float = 0.02, post: float = 0.1) -> list[di
 
 
 def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: int = 8, max_time: float = 30.0,
-                    residual_policy=None, visual_seed: int | None = None) -> dict:
-    """One episode with the VLA in charge, until the nail is home, the tool drops, or max_time. The residual runs
-    `residual_policy` (default: the configured one, zero unless set)."""
-    from tactile_sim.episode import Episode
+                    residual_policy=None, visual_seed: int | None = None, after_done: float = 1.0) -> dict:
+    """One episode with the VLA in charge, on the configured task (ResidualCfg.task): until the nail is home or the
+    screw seated (then `after_done` more seconds, for the VLA to let go and back out), the tool drops, or max_time.
+    The residual runs `residual_policy` (default: the configured one, zero unless set)."""
+    from tactile_sim.logging.strike_metrics import rotvec_diff
     from tactile_sim.vla.camera import EgoCamera
     from tactile_sim.vla.demos import INSTRUCTIONS
 
-    ep = Episode(cfg, seed=seed)
-    tb = ep.tb
+    task = cfg.residual.task
+    if task == "drill":
+        from tactile_sim.tool_task import ToolTask
+
+        tb = ToolTask(cfg, seed=seed, t_max=max_time).tb  # the drill's testbed; the VLA replaces its feed
+        step_cb = None
+    else:
+        from tactile_sim.episode import Episode
+
+        ep = Episode(cfg, seed=seed)
+        tb = ep.tb
+        step_cb = ep._step_cb  # noqa: SLF001 - the episode's truth recorder, without its scripted swing
     if residual_policy is not None:
         tb.residual.check_policy(residual_policy)
         tb.residual.policy = residual_policy
@@ -282,22 +342,35 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
     if cfg.vla.visual_dr:
         cam.randomize(np.random.default_rng(20_000 + (seed if visual_seed is None else visual_seed)))
     table = HandTable.for_hand(tb.world.hand, cfg)
-    vla = VlaBase(tb, policy, table, INSTRUCTIONS[cfg.residual.task], cam, latency, exec_steps)
+    vla = VlaBase(tb, policy, table, INSTRUCTIONS[task], cam, latency, exec_steps)
     vla.attach()
-    n_max = int(round(max_time / tb.world.dt))
+    w, plant = tb.world, tb.world.plant
+    p0, r0 = w.hammer_in_hand()
+    slip_t = slip_r = 0.0
+    t_done = float("nan")
+    n_max = int(round(max_time / w.dt))
     try:
-        for _ in range(n_max):
+        for k in range(n_max):
             tb.step()
-            ep._step_cb(tb)  # noqa: SLF001 - the episode's truth recorder, without its scripted swing
-            if tb.world.plant.done() or tb.grip.dropped:
+            if step_cb is not None:
+                step_cb(tb)
+            elif k % 8 == 0:  # the drill: the tool's travel in the hand
+                p, r = w.hammer_in_hand()
+                slip_t, slip_r = max(slip_t, float(np.linalg.norm(p - p0))), max(slip_r, rotvec_diff(r0, r))
+            if np.isnan(t_done) and plant.done():
+                t_done = float(w.t)
+            if tb.grip.dropped or (np.isfinite(t_done) and w.t - t_done >= after_done):
                 break
     finally:
         cam.close()
-    truth = ep.truth.arrays()
-    strikes = strike_metrics(truth)
-    plant = tb.world.plant
-    return {"seed": seed, "t_end": float(tb.world.t), "done": bool(plant.done()), "dropped": bool(tb.grip.dropped),
-            "depth": float(plant.depth), "strikes": strikes, "n_chunks": len(vla.chunks),
-            "residual": {"ticks": tb.residual.n_ticks, "stale": tb.residual.n_stale,
-                         "nonfinite": tb.residual.n_nonfinite},
-            "chunks": vla.log.arrays()}
+    out = {"seed": seed, "task": task, "t_end": float(w.t), "done": bool(plant.done()), "t_done": t_done,
+           "dropped": bool(tb.grip.dropped), "depth": float(plant.depth), "n_chunks": len(vla.chunks),
+           "residual": {"ticks": tb.residual.n_ticks, "stale": tb.residual.n_stale,
+                        "nonfinite": tb.residual.n_nonfinite},
+           "chunks": vla.log.arrays()}
+    if task == "drill":
+        out.update(cam_outs=int(plant.cam_outs), state=plant.state, max_slip_trans_mm=1e3 * slip_t,
+                   max_slip_rot_deg=float(np.degrees(slip_r)))
+    else:
+        out["strikes"] = strike_metrics(ep.truth.arrays())
+    return out

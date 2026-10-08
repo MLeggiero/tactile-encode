@@ -282,3 +282,45 @@ def test_a_drill_demo_pulls_the_trigger_through_the_index_targets(tmp_path):
     assert abs(lead[0]) < 0.05  # resting on the trigger: the table's own level
     assert lead.max() > 0.4  # a full pull, as a target past the finger
     assert abs(lead[-1]) < 0.1  # let go by the end
+
+
+def test_openpi_wire_format_round_trips():
+    pytest.importorskip("msgpack")
+    import msgpack
+
+    from tactile_sim.vla.client import OpenPiPolicy
+
+    obs = {"observation/image": np.arange(24, dtype=np.uint8).reshape(2, 4, 3),
+           "observation/state": np.linspace(-1, 1, 27).astype(np.float32), "prompt": "drive the screw into the board",
+           "n": np.float32(2.5)}
+    back = msgpack.unpackb(msgpack.packb(obs, default=OpenPiPolicy._pack), object_hook=OpenPiPolicy._unhook)
+    assert back["prompt"] == obs["prompt"] and back["n"] == np.float32(2.5)
+    for k in ("observation/image", "observation/state"):
+        assert back[k].dtype == obs[k].dtype and np.array_equal(back[k], obs[k])
+
+
+@requires_vega_wuji
+def test_a_replayed_drill_demo_seats_the_screw_through_the_vla_client(tmp_path):
+    pytest.importorskip("pyarrow")
+    import tactile_sim.vla.demos as demos
+    from tactile_sim.vla.client import ReplayPolicy, run_vla_episode
+
+    try:
+        demos.ffmpeg_exe()
+    except RuntimeError:
+        pytest.skip("no ffmpeg")
+    job = demos.DemoJob("drill", 0, 3, str(tmp_path), fast=True)
+    try:
+        demos.run_demo(job)
+    except Exception as e:  # noqa: BLE001
+        if "gl" in str(e).lower():
+            pytest.skip(f"offscreen rendering unavailable: {e}")
+        raise
+    d = demos.load_demo(job.stem.with_suffix(".npz"))
+    assert d["meta"]["success"]
+    cfg, _ = demos.demo_config("drill", job.seed, fast=True)
+    policy = ReplayPolicy(d["action"], d["meta"]["fps"], horizon=16, t_start=float(d["t"][0]))
+    r = run_vla_episode(cfg, policy, seed=job.seed, latency=0.0, exec_steps=8, max_time=float(d["t"][-1]) + 0.5)
+    # the trigger is pulled by the index finger's replayed targets alone, and the screw goes home
+    assert r["task"] == "drill" and r["done"] and not r["dropped"] and r["cam_outs"] <= 6
+    assert r["max_slip_rot_deg"] < 15.0 and r["residual"]["nonfinite"] == 0
