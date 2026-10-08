@@ -46,3 +46,13 @@ def test_geometry_still_changes_the_key(hand_file):
 def test_unknown_mode_is_rejected():
     with pytest.raises(ValueError):
         grasp_config(cfg("heavy"))
+
+
+def test_the_drills_key_ignores_the_hammer(hand_file):
+    from tactile_sim.config import residual_config
+
+    a = residual_config(task="drill")
+    b = a.replace(hammer={"head_mass": a.hammer.head_mass * 1.3})  # residual_dr varies it on every task
+    assert cache_path(a, hand_file) == cache_path(b, hand_file)
+    c = a.replace(drill={"pistol_grip_radius": a.drill.pistol_grip_radius + 0.002})
+    assert cache_path(c, hand_file) != cache_path(a, hand_file)

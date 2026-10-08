@@ -80,10 +80,11 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
            "syn": g.finger_synergy,
            "sol": g.hand_solref,
            "mu": g.hand_friction, "tors": g.pad_torsion, "damp": g.hand_joint_damping,
-           "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "hammer": h.model,
-           "grip": h.grip_from_head, "mass": (h.head_mass, h.handle_mass), "g": _gravity_in_tool(cfg),
+           "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "g": _gravity_in_tool(cfg),
            "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}
-    if cfg.plant.kind == "drill":  # the pistol driver: its whole geometry (hammer keys keep their old values)
+    if cfg.plant.kind != "drill":  # the hammer (its keys keep their old values)
+        key.update(hammer=h.model, grip=h.grip_from_head, mass=(h.head_mass, h.handle_mass))
+    else:  # the pistol driver: its whole geometry, nothing of the hammer (which randomization still varies)
         dc = cfg.to_dict()["drill"]
         key["tool"] = {k: v for k, v in dc.items() if k.startswith("pistol_")}
         if dc["trigger_mode"] == "finger":  # and its trigger (keys without one keep their old values)

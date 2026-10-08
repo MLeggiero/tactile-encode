@@ -5,10 +5,10 @@ Standalone (it imports openpi, not tactile_sim). In an openpi checkout:
     cp tactile_sim/vla/finetune/openpi_vega_wuji.py <openpi>/src/openpi/policies/vega_wuji_policy.py
     # in <openpi>/src/openpi/training/config.py, at the end of the _CONFIGS list:
     #     *__import__("openpi.policies.vega_wuji_policy", fromlist=["_"]).train_configs(),
-    ln -s <dataset> ~/.cache/huggingface/lerobot/local/vega_wuji_hammer      # LeRobot finds local repos here
+    ln -s <dataset> ~/.cache/huggingface/lerobot/local/vega_wuji_tools      # LeRobot finds local repos here
     uv run scripts/compute_norm_stats.py --config-name pi05_vega_wuji
     uv run python -c "from openpi.policies.vega_wuji_policy import widen_norm_stats as w; \
-        w('assets/pi05_vega_wuji/local/vega_wuji_hammer/norm_stats.json')"
+        w('assets/pi05_vega_wuji/local/vega_wuji_tools/norm_stats.json')"
     XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_vega_wuji --exp-name=<run> --overwrite
     uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi05_vega_wuji --policy.dir=<checkpoint>
 
@@ -67,7 +67,7 @@ class VegaWujiOutputs(transforms.DataTransformFn):
         return {"actions": np.asarray(data["actions"][..., :ACTION_DIM])}
 
 
-def train_configs(repo_id: str = "local/vega_wuji_hammer") -> list:
+def train_configs(repo_id: str = "local/vega_wuji_tools") -> list:
     from openpi.models import pi0_config
     from openpi.training import config as C
     from openpi.training import optimizer as _optimizer
