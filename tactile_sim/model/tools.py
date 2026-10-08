@@ -71,6 +71,39 @@ def add_driver(worldbody: ET.Element, dc: DrillCfg) -> str:
     return "driver"
 
 
+def add_pistol_driver(worldbody: ET.Element, dc: DrillCfg) -> str:
+    """A pistol-grip drill/driver laid out like the hammer (tool_hammer): x along the grip away from the housing, y
+    along the bit with the tip at -y (where the hammer's face points), z completing the frame; the tool frame is
+    the grasp point on the grip's centreline. The grip is the contact geom (names.HAMMER_HANDLE_GEOM); the housing,
+    chuck, bit and battery are mass and drawing only (the plant applies the bit's loads)."""
+    b = _tool_body(worldbody)
+    xh = -dc.pistol_grip_from_head
+    rh = dc.pistol_housing_radius
+    x_end = xh + rh + dc.pistol_grip_len
+    sub(b, "geom", name=names.HAMMER_HANDLE_GEOM, type="capsule", size=dc.pistol_grip_radius,
+        fromto=(xh + rh, 0, 0, x_end, 0, 0), mass=dc.pistol_grip_mass, rgba=GRIP, contype=0, conaffinity=0)
+    sub(b, "geom", name="driver_housing", type="cylinder", size=rh,
+        fromto=(xh, dc.pistol_housing_back, 0, xh, -dc.pistol_housing_front, 0), mass=dc.pistol_housing_mass,
+        rgba=BODY, contype=0, conaffinity=0)
+    y_chuck = -dc.pistol_housing_front - dc.pistol_chuck_len
+    sub(b, "geom", name="driver_chuck", type="cylinder", size=0.45 * rh,
+        fromto=(xh, -dc.pistol_housing_front, 0, xh, y_chuck, 0), mass=0, rgba=GRIP, contype=0, conaffinity=0)
+    tip = pistol_tip_local(dc)
+    sub(b, "geom", name="driver_bit", type="capsule", size=0.003, fromto=(xh, y_chuck, 0, xh, tip[1] + 0.003, 0),
+        mass=0, rgba=STEEL, contype=0, conaffinity=0)
+    bx, by, bz = dc.pistol_battery_half
+    sub(b, "geom", name="driver_battery", type="box", size=(bx, by, bz), pos=(x_end + bx, 0, 0),
+        mass=dc.pistol_battery_mass, rgba=GRIP, contype=0, conaffinity=0)
+    sub(b, "site", name=BIT_TIP_SITE, pos=tip, size=0.002, group=4)
+    sub(b, "site", name=names.HAMMER_FACE_SITE, pos=tip, size=0.003, group=4)
+    sub(b, "site", name=names.HAMMER_IMU_SITE, pos=(xh, 0, 0), size=0.003, group=4)
+    return "pistol_driver"
+
+
+def pistol_tip_local(dc: DrillCfg) -> tuple[float, float, float]:
+    return (-dc.pistol_grip_from_head, -(dc.pistol_housing_front + dc.pistol_chuck_len + dc.bit_len), 0.0)
+
+
 def saw_teeth_local(s: SawCfg) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
     return (s.blade_x[0], s.blade_depth, 0.0), (s.blade_x[1], s.blade_depth, 0.0)
 

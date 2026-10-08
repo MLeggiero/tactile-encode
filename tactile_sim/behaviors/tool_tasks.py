@@ -174,10 +174,71 @@ class DrillFeed(_ToolBehavior):
                 self._set_phase("done", t)
 
 
+class PositionDrillFeed(_ToolBehavior):
+    """The driver task on a position-interface arm with no wrist F/T (the Vega U): bring the bit to the screw head
+    (or the board), then command it press_depth past where it is so the servos push, ramped over press_time; pull
+    the trigger trigger_delay later; keep the target press_depth ahead of the bit as the screw goes in (a hole: advance
+    at feed_rate); release release_delay after the tool reports the screw seated (clutch slipping) or the bit
+    through; back out. The bit is the pistol driver's
+    -y axis or the inline driver's +z."""
+
+    def reset(self) -> None:
+        super().reset()
+        dc = self.cfg.drill
+        self.a = -self.R[:, 1] if dc.form == "pistol" else self.R[:, 2]
+        self.t_trigger = float("nan")
+        self.t_done_seen = float("nan")
+        self.trigger = 0.0  # the base's trigger command (0..1)
+
+    def target(self, t: float) -> np.ndarray:
+        """Where the base wants the grasp frame at time t (the residual's lookahead evaluates this ahead)."""
+        dc = self.cfg.drill
+        if self.phase in ("start", "approach"):
+            s = _min_jerk((t - self.t_phase) / dc.approach_time) if self.phase == "approach" else 0.0
+            return self.x0 + self.a * (dc.clearance - 0.002) * s
+        if self.phase in ("press", "drive"):
+            ramp = min((t - self.t_phase) / dc.press_time, 1.0) if self.phase == "press" else 1.0
+            if dc.mode == "hole" and self.phase == "drive":  # feed-rate control
+                return self.lat0 + self.a * (dc.press_depth + dc.feed_rate * (t - self.t_trigger))
+            return self.lat0 + self.a * (self.along + dc.press_depth * ramp)
+        if self.phase == "retract":
+            s = _min_jerk((t - self.t_phase) / 0.6)
+            return self.back_from + (self.x0 - self.back_from) * s
+        return self.cmd.x_eq.copy()
+
+    def _tick(self, t: float) -> None:
+        dc, plant = self.cfg.drill, self.w.plant
+        x_now = self.w.ctrl_pose()[0]
+        if self.phase == "start":
+            self._set_phase("approach", t)
+        if self.phase == "approach" and t - self.t_phase >= dc.approach_time:
+            self.lat0 = self.x0 + self.a * (dc.clearance - 0.002)
+            self.along = 0.0
+            self._set_phase("press", t)
+        if self.phase in ("press", "drive"):
+            # the target rides press_depth ahead of the bit as it goes in
+            self.along = max(self.along, float((x_now - self.lat0) @ self.a))
+            if self.phase == "press" and t - self.t_phase >= dc.press_time + dc.trigger_delay:
+                self.trigger = dc.trigger_level
+                self.t_trigger = t
+                self._set_phase("drive", t)
+            if self.phase == "drive" and plant.done() and np.isnan(self.t_done_seen):
+                self.t_done_seen = t  # the clutch clicks; the trigger stays pulled release_delay longer
+            released = not np.isnan(self.t_done_seen) and t - self.t_done_seen >= dc.release_delay
+            if self.phase == "drive" and (released or plant.state == "stripped" or t - self.t0 > self.t_max):
+                self.trigger = 0.0
+                self.back_from = x_now.copy()
+                self._set_phase("retract", t)
+        if self.phase == "retract" and t - self.t_phase >= 0.6:
+            self._set_phase("done", t)
+        plant.trigger = self.trigger
+        self.cmd.x_eq = self.target(t)
+
+
 def make_behavior(tb, t_max: float = 30.0) -> _ToolBehavior:
     kind = tb.cfg.plant.kind
     if kind == "saw":
         return SawStroke(tb, t_max)
     if kind == "drill":
-        return DrillFeed(tb, t_max)
+        return PositionDrillFeed(tb, t_max) if tb.world.position_arm else DrillFeed(tb, t_max)
     raise ValueError(f"no scripted tool behavior for plant kind {kind!r} (the hammer uses ScriptedSwing)")

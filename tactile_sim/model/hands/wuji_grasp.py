@@ -24,7 +24,6 @@ from tactile_sim import names
 from tactile_sim.config import SimConfig
 from tactile_sim.control.hand import WrapSynergy
 from tactile_sim.model.hands import wuji
-from tactile_sim.model.tool_hammer import add_hammer, handle_segment_geoms
 from tactile_sim.model.xmlutil import sub
 
 VERSION = 2
@@ -77,13 +76,16 @@ def _gravity_in_tool(cfg: SimConfig) -> list[float]:
 
 def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
     g, h = cfg.gripper, cfg.hammer
-    blob = json.dumps({"v": VERSION, "tcp": g.wrap_tcp, "thumb": g.thumb_close, "pre": g.thumb_preshape,
-                       "syn": g.finger_synergy,
-                       "sol": g.hand_solref,
-                       "mu": g.hand_friction, "tors": g.pad_torsion, "damp": g.hand_joint_damping,
-                       "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "hammer": h.model,
-                       "grip": h.grip_from_head, "mass": (h.head_mass, h.handle_mass), "g": _gravity_in_tool(cfg),
-                       "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}, sort_keys=True)
+    key = {"v": VERSION, "tcp": g.wrap_tcp, "thumb": g.thumb_close, "pre": g.thumb_preshape,
+           "syn": g.finger_synergy,
+           "sol": g.hand_solref,
+           "mu": g.hand_friction, "tors": g.pad_torsion, "damp": g.hand_joint_damping,
+           "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "hammer": h.model,
+           "grip": h.grip_from_head, "mass": (h.head_mass, h.handle_mass), "g": _gravity_in_tool(cfg),
+           "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}
+    if cfg.plant.kind == "drill":  # the pistol driver: its whole geometry (hammer keys keep their old values)
+        key["tool"] = {k: v for k, v in cfg.to_dict()["drill"].items() if k.startswith("pistol_")}
+    blob = json.dumps(key, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
@@ -97,8 +99,15 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
         return cfg
     if mode != "nominal":
         raise ValueError(f"unknown grasp_mass {mode!r} (expected 'actual' or 'nominal')")
-    from tactile_sim.config import LIGHT_HAMMER_OVERRIDES, HammerCfg
+    from tactile_sim.config import LIGHT_HAMMER_OVERRIDES, DrillCfg, HammerCfg
 
+    if cfg.plant.kind == "drill":
+        dd = DrillCfg()
+        nom = {k: getattr(dd, k) for k in ("pistol_housing_mass", "pistol_grip_mass", "pistol_battery_mass")}
+        from tactile_sim.config import GripperCfg
+
+        gd = GripperCfg()
+        return cfg.replace(drill=nom, gripper={"hand_friction": gd.hand_friction, "hand_solref": gd.hand_solref})
     light = LIGHT_HAMMER_OVERRIDES["hammer"]
     h = cfg.hammer
     if h.model == light["model"] and h.head_radius == light["head_radius"] and h.handle_len == light["handle_len"]:
@@ -135,8 +144,10 @@ def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:
     mujoco.mju_mulQuat(q_base, q_hand, q_mount_inv)
     base = sub(wb, "body", name="flange", pos=(0, 0, 0.5), quat=q_base)
     info = wuji.add_wuji_hand(base, root, cfg.gripper, hand_path, (0, 0, 0))
-    add_hammer(wb, cfg.hammer, root)
-    wuji.contact_pairs(contact, info["col_geoms"], handle_segment_geoms(cfg.hammer), cfg.gripper)
+    from tactile_sim.model.builder import add_tool, tool_contact_geoms
+
+    add_tool(wb, cfg, root)
+    wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), cfg.gripper)
     eq = sub(root, "equality")
     sub(eq, "weld", name=names.GRASP_WELD, body1=names.HAND_BODY, body2=names.HAMMER_BODY, active="false",
         solref=(0.005, 1))

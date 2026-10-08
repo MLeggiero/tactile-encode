@@ -258,6 +258,22 @@ class DrillCfg:
     the bit along the hand's approach axis (tool +z), so the push runs through the arm rather than the wrist. The
     target is a board lying on a table under the bit: a pre-started wood screw ("screw") or bare wood ("hole")."""
     mode: str = "screw"
+    # "inline": the driver the Franka Hand holds, the bit along the grasp's approach axis. "pistol": a pistol-grip
+    # drill/driver held in a power wrap the way a hammer is: the grip is the handle, the motor housing the head, and
+    # the bit points where the hammer's face does (tactile_sim.model.tools.add_pistol_driver), so the WUJI Hand 2's
+    # wrap grasp, contacts and slip metrics carry over
+    form: str = "inline"
+    pistol_grip_radius: float = 0.016
+    pistol_grip_len: float = 0.11  # along the grip, from the housing's underside to the battery
+    pistol_grip_from_head: float = 0.055  # grasp centre to the housing (bit) axis, along the grip
+    pistol_housing_radius: float = 0.028
+    pistol_housing_back: float = 0.07  # housing behind the grip, away from the bit
+    pistol_housing_front: float = 0.09  # housing ahead of the grip, to the chuck
+    pistol_chuck_len: float = 0.045
+    pistol_housing_mass: float = 0.55  # motor, gearbox, clutch, chuck: 1.12 kg with the grip and battery
+    pistol_grip_mass: float = 0.12
+    pistol_battery_mass: float = 0.45
+    pistol_battery_half: tuple[float, float, float] = (0.035, 0.05, 0.03)  # box beyond the grip's end
     handle_radius: float = 0.018
     body_span: tuple[float, float] = (-0.10, 0.04)  # along the bit, tool frame
     body_mass: float = 0.8
@@ -305,6 +321,19 @@ class DrillCfg:
     approach_time: float = 0.5
     k_feed: tuple[float, float] = (150.0, 2500.0)  # (along the bit, across it) N/m
     trigger_contact: float = 15.0  # N of axial push before the trigger is pulled
+    # position-interface arm (Vega U), no wrist F/T: the push comes from commanding the bit press_depth past where it
+    # is, and the trigger is pulled trigger_delay after the press has ramped up over press_time
+    press_depth: float = 0.006
+    press_time: float = 0.2
+    trigger_delay: float = 0.1
+    trigger_level: float = 1.0  # how far the base pulls the variable-speed trigger (0..1)
+    release_delay: float = 0.3  # s the trigger stays pulled after the tool reports done (the clutch ratchets)
+    # holes on a position arm: past the press the target advances at feed_rate (feed-rate control, as a CNC drills;
+    # chasing the bit with a stiff servo turns the feed law's thrust-feed coupling into a runaway)
+    feed_rate: float = 0.003  # m/s
+    # bounds on the tip's forces: a bit knocked off the axis must not drive the contact springs to huge loads
+    max_axial: float = 1500.0  # N
+    max_lateral: float = 300.0  # N
 
 
 @dataclass
@@ -633,6 +662,28 @@ class DRCfg:
 
 
 @dataclass
+class VlaCfg:
+    """The slow policy's view and clock (tactile_sim.vla): the Vega's head ego camera and the rate the VLA records
+    demos and runs at.
+
+    The camera is the left imager of the head's ZED stereo pair (Dexmate's URDF: 50 mm baseline, as on a ZED X
+    Mini), rectified, 2.2 mm lens: 105 x 78 deg at 16:10. The lens is an assumption until the unit is known."""
+    fps: float = 30.0
+    cam_width: int = 384
+    cam_height: int = 240
+    cam_fovy: float = 78.0  # deg, vertical
+    # the head joints (head_j1, head_j2, head_j3) while the VLA works; None = aimed at the tool's working point
+    # (vla.camera.aim_head), the way an operator would point the head before a task
+    head_pose: tuple[float, float, float] | None = None
+    # per-episode visual randomization (vla.camera.VisualDR); off = the nominal scene
+    visual_dr: bool = True
+    cam_pos_jitter: float = 0.01  # m, each axis
+    cam_rot_jitter: float = 1.0  # deg, each axis
+    light_jitter: float = 0.3  # fraction of the nominal intensity
+    color_jitter: float = 0.15  # rgb, each channel, on the tool, the workpiece, the table and the floor
+
+
+@dataclass
 class LoggingCfg:
     truth_decim: int = 1
     compress: bool = True
@@ -658,6 +709,7 @@ class SimConfig:
     loadgen: LoadGenCfg = field(default_factory=LoadGenCfg)
     residual_dr: ResidualDRCfg = field(default_factory=ResidualDRCfg)
     dr: DRCfg = field(default_factory=DRCfg)
+    vla: VlaCfg = field(default_factory=VlaCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 
     def to_dict(self) -> dict[str, Any]:
@@ -808,17 +860,38 @@ LIGHT_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
 }
 
 
+# The drill task on the Vega U + WUJI: a compact 12 V pistol driver (1.12 kg, 3 Nm stall in low gear) driving a small
+# screw or drilling a pine board, fed straight down (no arc), with the arm pushing through its position servos
+# (press 12 mm past contact: ~80 N) and drilling holes at a fixed feed rate.
+VEGA_DRILL_OVERRIDES: dict[str, dict[str, Any]] = {
+    "plant": {"kind": "drill"},
+    "drill": {"form": "pistol", "mode": "screw", "stall_torque": 3.0, "clutch_torque": 1.5, "press_depth": 0.012,
+              "drill_torque_per_feed": 1500.0},
+    "swing": {"arc_radius": 0.0},
+    # the base pulls the trigger itself until the trigger is a joint under the index finger: no finger interlock
+    "residual": {"trigger_joints": ()},
+}
+
+
 def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,
-                    **sections: dict[str, Any]) -> SimConfig:
+                    task: str = "hammer", **sections: dict[str, Any]) -> SimConfig:
     """The residual experiments' configuration: WUJI Hand 2 with MIT-mode drives on the robot (default the Vega U),
-    the TaxelScan fast profile at its target 7.8 us per taxel, the light hammer with grasps cached at its nominal
-    masses, and the residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics."""
+    the TaxelScan fast profile at its target 7.8 us per taxel, the tool for `task` ("hammer": the light hammer and
+    its nail; "drill": the pistol driver, VEGA_DRILL_OVERRIDES) with grasps cached at its nominal masses, and the
+    residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics.
+
+    The base holds the tool the way a VLA's hand targets would: a constant grip, open loop (no grip law on the
+    pads, no slip feedback from the simulator's truth), so whatever reacts to touch is the residual."""
+    if task not in ("hammer", "drill"):
+        raise ValueError(f"unknown task {task!r} (expected 'hammer' or 'drill')")
     cfg = hand_config("wuji2", base or SimConfig(), robot=robot)
-    cfg = cfg.replace(**LIGHT_HAMMER_OVERRIDES).replace(
+    cfg = cfg.replace(**(LIGHT_HAMMER_OVERRIDES if task == "hammer" else VEGA_DRILL_OVERRIDES)).replace(
+        residual={"task": task}).replace(
         gripper={"hand_control": "mit", "grasp_mass": "nominal"},
         sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
         residual={"enabled": True, "rate": rate},
         # the base has no impact flag: the arm switches to its post-impact reference on the clock
-        controller={"impact_sources": ()}, swing={"post_switch": "time"},
+        controller={"impact_sources": (), "grip_loop": "open"},
+        swing={"post_switch": "time", "grip_profile": "constant", "grip_margin_step": 0.0},
     )
     return cfg.replace(**sections) if sections else cfg

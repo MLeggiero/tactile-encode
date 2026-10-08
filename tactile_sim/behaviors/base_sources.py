@@ -1,7 +1,8 @@
 """Base sources for the residual policy: what drives the robot under it, in the form ResidualHandL2 takes
 (base_fn(t) -> base MIT hand command (5, 20), lookahead block, trigger enable, forecast block).
 
-SwingBase wraps the scripted hammer swing (behaviors.swing.ScriptedSwing on a position-interface arm):
+SwingBase wraps the scripted hammer swing (behaviors.swing.ScriptedSwing on a position-interface arm), DrillBase
+the scripted drill feed (behaviors.tool_tasks.PositionDrillFeed). SwingBase:
 
 - base hand command: the grip synergy as MIT commands, from the angles the host last read; the synergy's grip
   scalar follows the swing's grip setpoint through the grip loop, as in the scripted runs;
@@ -96,3 +97,44 @@ class SwingBase:
             self.next_look = (np.floor(t * rate + 1e-9) + 1.0) / rate
         look = np.concatenate([np.concatenate([np.zeros(N_JOINTS), self.arm_look[k]]) for k in range(len(LOOKAHEAD))])
         return base, look, False, self.forecast(t, self.truth(t))
+
+
+class DrillBase:
+    """The scripted drill feed (behaviors.tool_tasks.PositionDrillFeed) as the residual's base: the synergy as MIT
+    hand commands, the arm's joint targets at the lookahead times from the feed's own target(t) (solved with the
+    arm's IK at its command rate), the trigger enabled while the base pulls it, and the plant's next load event
+    (DrillPlant.event_truth: seating and clutch ripple, breakthrough) through a ForecastModel."""
+
+    def __init__(self, tb, feed, forecast: ForecastModel | None = None, rng: np.random.Generator | None = None):
+        self.tb = tb
+        self.feed = feed
+        self.forecast = forecast or ForecastModel(tb.cfg.forecast, rng)
+        self.l1 = tb.l1
+        self.has_ik = hasattr(self.l1, "_ik") and hasattr(self.l1, "q_ref")
+        self.reset()
+
+    def reset(self) -> None:
+        self.forecast.reset()
+        self.arm_look = np.zeros((len(LOOKAHEAD), N_ARM))
+        self.next_look = -np.inf
+
+    def _update_arm_lookahead(self, t: float) -> None:
+        if not self.has_ik or self.feed.phase in ("start", "done"):
+            self.arm_look[:] = 0.0
+            return
+        R = self.feed.R
+        for k, dt in enumerate(LOOKAHEAD):
+            q, _ = self.l1._ik(np.asarray(self.feed.target(t + dt), float), R, np.zeros(6))
+            self.arm_look[k] = q - self.l1.q_ref
+
+    def __call__(self, t: float) -> tuple[np.ndarray, np.ndarray, bool, np.ndarray]:
+        hand = self.tb.world.hand
+        q = self.tb.sensors["hand_q"].latest().value
+        base = np.stack(hand.synergy.mit_command(hand.s, q))
+        if t >= self.next_look - 1e-12:
+            self._update_arm_lookahead(t)
+            rate = getattr(self.tb.cfg.arm, "command_rate", 100.0)
+            self.next_look = (np.floor(t * rate + 1e-9) + 1.0) / rate
+        look = np.concatenate([np.concatenate([np.zeros(N_JOINTS), self.arm_look[k]]) for k in range(len(LOOKAHEAD))])
+        trigger = self.feed.trigger > 0
+        return base, look, trigger, self.forecast(t, self.tb.world.plant.event_truth(t))

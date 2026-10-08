@@ -89,6 +89,11 @@ def tool_target(cfg: SimConfig) -> tuple[np.ndarray, np.ndarray]:
         a, b = saw_teeth_local(cfg.saw)
         return p + R @ (0.5 * (np.array(a) + np.array(b))), R[:, 1]
     if kind == "drill":
+        if cfg.drill.form == "pistol":
+            from tactile_sim.model.tools import pistol_tip_local
+
+            a = -R[:, 1]  # the pistol's bit points where the hammer's face does
+            return p + R @ np.array(pistol_tip_local(cfg.drill)) + cfg.drill.clearance * a, a
         return p + R @ np.array(bit_tip_local(cfg.drill)) + cfg.drill.clearance * R[:, 2], R[:, 2]
     raise ValueError(f"unknown plant kind {kind!r}")
 
@@ -101,10 +106,23 @@ def add_tool(wb, cfg: SimConfig, root) -> str:
 
         return add_saw(wb, cfg.saw)
     if kind == "drill":
-        from tactile_sim.model.tools import add_driver
+        from tactile_sim.model.tools import add_driver, add_pistol_driver
 
+        if cfg.drill.form == "pistol":
+            return add_pistol_driver(wb, cfg.drill)
+        if cfg.drill.form != "inline":
+            raise ValueError(f"unknown drill form {cfg.drill.form!r} (expected 'inline' or 'pistol')")
         return add_driver(wb, cfg.drill)
     return add_hammer(wb, cfg.hammer, root)
+
+
+def tool_contact_geoms(cfg: SimConfig) -> list[str]:
+    """The held tool's geoms a wrap grasp touches: the hammer's handle slices, or the pistol driver's grip."""
+    if cfg.plant.kind == "drill" and cfg.drill.form == "pistol":
+        return [names.HAMMER_HANDLE_GEOM]
+    if cfg.plant.kind != "nail":
+        raise ValueError(f"the WUJI Hand 2 wraps the hammer or the pistol driver, not a {cfg.plant.kind!r} tool")
+    return handle_segment_geoms(cfg.hammer)
 
 
 def _scene_setup(root: ET.Element, cfg: SimConfig) -> tuple[ET.Element, ET.Element]:
@@ -137,6 +155,19 @@ def _scene_setup(root: ET.Element, cfg: SimConfig) -> tuple[ET.Element, ET.Eleme
     return wb, contact
 
 
+def add_ego_camera(root: ET.Element, cfg: SimConfig) -> None:
+    """The VLA's view: a camera on the head's left ZED imager (VlaCfg). The URDF gives that frame as a ROS optical
+    frame (z forward, y down); a MuJoCo camera looks along its -z with y up, hence the half turn about x."""
+    v = cfg.vla
+    sub(find_body(root, names.EGO_CAMERA_BODY), "camera", name=names.EGO_CAMERA, quat=(0, 1, 0, 0), fovy=v.cam_fovy)
+    vis = root.find("visual")
+    vis = sub(root, "visual") if vis is None else vis
+    glob = vis.find("global")
+    glob = sub(vis, "global") if glob is None else glob
+    for k, n in (("offwidth", v.cam_width), ("offheight", v.cam_height)):
+        glob.set(k, str(max(int(glob.get(k, "0")), n)))
+
+
 def build_scene(cfg: SimConfig) -> SceneSpec:
     if cfg.scene.reduced:
         return build_reduced_scene(cfg)
@@ -147,6 +178,8 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
     else:
         root, source = load_arm_tree(cfg.arm)
     wb, contact = _scene_setup(root, cfg)
+    if cfg.arm.robot.startswith("vega"):
+        add_ego_camera(root, cfg)
 
     g = cfg.gripper
     hand_info = None
@@ -163,8 +196,9 @@ def build_scene(cfg: SimConfig) -> SceneSpec:
                 friction=(g.pad_friction, g.pad_friction, g.pad_torsion, 0.0001, 0.0001), solref=pad_solref,
                 solimp=g.pad_solimp)
     elif g.hand == "wuji2":
-        if cfg.plant.kind != "nail":
-            raise ValueError("the saw and driver tasks are modelled with the Franka Hand only")
+        if cfg.plant.kind != "nail" and not (cfg.plant.kind == "drill" and cfg.drill.form == "pistol"):
+            raise ValueError("the WUJI Hand 2 holds the hammer or the pistol driver (drill.form = 'pistol'); the saw "
+                             "and the inline driver are modelled with the Franka Hand only")
         hand_info = _add_wuji(root, cfg, contact)
         hand_source = "wuji2"
         hammer_source = hand_info["hammer_source"]
@@ -283,8 +317,8 @@ def _add_wuji(root, cfg: SimConfig, contact, left_hand: bool = True) -> dict:
     info = wuji.add_wuji_hand(parent, root, g, path, (0.0, 0.0, hand_z), tcp_pos=grasp.hammer_pos,
                               tcp_q=grasp.hammer_quat, patches=patches)
     wb = root.find("worldbody")
-    info["hammer_source"] = add_hammer(wb, cfg.hammer, root)
-    wuji.contact_pairs(contact, info["col_geoms"], handle_segment_geoms(cfg.hammer), g)
+    info["hammer_source"] = add_tool(wb, cfg, root)
+    wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), g)
     info["grasp"] = grasp
     if left_hand and cfg.arm.robot.startswith("vega") and cfg.arm.left_hand:
         left = hand_xml("wuji2_left")
