@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 # GR00T N1.7 fine-tune on the Vega U + WUJI sim demos, on GT's Skynet (Slurm), reusing the DexVLA project's GR00T
 # runtime and base weights (~/scratch/DexVLA/meta: .runtime/gr00t17 = torch 2.9 cu128 + flash-attn, the pixi
-# "data" env for FFmpeg, data/models/GR00T-N1.7-3B, the Cosmos-Reason2-2B cache) read-only. This project's files
-# live under ~/scratch/DexVLA/tactile. Overcap is preemptible: the job requeues and resumes from its last
-# checkpoint (gr00t_finetune.py).
+# "data" env for FFmpeg, the base weights and the Cosmos-Reason2-2B backbone) read-only. Jobs run offline, from
+# meta's copies that name the backbone by a local path (data/models/GR00T-N1.7-3B-cluster, and
+# data/models/nvidia/Cosmos-Reason2-2B -> its snapshot in the HF cache), so checkpoints name it that way too; to
+# serve one on another machine, point it back at the hub id:
+#   sed -i 's#"[^"]*/nvidia/Cosmos-Reason2-2B"#"nvidia/Cosmos-Reason2-2B"#' <ckpt>/config.json <ckpt>/processor_config.json
+# This project's files live under ~/scratch/DexVLA/tactile. Overcap is preemptible: the job requeues and resumes
+# from its last checkpoint (gr00t_finetune.py).
 #
 #   sbatch --export=ALL,PROFILE=full,MAX_STEPS=20000 ~/scratch/DexVLA/tactile/finetune/skynet_gr00t.sbatch
 #   sbatch --export=ALL,PROFILE=full,MAX_STEPS=20,RUN=smoke --time=00:30:00 .../skynet_gr00t.sbatch   # smoke
@@ -36,4 +40,5 @@ ds="$work/data/${DATASET:-vega_wuji_tools}"
         --modality-config-path "$work/finetune/gr00t_vega_wuji_config.py" && touch "$ds/meta/.stats_by_cluster_gr00t"; }
 python "$work/finetune/gr00t_finetune.py" --dataset-path "$ds" \
     --output-dir "$run" --profile "${PROFILE:-full}" --max-steps "${MAX_STEPS:-20000}" \
-    --base-model-path "$meta/data/models/GR00T-N1.7-3B" --save-steps "${SAVE_STEPS:-1000}" --workers 4
+    --base-model-path "$meta/data/models/GR00T-N1.7-3B-cluster" --backbone "$meta/data/models/nvidia/Cosmos-Reason2-2B" \
+    --save-steps "${SAVE_STEPS:-1000}" --workers 4

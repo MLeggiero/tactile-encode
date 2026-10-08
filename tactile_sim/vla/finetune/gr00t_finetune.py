@@ -70,6 +70,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--profile", choices=sorted(PROFILES), default="16gb")
     ap.add_argument("--base-model-path", default="nvidia/GR00T-N1.7-3B")
+    ap.add_argument("--backbone", default="nvidia/Cosmos-Reason2-2B",
+                    help="the VLM: its hub id, or a local copy under a path ending in nvidia/Cosmos-Reason2-2B (GR00T "
+                         "tells backbones apart by that name). Offline, use a local copy: given a hub id, "
+                         "transformers asks the hub about the tokenizer even when it is cached")
     ap.add_argument("--max-steps", type=int, default=None)
     ap.add_argument("--micro-batch", type=int, default=None)
     ap.add_argument("--grad-accum", type=int, default=None)
@@ -108,7 +112,7 @@ def main(argv: list[str] | None = None) -> None:
     m.extra_augmentation_config = None
     m.load_bf16 = p["load_bf16"]
     m.reproject_vision = False
-    m.model_name = "nvidia/Cosmos-Reason2-2B"
+    m.model_name = a.backbone
     m.backbone_trainable_params_fp32 = True
     m.use_relative_action = True
     t = config.training
