@@ -543,6 +543,35 @@ class ForecastCfg:
 
 
 @dataclass
+class LoadGenCfg:
+    """Synthetic loads at the tool's working point (tactile_sim.model.loadgen): the first training stage covers every
+    load regime the residual will meet, before the nail and drill plants. Events are drawn per episode; forces are
+    in the tool frame (x along the handle or bit, z along the strike or feed), torques about the tool's long axis."""
+
+    rate: float = 2.0  # events per second (Poisson)
+    p_kind: tuple[float, float, float, float, float] = (0.35, 0.25, 0.15, 0.15, 0.10)  # impulse periodic step bind push
+    # impulse: half-sine force along the strike axis within cone_deg
+    impulse_ms: tuple[float, float] = (0.5, 5.0)
+    impulse_n: tuple[float, float] = (50.0, 700.0)
+    cone_deg: float = 20.0
+    # periodic: a force along the feed or a torque about the long axis, amplitude and phase drifting slowly
+    periodic_hz: tuple[float, float] = (1.0, 100.0)
+    periodic_n: tuple[float, float] = (5.0, 40.0)
+    periodic_nm: tuple[float, float] = (0.2, 1.5)
+    periodic_s: tuple[float, float] = (0.3, 2.0)
+    drift: float = 0.3  # relative amplitude drift per second (random walk)
+    # step: a steady push that vanishes (breakthrough) or appears
+    step_n: tuple[float, float] = (20.0, 90.0)
+    step_hold_s: tuple[float, float] = (0.2, 1.0)
+    # bind: a torque spike about the long axis
+    bind_ms: tuple[float, float] = (20.0, 80.0)
+    bind_nm: tuple[float, float] = (0.5, 3.0)
+    # push: a steady force along the feed
+    push_n: tuple[float, float] = (10.0, 80.0)
+    push_s: tuple[float, float] = (0.3, 1.5)
+
+
+@dataclass
 class DRCfg:
     enabled: bool = False
     head_mass_scale: tuple[float, float] = (0.8, 1.2)
@@ -578,6 +607,7 @@ class SimConfig:
     reactive: ReactiveCfg = field(default_factory=ReactiveCfg)
     residual: ResidualCfg = field(default_factory=ResidualCfg)
     forecast: ForecastCfg = field(default_factory=ForecastCfg)
+    loadgen: LoadGenCfg = field(default_factory=LoadGenCfg)
     dr: DRCfg = field(default_factory=DRCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 
