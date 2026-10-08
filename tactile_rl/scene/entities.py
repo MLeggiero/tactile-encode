@@ -59,7 +59,10 @@ def mujoco_cfg(cfg: SimConfig) -> MujocoCfg:
     has no counterpart: MuJoCo Warp has no noslip solver."""
     ph = cfg.physics
     d = mujoco.MjSpec().option
-    return MujocoCfg(timestep=ph.timestep, integrator=ph.integrator, impratio=ph.impratio, cone=ph.cone,
-                     solver="newton", iterations=ph.iterations, tolerance=float(d.tolerance),
-                     ls_iterations=int(d.ls_iterations), ls_tolerance=float(d.ls_tolerance),
-                     ccd_iterations=int(d.ccd_iterations), gravity=tuple(ph.gravity))
+    out = MujocoCfg(timestep=ph.timestep, integrator=ph.integrator, impratio=ph.impratio, cone=ph.cone,
+                    solver="newton", iterations=ph.iterations, tolerance=float(d.tolerance),
+                    ls_iterations=int(d.ls_iterations), ls_tolerance=float(d.ls_tolerance),
+                    ccd_iterations=int(d.ccd_iterations), gravity=tuple(ph.gravity))
+    if not getattr(ph, "multiccd", True):  # PhysicsCfg.multiccd, as World applies it
+        out.disableflags = (*out.disableflags, "multiccd")
+    return out

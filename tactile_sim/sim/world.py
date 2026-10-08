@@ -47,6 +47,8 @@ class World:
         self.hand_source = spec.hand_source
         self.hammer_source = spec.hammer_source
         self.model = mujoco.MjModel.from_xml_string(spec.xml)
+        if not getattr(self.cfg.physics, "multiccd", True):
+            self.model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
         self.data = mujoco.MjData(self.model)
         self.plant = spec.plant
         self.tcp_R_nominal = tcp_rotation(self.cfg)  # tool orientation at the nominal contact

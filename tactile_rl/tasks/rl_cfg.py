@@ -12,7 +12,8 @@ TAU_LAMBDA = 0.15  # s
 ROLLOUT_S = 0.128
 
 
-def ppo_runner_cfg(rate: float, experiment: str = "tactile_hold") -> RslRlOnPolicyRunnerCfg:
+def ppo_runner_cfg(rate: float, experiment: str = "tactile_hold",
+                   obs_groups: dict[str, tuple[str, ...]] | None = None) -> RslRlOnPolicyRunnerCfg:
     dt = 1.0 / rate
     # Milestone 1 uses MLPs: the plan's teacher (GRU 256 + MLP head, zero-initialized output layer) needs the full
     # observation of milestone 2
@@ -30,4 +31,5 @@ def ppo_runner_cfg(rate: float, experiment: str = "tactile_hold") -> RslRlOnPoli
         experiment_name=f"{experiment}_{rate:g}hz",
         logger="tensorboard",
         upload_model=False,
+        obs_groups=obs_groups or {"actor": ("actor",), "critic": ("critic",)},
     )

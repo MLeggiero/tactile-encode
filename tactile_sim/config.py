@@ -22,6 +22,10 @@ class PhysicsCfg:
     noslip_iterations: int = 5  # removes soft-friction creep so a static grasp really holds
     iterations: int = 50
     gravity: tuple[float, float, float] = (0.0, 0.0, -9.81)
+    # MuJoCo's multi-contact convex collisions (on by default). MuJoCo Warp gives capsule/mesh and cylinder/cylinder
+    # pairs (the light hammer's handle against the hand, its face against the nail) one contact whatever this says;
+    # off on both sides, the CPU and the GPU find the same contacts (tactile_rl/README.md)
+    multiccd: bool = True
 
 
 @dataclass
