@@ -69,9 +69,27 @@ On the 96 GB GPU: the same with `--profile full`, and π0.5 per the header of `f
 - **30 Hz actions soften a blow**: a replayed swing meets the nail on time but at 0.7-0.9 m/s where the scripted
   one did at 1.16 (30 Hz targets cannot carry the strike profile's braking in its last ~30 ms), driving it 40-55 %
   as far. A VLA's strikes have the same limit.
-- **Dataset v2 (recording on g1)** uses the hard nail, multiccd off, and the hammer's first windup at once (0.15 s
-  instead of a 0.7 s idle hold, which looks the same in every frame). 84 of the first 85 hammer demos succeed
-  (v1: 39 %).
+- **Dataset v2** uses the hard nail, multiccd off, and the hammer's first windup at once (0.15 s instead of a 0.7 s
+  idle hold, which looks the same in every frame).
+  - Hammer: 488/500 succeed (v1: 39 %). Drill (the v2 plant): 303/500.
+  - The drill's failures had three causes:
+    - The trigger jams at hand friction of about 1.25 or more: the index fingertip locks on the grip and the motor never runs (119 episodes).
+    - Clutch draws below the screw's run-down torque never seat.
+    - The feed retracts while the motor still runs: every cam-out in the successful demos happened then.
+  - 791 episodes, 214,409 frames.
+- **Dataset v3 (`vega_wuji_tools_v3`)**: v2's hammer demos plus 500 drill demos on Drill v3 (2249c57).
+  - Drill v3 is a 12 V low-gear drill/driver with a Torx drive, the trigger-finger friction cap (59a5b1a) and a release phase.
+  - The new code reproduces a v2 hammer demo bit for bit, so the hammer demos carry over unchanged.
+  - Drill: 500/500 seat, with 0 cam-outs, in 2.4-2.7 s.
+  - 988 episodes, 231,782 frames. The drill is 23 % of the frames.
+- **Hand tables per task** (384dfd1): each task's table is built at the grip its scripted base holds.
+  - Hammer: the configured hold (1.4 Nm at the MCPs). Drill: the settled full grip (2.0 Nm).
+  - Both tasks' demo hand targets are now the joint angles. Dataset v2's drill targets sat ~1.6 rad past them.
+  - A model trained on v2 runs its hands under v2's tables with `vla_experiment --hand-tables <v2 dataset>`.
+- **pi0.5 data on Skynet**:
+  - openpi's norm-stats pass and its training loader both decode one video frame per sample. From the shared /coc storage that ran at 11-22 s a batch.
+  - `openpi_norm_stats.py` computes the stats from the parquet files in seconds; it matches openpi within 0.4 % of range on v1.
+  - The training job copies the dataset to the node's own disk and uses 12 loader workers (5a72408).
 - **Compute (2026-10-08)**: g1 (RTX 5080, 20 cores) runs GR00T fine-tunes/serving and the CPU testbed (env at
   `g1:~/tactile-encode/.venv`, MuJoCo 3.14.0); Skynet (A40s, overcap) runs the full recipes via
   `vla/finetune/skynet_*.sbatch` (`~/scratch/DexVLA/tactile`).
