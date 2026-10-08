@@ -46,14 +46,14 @@ def _all_groups(task: str) -> dict[str, ObservationGroupCfg]:
     priv = {"tool_in_hand": ObservationTermCfg(func=tool_in_hand),
             "patch_contact": ObservationTermCfg(func=patch_contact),
             "event_truth": ObservationTermCfg(func=event_truth)}
-    if task == "hammer":
+    if task in ("hammer", "mixed"):
         priv["nail_state"] = ObservationTermCfg(func=nail_state)
-    if task == "loadgen":
+    if task in ("loadgen", "mixed"):
         priv["load_truth"] = ObservationTermCfg(func=load_truth)
     priv.update({"drive_internals": ObservationTermCfg(func=drive_internals),
                  "randomization": ObservationTermCfg(func=randomization)})
     aux = {"event_truth": ObservationTermCfg(func=event_truth)}
-    if task == "loadgen":
+    if task in ("loadgen", "mixed"):
         aux["load_truth"] = ObservationTermCfg(func=load_truth)
     return {"student": ObservationGroupCfg(dict(student)),
             "teacher": ObservationGroupCfg({**student, **priv}),
@@ -65,7 +65,7 @@ def reward_terms(task: str) -> dict[str, RewardTermCfg]:
     """The plan's rewards for `task`, substep-integrated (tactile_rl.mdp.rewards): the effort penalties, the task's
     terms, the drop's and the thermal fault's penalties."""
     out = {k: RewardTermCfg(func=getattr(R, k), weight=w) for k, w in R.WEIGHTS_EFFORT.items()}
-    weights = R.WEIGHTS_HAMMER if task == "hammer" else R.WEIGHTS_LOADGEN
+    weights = R.WEIGHTS_HAMMER if task in ("hammer", "mixed") else R.WEIGHTS_LOADGEN
     out.update({k: RewardTermCfg(func=getattr(R, k), weight=w) for k, w in weights.items()})
     out["drop"] = RewardTermCfg(func=R.termination_penalty, weight=R.DROP_PENALTY, params={"term": "tool_dropped"})
     out["thermal_fault"] = RewardTermCfg(func=R.termination_penalty, weight=R.THERMAL_FAULT_PENALTY,
@@ -75,7 +75,7 @@ def reward_terms(task: str) -> dict[str, RewardTermCfg]:
 
 def termination_terms(task: str) -> dict[str, TerminationTermCfg]:
     out = {"time_out": TerminationTermCfg(func=time_out, time_out=True)}
-    if task == "hammer":
+    if task in ("hammer", "mixed"):
         out["base_done"] = TerminationTermCfg(func=base_done, time_out=True)
     out.update({"tool_dropped": TerminationTermCfg(func=tool_left_hand),
                 "thermal_fault": TerminationTermCfg(func=thermal_fault),

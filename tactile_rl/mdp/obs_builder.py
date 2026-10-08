@@ -37,13 +37,19 @@ class StudentObs:
         self.masked = [slices[b] for b in mask_blocks]
         if task not in TASKS:
             raise ValueError(f"unknown task {task!r}")
-        self.task_vec = torch.zeros(len(TASKS), device=self.dev)
-        self.task_vec[TASKS.index(task)] = 1.0
+        self.task_idx = torch.full((self.n_env,), TASKS.index(task), dtype=torch.long, device=self.dev)
+        self._eye = torch.eye(len(TASKS), device=self.dev)
         self.dim = obs_dim(self.stack)
         self.ring = torch.zeros(self.n_env, self.stack, FAST_DIM, device=self.dev)
         self.last_seq = torch.full((self.n_env, BOARDS), -1, dtype=torch.long, device=self.dev)
         edges = np.cumsum([0] + [d for _, d in FAST_BLOCKS])
         self.fast_slices = [slice(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:], strict=True)]
+
+    def set_task(self, env_ids, task: str) -> None:
+        """These envs' task (the one-hot block; the C3 mix runs hammer and load-generator episodes side by side)."""
+        if task not in TASKS:
+            raise ValueError(f"unknown task {task!r}")
+        self.task_idx[env_ids] = TASKS.index(task)
 
     def reset(self, env_ids=None) -> None:
         """As ResidualHandL2.reset: an empty ring and no frame seen yet."""
@@ -83,7 +89,7 @@ class StudentObs:
         """The student's observation (N, obs_dim(stack)), obs_spec order."""
         parts = [self.ring[:, :, sl].reshape(self.n_env, -1) for sl in self.fast_slices]
         obs = torch.cat(parts + [last_action.float(), base_q.float(), lookahead.float(), forecast.float(),
-                                 self.task_vec.expand(self.n_env, -1), trigger.float().reshape(-1, 1)], dim=1)
+                                 self._eye[self.task_idx], trigger.float().reshape(-1, 1)], dim=1)
         if obs.shape[1] != self.dim:
             raise ValueError(f"observation has {obs.shape[1]} entries, the spec {self.dim}")
         for sl in self.masked:

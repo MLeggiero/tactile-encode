@@ -159,6 +159,8 @@ PRIVILEGED_BY_TASK = {
                "randomization": 25},
     "loadgen": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "load_truth": 6, "drive_internals": 44,
                 "randomization": 33},
+    "mixed": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "nail_state": 5, "load_truth": 6,
+              "drive_internals": 44, "randomization": 33},
 }
 PRIVILEGED = PRIVILEGED_BY_TASK["hammer"]
 assert math.isfinite(sum(PRIVILEGED.values()))

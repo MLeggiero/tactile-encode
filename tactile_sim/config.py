@@ -627,28 +627,34 @@ class ForecastCfg:
 class LoadGenCfg:
     """Synthetic loads at the tool's working point (tactile_sim.model.loadgen): the first training stage covers every
     load regime the residual will meet, before the nail and drill plants. Events are drawn per episode; forces are
-    in the tool frame (x along the handle or bit, z along the strike or feed), torques about the tool's long axis."""
+    in the tool frame (x along the handle or bit, z along the strike or feed), torques about the tool's long axis.
+
+    The amplitudes are the WUJI Hand 2's capacity with the light hammer (calibrated on the GPU env, zero residual, the
+    full randomization: tactile_rl.bench.loadgen_calibration): at the settled hold no single event of the band loses
+    the grasp and its net slip stays near 1 mm / 3 degrees; at 0.3 of the hold the upper part of the band loses it. A
+    force at the face acts 17 cm from the grasp, so the steady and periodic ones are small: 20 N held along the strike
+    axis already slips the full hold 2.5 mm, and 60 N loses it. Each kind's range is the old one scaled by a factor."""
 
     rate: float = 2.0  # events per second (Poisson)
     p_kind: tuple[float, float, float, float, float] = (0.35, 0.25, 0.15, 0.15, 0.10)  # impulse periodic step bind push
     # impulse: half-sine force along the strike axis within cone_deg
     impulse_ms: tuple[float, float] = (0.5, 5.0)
-    impulse_n: tuple[float, float] = (50.0, 700.0)
+    impulse_n: tuple[float, float] = (14.0, 200.0)  # the light hammer's own blows peak ~185 N
     cone_deg: float = 20.0
     # periodic: a force along the feed or a torque about the long axis, amplitude and phase drifting slowly
     periodic_hz: tuple[float, float] = (1.0, 100.0)
-    periodic_n: tuple[float, float] = (5.0, 40.0)
-    periodic_nm: tuple[float, float] = (0.2, 1.5)
+    periodic_n: tuple[float, float] = (1.25, 10.0)
+    periodic_nm: tuple[float, float] = (0.05, 0.4)
     periodic_s: tuple[float, float] = (0.3, 2.0)
     drift: float = 0.3  # relative amplitude drift per second (random walk)
     # step: a steady push that vanishes (breakthrough) or appears
-    step_n: tuple[float, float] = (20.0, 90.0)
+    step_n: tuple[float, float] = (2.7, 12.0)
     step_hold_s: tuple[float, float] = (0.2, 1.0)
     # bind: a torque spike about the long axis
     bind_ms: tuple[float, float] = (20.0, 80.0)
-    bind_nm: tuple[float, float] = (0.5, 3.0)
+    bind_nm: tuple[float, float] = (0.1, 0.6)
     # push: a steady force along the feed
-    push_n: tuple[float, float] = (10.0, 80.0)
+    push_n: tuple[float, float] = (1.5, 12.0)
     push_s: tuple[float, float] = (0.3, 1.5)
 
 

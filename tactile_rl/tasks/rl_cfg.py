@@ -21,7 +21,8 @@ from dataclasses import dataclass
 
 from mjlab.rl import RslRlModelCfg, RslRlOnPolicyRunnerCfg, RslRlPpoAlgorithmCfg
 
-TAU_H = {"hammer": 0.5, "drill": 1.0, "loadgen": 0.3, "hold": 0.5}  # s, discount horizons
+# s, discount horizons; "residual" is the curriculum C0-C3 (load generator, then 70 % hammer): the hammer's
+TAU_H = {"hammer": 0.5, "drill": 1.0, "loadgen": 0.3, "hold": 0.5, "residual": 0.5}
 TAU_LAMBDA = 0.15  # s
 ROLLOUT_S = 0.128
 SIGMA_1KHZ = 0.30  # initial action noise before tanh at 1 kHz (scales with sqrt(rate))

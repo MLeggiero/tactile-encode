@@ -124,6 +124,7 @@ class BaseTrajectoryCommandCfg(CommandTermCfg):
     start_delay: tuple[float, float] = (0.0, 0.1)  # s
     apply_params: bool = True  # the entries' randomization
     assign: str = "random"  # "random" entries, or "sequential": env i plays entry i mod E (evaluation, parity)
+    hold_level: tuple[float, float] = (1.0, 1.0)  # the base's grip, fraction of the library's (per episode)
     forecast: ForecastCfg = field(default_factory=ForecastCfg)
     task: str = "hammer"
     mask_blocks: tuple[str, ...] = ()
@@ -168,6 +169,9 @@ class BaseTrajectoryCommand(CommandTerm):
         self.knots = torch.as_tensor([0.0] + [1e3 * h for h in LOOKAHEAD], **f64)  # ms
         # what the policy tick and the observation read (refreshed by _update_command)
         self.s_now = torch.full((N,), parts.s_hold, device=dev)
+        self.hold_level = tuple(cfg.hold_level)  # the curriculum's
+        self.level = torch.ones(N, device=dev)
+        self.active = torch.ones(N, dtype=torch.bool, device=dev)  # the envs this term drives (the C3 mix: hammer envs)
         self.base = torch.zeros(N, 5, N_JOINTS, device=dev)
         self.lookahead = torch.zeros(N, (N_JOINTS + N_ARM) * len(LOOKAHEAD), device=dev)
         self.forecast = torch.zeros(N, 13, device=dev)
@@ -234,7 +238,7 @@ class BaseTrajectoryCommand(CommandTerm):
         rt, lib, e = self.rt, self.lib, self.entry
         tau = rt.t
         i = self.index(tau)
-        self.s_now = lib.s[e, i]
+        self.s_now = self.level * lib.s[e, i]  # the hand base at the episode's hold level
         self.base = self.synergy.mit_command(self.s_now, rt.rb_q.value.float())
         # lookahead on the arm's ticks, re-sampled at the warped horizons and scaled
         started, _, u_j = self._tick(tau)
@@ -271,6 +275,12 @@ class BaseTrajectoryCommand(CommandTerm):
         else:
             raise ValueError(f"unknown assign {c.assign!r} (expected 'random' or 'sequential')")
         self.entry[env_ids] = e
+        lo, hi = self.hold_level
+        level = lo + (hi - lo) * torch.rand(n, device=dev)
+        self.level[env_ids] = level
+        dr = getattr(self._env, "_tactile_dr", None)
+        if dr is not None:
+            dr.v["hold_level"][env_ids] = level.double()
         if c.perturb:
             def u(lo_hi):
                 return torch.empty(n, dtype=torch.float64, device=dev).uniform_(*lo_hi)
@@ -281,7 +291,7 @@ class BaseTrajectoryCommand(CommandTerm):
             self.warp[env_ids], self.amp[env_ids], self.delay[env_ids] = 1.0, 1.0, 0.0
         self.q0[env_ids] = lib.arm_q[e, 0]
         self.ref_rel[env_ids] = lib.hih0[e]
-        self.rt.ref_rel[env_ids] = lib.hih0[e]
+        self.rt.ref_rel[env_ids] = lib.hih0[e]  # the C3 mix resamples only its hammer envs here
         self.hih_prev[env_ids] = lib.hih0[e]
         if self.rt.nail is not None:
             self.depth_prev[env_ids] = lib.qpos[e, self.rt.nail.qadr].double()
@@ -346,6 +356,31 @@ class BaseTrajectoryCommand(CommandTerm):
                            drop_prob=P["ts_drop_prob"][e], noise_scale=P["noise_scale"][e])
         rt.load.skin_depth[ids] = P["ts_skin_depth"][e].float()
         rt.rb_i.set_params(ids, noise_scale=P["noise_scale"][e])
+        self._sync_dr(ids, e)
+
+    def _sync_dr(self, ids: torch.Tensor, e: torch.Tensor) -> None:
+        """The entry's draw into the reset events' randomization state (when the task has one), so the teacher's
+        randomization vector shows what these envs run with (the C3 mix: library draws over the events')."""
+        dr = getattr(self._env, "_tactile_dr", None)
+        if dr is None:
+            return
+        P = self.lib.params
+        for k_dr, k_lib in (("head_mass", "head_mass"), ("hand_friction", "hand_friction"),
+                            ("hand_solref_tc", "hand_solref_tc"), ("nail_r0", "nail_r0"),
+                            ("nail_r_per_m", "nail_r_per_m"), ("vdr_zeta0", "vdr_zeta0"), ("face_tc", "face_tc"),
+                            ("cmd_latency", "cmd_latency"), ("sdk_lpf_hz", "sdk_lpf_hz"), ("tau_i", "tau_i"),
+                            ("effort_limit_ratio", "effort_limit_ratio"), ("t_amb", "t_amb"),
+                            ("ts_gain_mismatch", "ts_gain_mismatch"), ("ts_offset_lsb", "ts_offset_lsb"),
+                            ("ts_f_half", "ts_f_half"), ("ts_bandwidth", "ts_bandwidth"),
+                            ("ts_skin_depth", "ts_skin_depth"), ("ts_drop_prob", "ts_drop_prob"),
+                            ("ts_bridge_hi", "ts_bridge_hi"), ("servo_p_mult", "servo_p_mult"),
+                            ("noise_scale", "noise_scale")):
+            if k_lib in P:
+                dr.v[k_dr][ids] = P[k_lib][e].double()
+        dr.v["arm_kd_scale"][ids] = 1.0
+        if dr.i_rated0 is not None:
+            dr.v["kt_scale"][ids] = (P["i_rated"][e][:, self.group].double().mean(1)
+                                     / dr.i_rated0.double().mean())
 
     def param_vector(self) -> torch.Tensor:
         """The randomization each env runs with, scaled to O(1) (teacher / critic observation)."""

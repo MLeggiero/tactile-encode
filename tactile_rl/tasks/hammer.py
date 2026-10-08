@@ -59,7 +59,8 @@ def hammer_env_cfg(rate: float = 1000.0, library: str | None = None, timestep: f
                    num_envs: int = 4096, episode_s: float = 2.5, perturb: bool = True, apply_params: bool = True,
                    mask_blocks: tuple[str, ...] = (), entries: tuple[int, ...] | None = None,
                    assign: str = "random", nconmax: int | None = NCONMAX,
-                   njmax: int | None = NJMAX, obs_groups: tuple[str, ...] = ALL_GROUPS) -> ManagerBasedRlEnvCfg:
+                   njmax: int | None = NJMAX, obs_groups: tuple[str, ...] = ALL_GROUPS,
+                   hold_level: tuple[float, float] = (1.0, 1.0)) -> ManagerBasedRlEnvCfg:
     key = hammer_scene_key(rate, timestep)
     return ManagerBasedRlEnvCfg(
         decimation=decimation_for(rate, timestep),
@@ -67,7 +68,7 @@ def hammer_env_cfg(rate: float = 1000.0, library: str | None = None, timestep: f
                        sensors=(TactileHubCfg(),)),
         commands={"base": BaseTrajectoryCommandCfg(scene_key=key, library=library_path(library), perturb=perturb,
                                                    apply_params=apply_params, task="hammer", mask_blocks=mask_blocks,
-                                                   entries=entries, assign=assign)},
+                                                   entries=entries, assign=assign, hold_level=hold_level)},
         observations=observation_groups("hammer", obs_groups),
         actions={
             "residual": ResidualHandActionCfg(entity_name=ENTITY, scene_key=key, task="hammer"),

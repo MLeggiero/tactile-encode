@@ -120,6 +120,27 @@ def test_unperturbed_base_outputs_are_the_librarys(library):
         env.close()
 
 
+def test_the_base_grips_at_the_episodes_hold_level(library):
+    """The hand base is the synergy at the hold level times the library's scalar; a zero residual passes it on."""
+    from mjlab.envs import ManagerBasedRlEnv
+
+    env = ManagerBasedRlEnv(hammer_env_cfg(1000.0, library=library, num_envs=4, perturb=False, assign="sequential",
+                                           hold_level=(0.4, 0.4)), device="cuda:0")
+    try:
+        env.reset()
+        cmd = env.command_manager.get_term("base")
+        act = env.action_manager.get_term("residual")
+        zero = torch.zeros(4, 60, device=env.device)
+        for k in range(1, 50):
+            env.step(zero)
+            i = torch.full((4,), k, device=env.device)
+            torch.testing.assert_close(cmd.s_now, 0.4 * cmd.lib.s[cmd.entry, i])
+            torch.testing.assert_close(act.command, act.base)
+        assert torch.allclose(cmd.level, torch.full_like(cmd.level, 0.4))
+    finally:
+        env.close()
+
+
 def test_stale_inputs_decay_the_residual(library):
     env = make_env(library, 2, perturb=False, assign="sequential")
     try:

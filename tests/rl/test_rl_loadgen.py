@@ -294,3 +294,84 @@ def test_short_teacher_ppo_run(tmp_path):
         assert runner.alg.entropy_coef < 1e-3  # the schedule moved
     finally:
         env.close()
+
+
+# ---------------------------------------------------------------------------------------------- the C3 mix (GPU)
+
+
+@pytest.fixture(scope="module")
+def library(tmp_path_factory):
+    """A small base library: two episodes of two swings (CPU, ~1 min)."""
+    from tactile_sim.behaviors.base_library import assemble, record_episode
+
+    path = tmp_path_factory.mktemp("lib") / "lib.npz"
+    np.savez_compressed(path, **assemble([record_episode(s, n_strikes=2) for s in (0, 1)]))
+    return str(path)
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_c3_mixes_hammer_and_load_generator_episodes(library):
+    pytest.importorskip("mjlab")
+    from mjlab.envs import ManagerBasedRlEnv
+
+    from tactile_rl.mdp.observations import PRIVILEGED_BY_TASK
+    from tactile_rl.tasks.residual import residual_env_cfg
+    from tactile_sim.control.obs_spec import TASKS, obs_dim, obs_slices
+
+    env = ManagerBasedRlEnv(residual_env_cfg(1000.0, library=library, num_envs=64, start_stage=3, max_stage=3),
+                            device="cuda:0")
+    try:
+        obs, _ = env.reset()
+        assert obs["teacher"].shape == (64, obs_dim(1) + sum(PRIVILEGED_BY_TASK["mixed"].values()))
+        cmd = env.command_manager.get_term("base")
+        ham = cmd.is_hammer
+        assert 0.4 < float(ham.float().mean()) < 0.95  # 70 % hammer
+        assert cmd.hold_level == (0.3, 0.8) and env._tactile_dr.scale == 1.0
+        # the task block says which, a hammer env has no loads, its hold level is drawn
+        task = obs["student"][:, obs_slices(1)["task"]]
+        assert torch.equal(task.argmax(1), torch.where(ham, TASKS.index("hammer"), TASKS.index("loadgen")))
+        assert not bool(cmd.lg.gen.valid[ham].any())
+        lv = torch.where(ham, cmd.ham.level, cmd.lg.level)
+        assert float(lv.min()) >= 0.3 - 1e-6 and float(lv.max()) <= 0.8 + 1e-6
+        act = env.action_manager.get_term("residual")
+        zero = torch.zeros(64, env.action_manager.total_action_dim, device=env.device)
+        total = torch.zeros(64, device=env.device)
+        for _ in range(400):
+            ham_now = cmd.is_hammer.clone()
+            _, rew, *_ = env.step(zero)
+            total += rew
+            torch.testing.assert_close(act.command, act.base)
+            # only a hammer episode can end with its entry
+            assert not bool((env.termination_manager.get_term("base_done") & ~ham_now).any())
+        assert bool(torch.isfinite(total).all())
+    finally:
+        env.close()
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_the_curriculum_reaches_c3(library):
+    pytest.importorskip("mjlab")
+    from mjlab.envs import ManagerBasedRlEnv
+
+    from tactile_rl.tasks.residual import residual_env_cfg
+
+    env = ManagerBasedRlEnv(residual_env_cfg(1000.0, library=library, num_envs=16, start_stage=2, max_stage=3,
+                                             min_episodes=10, min_events=10), device="cuda:0")
+    try:
+        env.reset()
+        cur = env.curriculum_manager._term_cfgs[0].func
+        cmd = env.command_manager.get_term("base")
+        assert cur.stage == 2 and cmd.hammer_frac == 0.0
+        # 75 % within target: C2 holds until its time cap, then C3 begins anyway
+        cur.win = torch.tensor([100.0, 0.0, 200.0, 150.0], dtype=torch.float64, device=env.device)
+        cur._evaluate()
+        assert cur.stage == 2
+        cur.stage_cap_s = 0.0
+        cur.win = torch.tensor([100.0, 0.0, 200.0, 150.0], dtype=torch.float64, device=env.device)
+        cur._evaluate()
+        assert cur.stage == 3 and cur.capped == 1 and cur.history[-1]["how"] == "capped"
+        assert cmd.hammer_frac == pytest.approx(0.7) and cmd.hold_level == (0.3, 0.8)
+    finally:
+        env.close()
