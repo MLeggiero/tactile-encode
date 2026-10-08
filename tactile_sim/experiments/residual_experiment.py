@@ -4,15 +4,18 @@
     python -m tactile_sim.experiments.residual_experiment run --stage E1 --workers 14 [--policy NAME=PATH ...]
     python -m tactile_sim.experiments.residual_experiment report --stage E1
 
-Every episode is the Vega U + WUJI hammering with the light hammer under residual_config: MIT drives, the TaxelScan
-fast profile, the scripted swing as the base (SwingBase: synergy hand command, arm lookahead, forecast), and the
-residual loop. A seed fixes one residual_dr draw, shared by every condition, so conditions are compared pairwise.
-One JSON per episode at runs/residual/<stage>/<condition>/seed<k>.json; a run skips files that exist.
+Every episode is the Vega U + WUJI under residual_config: MIT drives, the TaxelScan fast profile, a scripted base,
+and the residual loop. --task hammer (default): the light hammer, the scripted swing as the base (SwingBase:
+synergy hand command, arm lookahead, forecast), `strikes` strikes. --task drill: the pistol driver driving a
+screw, the scripted feed as the base (DrillBase: the trigger pulled by the index finger, the plant's seating and
+clutch forecast), one screw per episode. A seed fixes one residual_dr draw, shared by every condition, so
+conditions are compared pairwise. One JSON per episode at runs/residual/[drill/]<stage>/<condition>/seed<k>.json;
+a run skips files that exist.
 
 Conditions (E1): "base" (the residual's base alone: constant grip, no anticipation, residual zero), "template_oracle"
 (the human grip template timed by the sim-only impact flag), "reactive_taxel" (the slip-ablation taxel detector
 raising the grip), "squeeze" (a constant grip at the hand's pre-impact level), and one "residual:<name>" per policy
-given with --policy.
+given with --policy. The drill has no oracle template (its loads have no impact flag).
 """
 
 from __future__ import annotations
@@ -52,6 +55,12 @@ SWEEPS = {
 # E6: held-out physics, outside the training ranges
 HELD_OUT = {"heavy_head": {"hammer": {"head_mass": 0.8}}, "slick_skin": {"gripper": {"hand_friction": 0.5}},
             "stiff_nail": {"plant": {"resistance_0": 400.0}}, "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
+HELD_OUT_DRILL = {"heavy_battery": {"drill": {"pistol_battery_mass": 0.75}},
+                  "slick_skin": {"gripper": {"hand_friction": 0.5}},
+                  "strong_clutch": {"drill": {"clutch_torque": 1.9}},
+                  "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
+TASKS = ("hammer", "drill")
+DRILL_T_MAX = 10.0  # s per screw
 
 
 @dataclass(frozen=True)
@@ -61,7 +70,7 @@ class Condition:
     policy: str = "zero"  # "zero" or a path to an exported policy
 
 
-def e1_conditions(policies: dict[str, str] | None = None) -> list[Condition]:
+def e1_conditions(policies: dict[str, str] | None = None, task: str = "hammer") -> list[Condition]:
     const = {"swing": {"grip_profile": "constant"}}
     out = [
         Condition("base", const),
@@ -76,6 +85,8 @@ def e1_conditions(policies: dict[str, str] | None = None) -> list[Condition]:
 
         rate = PolicyMeta.read(path).rate  # the loop runs at the policy's own rate
         out.append(Condition(f"residual:{name}", {**const, "residual": {"rate": rate}}, policy=path))
+    if task == "drill":
+        out = [c for c in out if c.name != "template_oracle"]
     return out
 
 
@@ -84,16 +95,17 @@ class Job:
     stage: str
     condition: Condition
     seed: int
+    task: str = "hammer"
 
     def path(self, root: Path) -> Path:
         safe = self.condition.name.replace(":", "_").replace("@", "__").replace("=", "-")
-        return root / self.stage / safe / f"seed{self.seed}.json"
+        return task_root(root, self.task) / self.stage / safe / f"seed{self.seed}.json"
 
     def config(self) -> tuple[SimConfig, dict]:
         from tactile_sim.sim.randomize import apply_residual_dr, residual_dr
 
         st = STAGES[self.stage]
-        cfg = residual_config(base=fast_config() if st["fast"] else None)
+        cfg = residual_config(base=fast_config() if st["fast"] else None, task=self.task)
         dr = residual_dr(cfg, np.random.default_rng(self.seed))
         cfg = apply_residual_dr(cfg, dr)
         if self.condition.overrides:
@@ -101,13 +113,20 @@ class Job:
         return cfg, dr
 
 
-def stage_conditions(stage: str, policies: dict[str, str] | None = None) -> list[Condition]:
+def task_root(root: Path, task: str) -> Path:
+    """Where a task's results live: the hammer's at the root (as before the drill existed), the drill's under drill/."""
+    if task not in TASKS:
+        raise ValueError(f"unknown task {task!r} (expected one of {TASKS})")
+    return root if task == "hammer" else root / task
+
+
+def stage_conditions(stage: str, policies: dict[str, str] | None = None, task: str = "hammer") -> list[Condition]:
     """The conditions a stage runs. E1/E3/smoke: the baselines plus every policy (E3 passes one per rate); E4: every
     policy (each run with its sidecar's mask); E5: the base and each policy under every sweep point; E6: the base
     and each policy under each held-out physics."""
     if stage in ("smoke", "E1", "E3"):
-        return e1_conditions(policies)
-    pol = e1_conditions(policies)
+        return e1_conditions(policies, task)
+    pol = e1_conditions(policies, task)
     base = pol[0]
     pol = [c for c in pol if c.name.startswith("residual:")]
     if stage == "E4":
@@ -129,7 +148,7 @@ def stage_conditions(stage: str, policies: dict[str, str] | None = None) -> list
                 for c in [base] + pol:
                     out.append(Condition(f"{c.name}@{key}={tag}", _merge(c.overrides, ov), c.policy))
     elif stage == "E6":
-        for key, ov in HELD_OUT.items():
+        for key, ov in (HELD_OUT_DRILL if task == "drill" else HELD_OUT).items():
             for c in [base] + pol:
                 out.append(Condition(f"{c.name}@{key}", _merge(c.overrides, ov), c.policy))
     return out
@@ -142,12 +161,13 @@ def _merge(a: dict, b: dict) -> dict:
     return out
 
 
-def make_jobs(stage: str, policies: dict[str, str] | None = None, only: str | None = None) -> list[Job]:
+def make_jobs(stage: str, policies: dict[str, str] | None = None, only: str | None = None,
+              task: str = "hammer") -> list[Job]:
     st = STAGES[stage]
-    conds = stage_conditions(stage, policies)
+    conds = stage_conditions(stage, policies, task)
     if only:
         conds = [c for c in conds if c.name == only]
-    return [Job(stage, c, s) for c in conds for s in range(st["seeds"])]
+    return [Job(stage, c, s, task) for c in conds for s in range(st["seeds"])]
 
 
 def load_policy(spec: str):
@@ -201,29 +221,58 @@ def _strike_row(r, rec: Recorder) -> dict:
             "reaction_ms": rec.reaction_ms(r.t_contact_truth)}
 
 
-def run_job(job: Job, root: str = str(ROOT)) -> dict:
+def _hammer_episode(cfg: SimConfig, job: Job):
+    """The scripted swing: testbed, and run(recorder) -> summary and per-strike rows."""
     from tactile_sim.behaviors.base_sources import SwingBase
     from tactile_sim.episode import Episode
 
+    ep = Episode(cfg, seed=job.seed)
+    ep.tb.residual.base_fn = SwingBase(ep.tb, ep.swing, rng=np.random.default_rng(10_000 + job.seed))
+
+    def run(rec: Recorder) -> dict:
+        res = ep.run(STAGES[job.stage]["strikes"])
+        return {"summary": res.summary, "strikes": [_strike_row(r, rec) for r in res.strikes]}
+
+    return ep.tb, run
+
+
+def _drill_episode(cfg: SimConfig, job: Job):
+    """The scripted drill feed driving one screw: testbed, and run(recorder) -> summary (seated or not, cam-outs,
+    the tool's slip in the hand, push, effort) and the reaction to the seating (the clutch's first ratchet)."""
+    from tactile_sim.behaviors.base_sources import DrillBase
+    from tactile_sim.tool_task import ToolTask
+
+    tt = ToolTask(cfg, seed=job.seed, t_max=DRILL_T_MAX)
+    tt.tb.residual.base_fn = DrillBase(tt.tb, tt.behavior, rng=np.random.default_rng(10_000 + job.seed))
+
+    def run(rec: Recorder) -> dict:
+        s = dict(tt.run().summary)
+        s["aim_turn_deg"] = math.degrees(tt.behavior.aim_correction[0])
+        return {"summary": s, "events": [{"kind": "seated", "t": s["t_done"], "reaction_ms": rec.reaction_ms(
+            s["t_done"])}]}
+
+    return tt.tb, run
+
+
+def run_job(job: Job, root: str = str(ROOT)) -> dict:
     out = job.path(Path(root))
     if out.exists():
         return {"status": "skip", "path": str(out)}
     t0 = time.time()
     cfg, dr = job.config()
-    ep = Episode(cfg, seed=job.seed)
-    tb = ep.tb
+    tb, run = (_drill_episode if job.task == "drill" else _hammer_episode)(cfg, job)
     tb.sensors.set_noise_scale(dr["_runtime"]["sensor_noise_scale"])
-    tb.residual.base_fn = SwingBase(tb, ep.swing, rng=np.random.default_rng(10_000 + job.seed))
     policy = load_policy(job.condition.policy)
     tb.residual.check_policy(policy)
     tb.residual.policy = policy
     rec = Recorder(tb)
     tb.sched.register("recorder", 1000.0, rec)
-    res = ep.run(STAGES[job.stage]["strikes"])
+    result = run(rec)
     r = tb.residual
     payload = {
-        "job": {"stage": job.stage, "condition": job.condition.name, "policy": job.condition.policy, "seed": job.seed},
-        "summary": res.summary, "strikes": [_strike_row(s, rec) for s in res.strikes],
+        "job": {"task": job.task, "stage": job.stage, "condition": job.condition.name,
+                "policy": job.condition.policy, "seed": job.seed},
+        **result,
         "residual": {"ticks": r.n_ticks, "stale": r.n_stale, "nonfinite": r.n_nonfinite, "i2t": rec.i2t,
                      "i_peak_ratio": rec.i_peak, "t_max_winding": float(tb.world.hand.drive.T.max())},
         "dropped": bool(tb.grip.dropped), "dr": dr, "wall_s": time.time() - t0,
@@ -278,21 +327,32 @@ def run_all(jobs: list[Job], root: Path, workers: int) -> None:
                   flush=True)
 
 
-def load_results(stage: str, root: Path = ROOT) -> list[dict]:
-    return [json.loads(p.read_text()) for p in sorted((root / stage).glob("*/seed*.json"))]
+def load_results(stage: str, root: Path = ROOT, task: str = "hammer") -> list[dict]:
+    return [json.loads(p.read_text()) for p in sorted((task_root(root, task) / stage).glob("*/seed*.json"))]
+
+
+METRICS = {"hammer": ("slip_rot_deg", "slip_trans_mm", "advance_mm", "drops", "i2t", "i_peak"),
+           "drill": ("success", "cam_outs", "slip_rot_deg", "slip_trans_mm", "t_seat", "drops", "i2t", "i_peak")}
 
 
 def per_seed(results: list[dict]) -> dict[str, dict[int, dict]]:
-    """condition -> seed -> metrics averaged over that episode's strikes."""
+    """condition -> seed -> metrics: per strike averaged over the episode (hammer), or the episode's (drill)."""
     out: dict[str, dict[int, dict]] = {}
     for r in results:
-        s = r["strikes"]
-        if not s:
-            continue
-        m = {"slip_rot_deg": float(np.mean([x["slip_rot_deg"] for x in s])),
-             "slip_trans_mm": float(np.mean([x["slip_trans_mm"] for x in s])),
-             "advance_mm": float(np.mean([x["advance_mm"] for x in s])),
-             "drops": float(r["dropped"]), "i2t": r["residual"]["i2t"], "i_peak": r["residual"]["i_peak_ratio"]}
+        effort = {"i2t": r["residual"]["i2t"], "i_peak": r["residual"]["i_peak_ratio"]}
+        if r["job"].get("task", "hammer") == "drill":
+            s = r["summary"]
+            m = {"success": float(s["done"] and not s["lost"]), "cam_outs": float(s["cam_outs"]),
+                 "slip_rot_deg": math.degrees(s["max_slip_rot"]), "slip_trans_mm": 1e3 * s["max_slip_trans"],
+                 "t_seat": float(s["t_done"]), "drops": float(s["lost"]), **effort}
+        else:
+            st = r["strikes"]
+            if not st:
+                continue
+            m = {"slip_rot_deg": float(np.mean([x["slip_rot_deg"] for x in st])),
+                 "slip_trans_mm": float(np.mean([x["slip_trans_mm"] for x in st])),
+                 "advance_mm": float(np.mean([x["advance_mm"] for x in st])), "drops": float(r["dropped"]),
+                 **effort}
         out.setdefault(r["job"]["condition"], {})[r["job"]["seed"]] = m
     return out
 
@@ -305,18 +365,21 @@ def paired_bootstrap(a: list[float], b: list[float], n: int = 4000, seed: int = 
     return float(d.mean()), float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
 
 
-def report(stage: str, root: Path = ROOT, ref: str = "base") -> str:
-    data = per_seed(load_results(stage, root))
+def report(stage: str, root: Path = ROOT, ref: str = "base", task: str = "hammer") -> str:
+    data = per_seed(load_results(stage, root, task))
     if ref not in data:
-        return f"no '{ref}' results under {root / stage}"
-    keys = ("slip_rot_deg", "slip_trans_mm", "advance_mm", "drops", "i2t", "i_peak")
+        return f"no '{ref}' results under {task_root(root, task) / stage}"
+    keys = METRICS[task]
     lines = ["| condition | n | " + " | ".join(keys) + " |", "|---" * (len(keys) + 2) + "|"]
     for cond, seeds in sorted(data.items()):
-        common = sorted(set(seeds) & set(data[ref]))
         cells = []
         for k in keys:
-            mean = np.mean([seeds[s][k] for s in seeds])
-            if cond == ref or not common:
+            mean = np.nanmean([seeds[s][k] for s in seeds]) if any(np.isfinite(seeds[s][k]) for s in seeds) \
+                else float("nan")
+            # pairs where both are finite (a screw that never seated has no seating time)
+            common = [s for s in sorted(set(seeds) & set(data[ref])) if np.isfinite(seeds[s][k]) and
+                      np.isfinite(data[ref][s][k])]
+            if cond == ref or len(common) < 2:
                 cells.append(f"{mean:.3g}")
             else:
                 d, lo, hi = paired_bootstrap([data[ref][s][k] for s in common], [seeds[s][k] for s in common])
@@ -329,13 +392,14 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=("list", "run", "report"))
     ap.add_argument("--stage", default="smoke", choices=sorted(STAGES))
+    ap.add_argument("--task", default="hammer", choices=TASKS)
     ap.add_argument("--workers", type=int, default=14)
     ap.add_argument("--policy", action="append", default=[], help="NAME=PATH of an exported residual policy")
     ap.add_argument("--only", default=None, help="run one condition")
     ap.add_argument("--root", default=str(ROOT))
     a = ap.parse_args(argv)
     policies = dict(p.split("=", 1) for p in a.policy)
-    jobs = make_jobs(a.stage, policies, a.only)
+    jobs = make_jobs(a.stage, policies, a.only, a.task)
     root = Path(a.root)
     if a.cmd == "list":
         for j in jobs:
@@ -343,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
     elif a.cmd == "run":
         run_all(jobs, root, a.workers)
     else:
-        print(report(a.stage, root))
+        print(report(a.stage, root, task=a.task))
     return 0
 
 

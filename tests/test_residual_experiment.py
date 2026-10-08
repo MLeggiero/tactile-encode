@@ -68,3 +68,33 @@ def test_later_stages_build_their_conditions():
     heavy = next(c for c in e6 if c.name == "base@heavy_head")
     assert heavy.overrides["hammer"]["head_mass"] == 0.8
     assert [c.name for c in stage_conditions("E4", {"t": tiny})] == ["residual:t"]
+
+
+def test_drill_jobs_have_their_own_conditions_and_place():
+    from pathlib import Path
+
+    from tactile_sim.experiments.residual_experiment import stage_conditions
+
+    jobs = make_jobs("smoke", task="drill")
+    assert {j.condition.name for j in jobs} == {"base", "reactive_taxel", "squeeze"}  # no impact-flag oracle
+    j = jobs[0]
+    assert j.path(Path("r")).parts[:3] == ("r", "drill", "smoke")
+    cfg, dr = j.config()
+    assert cfg.residual.task == "drill" and cfg.plant.kind == "drill" and "drill" in dr
+    assert cfg.drill.trigger_mode == "finger"
+    e6 = [c.name for c in stage_conditions("E6", task="drill")]
+    assert "base@strong_clutch" in e6 and "base@heavy_head" not in e6
+
+
+@requires_wuji
+def test_a_drill_smoke_episode_writes_metrics_and_reports(tmp_path):
+    job = next(j for j in make_jobs("smoke", task="drill") if j.condition.name == "base" and j.seed == 0)
+    assert run_job(job, str(tmp_path))["status"] == "ok"
+    res = load_results("smoke", tmp_path, task="drill")
+    assert len(res) == 1
+    r = res[0]
+    assert r["job"]["task"] == "drill" and r["residual"]["ticks"] > 1000 and len(r["residual"]) > 0
+    m = per_seed(res)["base"][0]
+    assert set(m) >= {"success", "cam_outs", "slip_rot_deg", "t_seat", "i2t"}
+    assert m["success"] in (0.0, 1.0) and np.isfinite(m["slip_rot_deg"])
+    assert "| base | 1 |" in report("smoke", tmp_path, task="drill")
