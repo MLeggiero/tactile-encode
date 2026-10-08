@@ -96,10 +96,16 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
         return cfg
     if mode != "nominal":
         raise ValueError(f"unknown grasp_mass {mode!r} (expected 'actual' or 'nominal')")
-    from tactile_sim.config import HammerCfg
+    from tactile_sim.config import LIGHT_HAMMER_OVERRIDES, HammerCfg
 
-    nom = HammerCfg()
-    return cfg.replace(hammer={"head_mass": nom.head_mass, "handle_mass": nom.handle_mass})
+    light = LIGHT_HAMMER_OVERRIDES["hammer"]
+    h = cfg.hammer
+    if h.model == light["model"] and h.head_radius == light["head_radius"] and h.handle_len == light["handle_len"]:
+        nom = {"head_mass": light["head_mass"], "handle_mass": light["handle_mass"]}
+    else:
+        d = HammerCfg()
+        nom = {"head_mass": d.head_mass, "handle_mass": d.handle_mass}
+    return cfg.replace(hammer=nom)
 
 
 def cache_path(cfg: SimConfig, hand_path: Path) -> Path:

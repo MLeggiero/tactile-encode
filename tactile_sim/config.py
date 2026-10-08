@@ -745,3 +745,29 @@ def fast_config(**sections: dict[str, Any]) -> SimConfig:
         sensors={"ft_rate": 2000.0, "accel_rate": 4000.0, "accel_bandwidth": 1500.0, "ft_bandwidth": 800.0},
     )
     return cfg.replace(**sections) if sections else cfg
+
+
+# A light claw hammer as primitives: an 8 oz (~230 g) steel head and a 100 g handle, 0.33 kg in all. The WUJI Hand 2
+# at its rated torques cannot hold the 665 g YCB hammer through a blow (paper/sections/methods.tex), and primitive
+# shapes keep the GPU taxel model analytic. Training randomizes the head mass over 0.25-0.7 kg. Its nail is a small
+# one: the default nail (450 N before it moves, set for the 665 g hammer) stops the light hammer's ~370 N blows
+# dead; at 150 N + 5 kN/m the Vega U's ~1.1 m/s blows (~190 N peak) drive it ~2 mm a strike, 20 mm in ~10.
+LIGHT_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
+    "hammer": {"model": "primitive", "head_mass": 0.23, "handle_mass": 0.10, "head_radius": 0.011,
+               "head_half_len": 0.04, "handle_radius": 0.013, "handle_len": 0.28, "grip_from_head": 0.17},
+    "plant": {"resistance_0": 150.0, "resistance_per_m": 5000.0},
+}
+
+
+def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,
+                    **sections: dict[str, Any]) -> SimConfig:
+    """The residual experiments' configuration: WUJI Hand 2 with MIT-mode drives on the robot (default the Vega U),
+    the TaxelScan fast profile at its target 7.8 us per taxel, the light hammer with grasps cached at its nominal
+    masses, and the residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics."""
+    cfg = hand_config("wuji2", base or SimConfig(), robot=robot)
+    cfg = cfg.replace(**LIGHT_HAMMER_OVERRIDES).replace(
+        gripper={"hand_control": "mit", "grasp_mass": "nominal"},
+        sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
+        residual={"enabled": True, "rate": rate},
+    )
+    return cfg.replace(**sections) if sections else cfg
