@@ -1,0 +1,196 @@
+"""The residual hand policy's interface (obs_spec) and its loop on the testbed (control.residual_l2): layout,
+action map, per-second slew, safety (non-finite actions, stale inputs, the drill-trigger interlock), and a zero
+policy passing the base command through unchanged."""
+
+import numpy as np
+import pytest
+
+from tactile_sim.assets.fetch_hands import hand_available
+from tactile_sim.config import fast_config, hand_config
+from tactile_sim.control.obs_spec import (
+    N_JOINTS,
+    ActionSpec,
+    JointParams,
+    assert_deployable,
+    compose,
+    forecast_vector,
+    obs_dim,
+    obs_slices,
+    offsets,
+    slew,
+    spec_hash,
+    stack_for,
+)
+from tactile_sim.sim.scheduler import RateScheduler
+from tactile_sim.sim.wuji_drive import joint_group
+
+requires_wuji = pytest.mark.skipif(not hand_available("wuji2"), reason="WUJI Hand 2 not cached")
+
+FINGERS = ("index_finger", "middle_finger", "ring_finger", "pinky")
+NAMES = ([f"r_thumb_{j}" for j in ("cmc_flex", "cmc_abd", "mcp", "ip")] +
+         [f"r_{f}_{j}" for f in FINGERS for j in ("mcp_flex", "mcp_abd", "pip", "dip")])
+RATED = {"mcp_flex": 2.0, "mcp_abd": 0.2, "pip_dip": 0.3, "thumb_cmc": 0.6, "thumb_mcp_ip": 0.3}
+JP = JointParams.for_joints(NAMES, [RATED[joint_group(n)] for n in NAMES], (0.37, 0.43, 0.22, 0.55, 0.22),
+                            np.full(20, 3e-4))
+SPEC = ActionSpec()
+
+
+def test_observation_layout():
+    fast = 448 + 66 + 8 + 20 + 20
+    assert obs_dim(1) == 740 and obs_dim(4) == 740 + 3 * fast
+    for stack in (1, 2, 4, 10):
+        sl = list(obs_slices(stack).values())
+        assert sl[0].start == 0 and sl[-1].stop == obs_dim(stack)
+        assert all(a.stop == b.start for a, b in zip(sl, sl[1:], strict=False))
+    assert [stack_for(r) for r in (1000, 500, 250, 100)] == [1, 2, 4, 10]
+
+
+def test_zero_action_reproduces_the_base_exactly():
+    rng = np.random.default_rng(0)
+    base = np.stack([rng.uniform(-1, 1, 20), rng.uniform(-1, 1, 20), rng.choice([0.0, 0.3, 1.0], 20),
+                     rng.uniform(0, 0.05, 20), rng.uniform(-0.3, 0.3, 20)])
+    out = compose(SPEC, JP, base, offsets(SPEC, JP, np.zeros(60)))
+    assert np.array_equal(out, base)
+
+
+def test_stiffness_offset_is_additive_and_damping_follows():
+    base = np.zeros((5, 20))
+    base[2] = 0.0  # a closing joint of the synergy: torque-driven, no stiffness
+    hi = compose(SPEC, JP, base, offsets(SPEC, JP, np.concatenate([np.zeros(20), np.ones(20), np.zeros(20)])))
+    assert hi[2] == pytest.approx(3.0 * JP.kp_nom)  # the residual can stiffen a zero-stiffness base
+    assert hi[3] == pytest.approx(2 * SPEC.zeta * np.sqrt(JP.i_eff) * np.sqrt(3.0 * JP.kp_nom))
+    lo = compose(SPEC, JP, base, offsets(SPEC, JP, np.concatenate([np.zeros(20), -np.ones(20), np.zeros(20)])))
+    assert np.all(lo[2] == 0.0) and np.all(lo[3] >= 0.0)  # never negative stiffness or damping
+    q = compose(SPEC, JP, base, offsets(SPEC, JP, np.concatenate([np.ones(20), np.zeros(40)])))[0]
+    assert q == pytest.approx(np.asarray(SPEC.dq_max)[JP.group])
+
+
+def test_slew_limit_is_per_second():
+    target = offsets(SPEC, JP, np.ones(60))
+    a = np.zeros((3, N_JOINTS))
+    for _ in range(4):
+        a = slew(SPEC, JP, a, target, 0.001)
+    b = slew(SPEC, JP, np.zeros((3, N_JOINTS)), target, 0.004)
+    assert a == pytest.approx(b)  # four 1 ms steps move as far as one 4 ms step
+    assert b[0] == pytest.approx(np.minimum(target[0], SPEC.dq_rate * 0.004))
+
+
+def test_forecast_hash_and_deployability():
+    assert np.all(forecast_vector(False) == 0) and forecast_vector(True, 0.1).shape == (13,)
+    assert spec_hash(stack=1) != spec_hash(stack=4)
+    assert spec_hash() != spec_hash(ActionSpec(tau_frac=0.5))
+    assert_deployable(["pressure_palm", "hand_q", "hand_current"])
+    for bad in ("ft", "pad_acc_palm", "hammer_acc", "tau_ext"):
+        with pytest.raises(ValueError):
+            assert_deployable(["hand_q", bad])
+
+
+@pytest.mark.parametrize("dt", [0.00025, 0.000125])
+def test_every_ablation_rate_divides_the_physics_rate(dt):
+    s = RateScheduler(dt)
+    assert [s.steps_for(r) for r in (1000, 500, 250, 100)] == [round(1 / (r * dt)) for r in (1000, 500, 250, 100)]
+
+
+# ---------------------------------------------------------------- on the testbed
+
+
+def res_cfg(rate=1000.0, **res):
+    return hand_config("wuji2", fast_config(), gripper={"hand_control": "mit"},
+                       sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
+                       residual={"enabled": True, "rate": rate, **res})
+
+
+@pytest.fixture(scope="module")
+def res_tb():
+    from tactile_sim.sim.testbed import Testbed
+
+    return Testbed(res_cfg())
+
+
+class Const:
+    def __init__(self, a):
+        self.a = np.asarray(a, dtype=float)
+
+    def reset(self):
+        pass
+
+    def __call__(self, obs):
+        return self.a
+
+
+@requires_wuji
+def test_zero_policy_passes_the_base_through(res_tb):
+    tb = res_tb
+    r = tb.residual
+    r.policy = Const(np.zeros(60))
+    tb.reset(0)
+    p0, _ = tb.world.hammer_in_hand()
+    tb.run_for(0.01)
+    startup = r.n_stale  # no taxel frame or joint readback has arrived in the first milliseconds
+    assert startup <= 3
+    tb.run_for(0.29)
+    p1, _ = tb.world.hammer_in_hand()
+    assert r.n_ticks == pytest.approx(300, abs=1) and tb.sched.rate("residual") == 1000.0
+    assert np.array_equal(r.last_cmd.array(), r.last_base)
+    assert np.linalg.norm(p1 - p0) < 0.2e-3
+    obs = r.last_obs
+    assert obs.shape == (obs_dim(1),) and np.all(np.isfinite(obs))
+    codes = obs[obs_slices(1)["taxel_codes"]]
+    assert codes.min() >= 0.0 and codes.max() <= 1.0 and codes.max() > 0.0
+    assert r.n_stale == startup and r.n_nonfinite == 0
+
+
+@requires_wuji
+def test_nonfinite_actions_and_stale_inputs_zero_the_residual(res_tb):
+    tb = res_tb
+    r = tb.residual
+    tb.reset(0)
+    r.policy = Const(np.full(60, np.nan))
+    tb.run_for(0.02)
+    assert r.n_nonfinite >= 19 and np.all(r.off == 0.0)
+    r.policy = Const(np.full(60, 0.5))
+    tb.run_for(0.05)
+    built = np.abs(r.off).max()
+    assert built > 0
+    stale_taxel = r.cfg.stale_taxel
+    r.cfg.stale_taxel = -1.0  # every frame now counts as stale
+    try:
+        tb.run_for(0.1)
+    finally:
+        r.cfg.stale_taxel = stale_taxel
+    assert np.abs(r.off).max() < 0.05 * built and r.n_stale >= 99
+    r.policy = Const(np.zeros(60))
+
+
+@requires_wuji
+def test_trigger_joints_only_open_while_the_trigger_is_disabled(res_tb):
+    r = res_tb.residual
+    j = r.trig
+    assert len(j) == 3
+    off = np.zeros((3, N_JOINTS))
+    off[0, j] = 0.2 * r.close_dir[j]  # close the finger hard
+    off[2, j] = 1.0 * r.close_dir[j]
+    shut = r._trigger_guard(off, trigger=False)
+    assert np.all(r.close_dir[j] * shut[0, j] <= 0) and np.all(r.close_dir[j] * shut[2, j] <= 0)
+    enabled = r._trigger_guard(off, trigger=True)
+    assert np.all(np.abs(enabled[0, j]) <= r.cfg.trigger_dq_max + 1e-12)
+    assert np.all(r.close_dir[j] * enabled[2, j] <= r.cfg.trigger_tau[1] + 1e-12)
+    opening = -off
+    assert np.allclose(r._trigger_guard(opening, trigger=False)[0, j], -r.cfg.trigger_dq_max * r.close_dir[j])
+    others = np.setdiff1d(np.arange(20), j)
+    assert np.array_equal(r._trigger_guard(off, False)[:, others], off[:, others])
+
+
+@requires_wuji
+def test_a_slower_policy_sees_every_millisecond():
+    from tactile_sim.sim.testbed import Testbed
+
+    tb = Testbed(res_cfg(rate=250.0))
+    r = tb.residual
+    assert r.stack == 4 and tb.sched.rate("residual") == 250.0 and tb.sched.rate("residual_sample") == 1000.0
+    tb.reset(0)
+    tb.run_for(0.1)
+    obs = r.last_obs
+    assert obs.shape == (obs_dim(4),) and r.n_ticks == pytest.approx(25, abs=1)
+    cur = obs[obs_slices(4)["hand_current"]].reshape(4, 20)
+    assert np.all(np.isfinite(cur)) and len({c.tobytes() for c in cur}) == 4  # four distinct 1 kHz samples

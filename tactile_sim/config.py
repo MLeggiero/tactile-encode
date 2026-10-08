@@ -508,6 +508,26 @@ class ReactiveCfg:
 
 
 @dataclass
+class ResidualCfg:
+    """The residual hand policy (L2) on the testbed (tactile_sim.control.residual_l2): it reads the robot's sensors,
+    adds bounded offsets to the base hand command and sends the WUJI drives MIT commands. Needs
+    GripperCfg.hand_control = "mit" and SensorsCfg.ts_model = "rev3"."""
+
+    enabled: bool = False
+    rate: float = 1000.0  # Hz the policy decides at (1000, 500, 250, 100); fast inputs are sampled at 1 kHz
+    phase: float = 0.0  # s, offset of the policy ticks from the SDK cycle
+    policy: str = "zero"  # "zero" (base only), or a policy object passed to ResidualHandL2
+    task: str = "hammer"  # obs_spec.TASKS
+    stale_taxel: float = 0.005  # s: the newest frame of any board older than this -> the residual decays
+    stale_joint: float = 0.003  # s: hand joint readback older than this -> the residual decays
+    decay_tau: float = 0.020  # s
+    # drill trigger: residual on these joints is capped, and may only open while the base disables the trigger
+    trigger_joints: tuple[str, ...] = ("r_index_finger_mcp_flex", "r_index_finger_pip", "r_index_finger_dip")
+    trigger_dq_max: float = 0.05  # rad
+    trigger_tau: tuple[float, float] = (-0.1, 0.05)  # Nm, along the closing direction
+
+
+@dataclass
 class DRCfg:
     enabled: bool = False
     head_mass_scale: tuple[float, float] = (0.8, 1.2)
@@ -541,6 +561,7 @@ class SimConfig:
     controller: ControllerCfg = field(default_factory=ControllerCfg)
     swing: SwingCfg = field(default_factory=SwingCfg)
     reactive: ReactiveCfg = field(default_factory=ReactiveCfg)
+    residual: ResidualCfg = field(default_factory=ResidualCfg)
     dr: DRCfg = field(default_factory=DRCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 

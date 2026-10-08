@@ -38,6 +38,11 @@ class Testbed:
             from tactile_sim.control.reactive_slip import ReactiveSlip
 
             self.reactive = ReactiveSlip(self)
+        self.residual = None
+        if self.cfg.residual.enabled:
+            from tactile_sim.control.residual_l2 import ResidualHandL2
+
+            self.residual = ResidualHandL2(self)
         self.sched = RateScheduler(self.world.dt)
         self.l2_callbacks = []
         self._build_schedule()
@@ -52,6 +57,13 @@ class Testbed:
         if self.reactive is not None:
             # after the grip loop and before the hand's joint law, so a detection reaches the joints this tick
             self.sched.register("reactive", self.cfg.reactive.rate, self.reactive.tick)
+        if self.residual is not None:
+            # the residual reads the 1 kHz inputs every millisecond and decides at its own rate, before the hand's
+            # host loop hands this tick's command to the SDK
+            r = self.cfg.residual
+            off = int(round(r.phase / self.world.dt))
+            self.sched.register("residual_sample", 1000.0, self.residual.sample, offset=off)
+            self.sched.register("residual", r.rate, self.residual.tick, offset=off)
         if self.world.hand.kind != "franka":
             # the hand's own joint controller (MIT mode), after the grip loop has set this tick's synergy
             self.sched.register("hand", self.cfg.gripper.hand_rate, self.world.hand.tick)
@@ -76,6 +88,8 @@ class Testbed:
         self.grip_boost = 0.0
         if self.reactive is not None:
             self.reactive.reset()
+        if self.residual is not None:
+            self.residual.reset()
         self.sched.reset()
         self.l1.hold_here(self.world.t)
         self.l1.grip_setpoint = self.cfg.controller.grip_hold
