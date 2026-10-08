@@ -579,6 +579,37 @@ class LoadGenCfg:
 
 
 @dataclass
+class ResidualDRCfg:
+    """Domain randomization for the residual experiments, drawn once per seed and shared by every condition run on
+    that seed (sim.randomize.residual_dr), and mirrored by the GPU training env. Ranges are (low, high), uniform
+    unless noted."""
+
+    head_mass: tuple[float, float] = (0.25, 0.70)  # kg
+    hand_friction: tuple[float, float] = (0.6, 1.4)
+    hand_solref_tc: tuple[float, float] = (0.0015, 0.004)  # s, hand-tool contact time constant
+    nail_resistance_0: tuple[float, float] = (80.0, 300.0)  # N
+    nail_resistance_per_m: tuple[float, float] = (2.5e3, 1.0e4)  # N/m
+    face_timeconst: tuple[float, float] = (0.001, 0.003)  # s
+    vdr_zeta0: tuple[float, float] = (0.2, 0.5)
+    cmd_latency: tuple[float, float] = (0.0005, 0.003)  # s, WUJI host -> driver
+    sdk_lpf_hz: tuple[float, float] = (50.0, 300.0)  # used with probability sdk_lpf_prob, else off
+    sdk_lpf_prob: float = 0.5
+    tau_i: tuple[float, float] = (0.0001, 0.0005)  # s
+    kt_scale: tuple[float, float] = (0.85, 1.15)  # rated current scale (Kt error)
+    effort_limit_ratio: tuple[float, float] = (0.9, 1.1)
+    t_amb: tuple[float, float] = (20.0, 35.0)  # degC
+    ts_gain_mismatch: tuple[float, float] = (0.05, 0.15)
+    ts_offset_lsb: tuple[float, float] = (2.0, 6.0)
+    ts_f_half: tuple[float, float] = (3.0, 8.0)  # N
+    ts_bandwidth: tuple[float, float] = (150.0, 500.0)  # Hz
+    ts_skin_depth: tuple[float, float] = (0.001, 0.003)  # m
+    ts_drop_prob: tuple[float, float] = (0.0, 0.01)
+    ts_bridge_hi: tuple[float, float] = (0.0005, 0.001)  # s, upper end of the host-bridge latency
+    servo_p_mult: tuple[float, float] = (0.7, 1.4)  # Vega arm stiffness multiplier
+    sensor_noise_scale: tuple[float, float] = (0.5, 2.0)  # log-uniform
+
+
+@dataclass
 class DRCfg:
     enabled: bool = False
     head_mass_scale: tuple[float, float] = (0.8, 1.2)
@@ -615,6 +646,7 @@ class SimConfig:
     residual: ResidualCfg = field(default_factory=ResidualCfg)
     forecast: ForecastCfg = field(default_factory=ForecastCfg)
     loadgen: LoadGenCfg = field(default_factory=LoadGenCfg)
+    residual_dr: ResidualDRCfg = field(default_factory=ResidualDRCfg)
     dr: DRCfg = field(default_factory=DRCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 

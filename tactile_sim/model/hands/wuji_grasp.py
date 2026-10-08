@@ -89,8 +89,9 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
 
 def grasp_config(cfg: SimConfig) -> SimConfig:
     """The configuration a grasp keyframe is synthesized and cached for. GripperCfg.grasp_mass = "nominal" puts the
-    tool's nominal masses in place of the configured ones, so randomized masses share one keyframe (the reset
-    settle then seats the tool under its actual mass); "actual" keys and synthesizes on the configured masses."""
+    tool's nominal masses and the hand's nominal skin contact (friction, solref) in place of the configured ones,
+    so randomized tools and skins share one keyframe (the reset settle then seats the tool under the actual
+    values); "actual" keys and synthesizes on the configured values."""
     mode = cfg.gripper.grasp_mass
     if mode == "actual":
         return cfg
@@ -105,7 +106,10 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
     else:
         d = HammerCfg()
         nom = {"head_mass": d.head_mass, "handle_mass": d.handle_mass}
-    return cfg.replace(hammer=nom)
+    from tactile_sim.config import GripperCfg
+
+    g = GripperCfg()
+    return cfg.replace(hammer=nom, gripper={"hand_friction": g.hand_friction, "hand_solref": g.hand_solref})
 
 
 def cache_path(cfg: SimConfig, hand_path: Path) -> Path:

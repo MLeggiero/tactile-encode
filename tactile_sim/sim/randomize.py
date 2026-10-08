@@ -53,3 +53,41 @@ def apply_runtime_dr(testbed, s: DRSample) -> None:
     observer = getattr(testbed.l1, "observer", None)
     if observer is not None:  # the position-interface L1 (Vega) has no joint-torque momentum observer
         observer.K = observer.K * s.observer_gain_scale
+
+
+def residual_dr(cfg: SimConfig, rng: np.random.Generator) -> dict[str, dict]:
+    """One draw of the residual experiments' randomization (ResidualDRCfg) as config overrides, for
+    `cfg.replace(**overrides)`. The same seed gives the same draw, so conditions are compared pairwise."""
+    r = cfg.residual_dr
+
+    def u(lohi):
+        return float(rng.uniform(*lohi))
+
+    lpf = u(r.sdk_lpf_hz) if rng.uniform() < r.sdk_lpf_prob else None
+    kt = u(r.kt_scale)
+    return {
+        "hammer": {"head_mass": u(r.head_mass)},
+        "gripper": {"hand_friction": u(r.hand_friction), "hand_solref": (u(r.hand_solref_tc), 1.0)},
+        "plant": {"resistance_0": u(r.nail_resistance_0), "resistance_per_m": u(r.nail_resistance_per_m),
+                  "vdr_zeta0": u(r.vdr_zeta0)},
+        # the hammer's face time constant lives in HammerCfg
+        "wuji": {"cmd_latency": u(r.cmd_latency), "sdk_lpf_hz": lpf, "tau_i": u(r.tau_i),
+                 "i_rated": tuple(x * kt for x in cfg.wuji.i_rated), "effort_limit_ratio": u(r.effort_limit_ratio),
+                 "t_amb": u(r.t_amb)},
+        "sensors": {"ts_gain_mismatch": u(r.ts_gain_mismatch), "ts_offset_lsb": u(r.ts_offset_lsb),
+                    "ts_f_half": u(r.ts_f_half), "ts_bandwidth": u(r.ts_bandwidth),
+                    "ts_skin_depth": u(r.ts_skin_depth), "ts_drop_prob": u(r.ts_drop_prob),
+                    "ts_bridge_latency": (cfg.sensors.ts_bridge_latency[0], u(r.ts_bridge_hi))},
+        "arm": {"servo_p_mult": u(r.servo_p_mult)},
+        "_runtime": {"sensor_noise_scale": float(np.exp(rng.uniform(*np.log(r.sensor_noise_scale)))),
+                     "face_timeconst": u(r.face_timeconst)},
+    }
+
+
+def apply_residual_dr(cfg: SimConfig, overrides: dict[str, dict]) -> SimConfig:
+    """The config for one residual_dr draw (the scene is rebuilt from it)."""
+    o = {k: v for k, v in overrides.items() if not k.startswith("_")}
+    rt = overrides.get("_runtime", {})
+    if "face_timeconst" in rt:
+        o.setdefault("hammer", {})["face_solref"] = (rt["face_timeconst"], cfg.hammer.face_solref[1])
+    return cfg.replace(**o)

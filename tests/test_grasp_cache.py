@@ -30,6 +30,13 @@ def test_actual_mode_keys_on_the_mass_as_before(hand_file):
     assert cache_path(cfg("actual", 1.0), hand_file) == cache_path(cfg("nominal", 1.3), hand_file)
 
 
+def test_nominal_mode_ignores_the_skin_contact_too(hand_file):
+    a = cfg("nominal").replace(gripper={"hand_friction": 0.6, "hand_solref": (0.003, 1.0)})
+    assert cache_path(a, hand_file) == cache_path(cfg("nominal"), hand_file)
+    b = cfg("actual").replace(gripper={"hand_friction": 0.6})
+    assert cache_path(b, hand_file) != cache_path(cfg("actual"), hand_file)
+
+
 def test_geometry_still_changes_the_key(hand_file):
     a = cfg("nominal")
     b = a.replace(hammer={"grip_from_head": a.hammer.grip_from_head + 0.02})
