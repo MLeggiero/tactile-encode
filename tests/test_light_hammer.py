@@ -39,3 +39,21 @@ def test_the_vega_hammers_with_the_light_hammer_through_the_residual():
     res = ep.run(2)
     assert res.summary["n_strikes"] == 2 and res.summary["total_depth"] > 2.5e-3  # ~2 mm a strike
     assert not ep.tb.grip.dropped
+
+
+@requires_wuji
+def test_without_impact_sensing_the_arm_switches_on_the_clock():
+    from tactile_sim.behaviors.base_sources import SwingBase
+    from tactile_sim.episode import Episode
+
+    cfg = residual_config(base=fast_config())
+    assert cfg.controller.impact_sources == () and cfg.swing.post_switch == "time"
+    ep = Episode(cfg, seed=0)
+    ep.tb.residual.base_fn = SwingBase(ep.tb, ep.swing, rng=np.random.default_rng(0))
+    res = ep.run(2)
+    assert res.summary["total_depth"] > 2.5e-3 and not ep.tb.grip.dropped
+    assert ep.tb.l1.last_event is None  # no sensor ever flagged an impact
+    period = 1.0 / cfg.arm.command_rate  # the arm takes its post reference at a 100 Hz command tick
+    for p in ep.swing.plans:
+        assert not p.missed
+        assert p.t_c_pred + cfg.swing.post_delay <= p.t_flag <= p.t_c_pred + cfg.swing.post_delay + period + 1e-3

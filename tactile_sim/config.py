@@ -418,6 +418,9 @@ class ControllerCfg:
     impact_ft_thresh: float = 35.0  # N departure of the strike-axis wrist force from its 10 ms baseline
     impact_accel_thresh: float = 60.0  # m/s^2 pad-accelerometer deviation from its 5 ms baseline
     impact_refractory: float = 0.100
+    # channels the L1 impact detector may use: "observer" (joint-torque momentum observer, FR3 only), "ft" (wrist
+    # F/T), "accel" (patch accelerometers). The real Vega U + WUJI hand has none of them: () disables the flag
+    impact_sources: tuple[str, ...] = ("observer", "ft", "accel")
     grip_kp: float = 0.2
     grip_ki: float = 15.0
     grip_hold: float = 55.0  # N per pad; Franka Hand continuous rating is 70 N
@@ -461,6 +464,10 @@ class SwingCfg:
     # "constant": hold force throughout, no anticipation
     grip_profile: str = "template"
     strike_timeout: float = 0.100
+    # when the arm leaves the swing for its post-impact reference: "flag" (on the L1 impact flag; a clock timeout
+    # declares a miss) or "time" (post_delay after the predicted contact, as a robot without an impact sensor must)
+    post_switch: str = "flag"
+    post_delay: float = 0.010
     n_strikes: int = 10
 
 
@@ -769,5 +776,7 @@ def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfi
         gripper={"hand_control": "mit", "grasp_mass": "nominal"},
         sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
         residual={"enabled": True, "rate": rate},
+        # the base has no impact flag: the arm switches to its post-impact reference on the clock
+        controller={"impact_sources": ()}, swing={"post_switch": "time"},
     )
     return cfg.replace(**sections) if sections else cfg

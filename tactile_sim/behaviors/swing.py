@@ -82,6 +82,8 @@ class ScriptedSwing:
         self.K_strike = np.array(tuple(sw.strike_k) + (sw.strike_k_rot,) * 3)
         if sw.grip_profile not in ("template", "constant"):
             raise ValueError(f"unknown grip_profile {sw.grip_profile!r} (expected 'template' or 'constant')")
+        if sw.post_switch not in ("flag", "time"):
+            raise ValueError(f"unknown post_switch {sw.post_switch!r} (expected 'flag' or 'time')")
         self.depth_estimate = depth_estimate or (lambda: tb.world.plant.depth)
         self.tool_estimate = tool_estimate or tb.world.hammer_in_hand
         w = tb.world
@@ -279,7 +281,9 @@ class ScriptedSwing:
             seg_over = Segment(t + T, T_over, quintic_coeffs(s_c, v, 0.0, s_c + sw.overshoot, v, 0.0, T_over))
         t_c = t + T
         ante = self._path([seg_swing, seg_over])
-        rs = ReferenceSpreader(ante, self._make_post, t_c, interim_lead=0.010, timeout=sw.strike_timeout)
+        on_time = sw.post_switch == "time"
+        rs = ReferenceSpreader(ante, self._make_post, t_c, interim_lead=0.010,
+                               timeout=sw.post_delay if on_time else sw.strike_timeout, switch_on_time=on_time)
         rs.R = self.R
         rs.t_armed = t_c - 0.020
         F_hold = self.F_hold

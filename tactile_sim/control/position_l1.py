@@ -110,10 +110,11 @@ class PositionL1:
     def tick(self, t: float) -> None:
         """Host loop at controller.rate: impact detection every tick, a position command every n_cmd ticks."""
         w = self.world
-        ft = self._sensor("ft")
+        src = self.cfg.controller.impact_sources
+        ft = self._sensor("ft") if "ft" in src else None
         f_ft_world = None if ft is None else w.data.site_xmat[w.site["ft_site"]].reshape(3, 3) @ ft[:3]
         t_ft = self.sensors["ft"].latest().t_sample if ft is not None else None
-        acc = self.sensors[self.acc_name].window(self.n_acc) if self.sensors is not None and \
+        acc = self.sensors[self.acc_name].window(self.n_acc) if "accel" in src and self.sensors is not None and \
             self.acc_name in self.sensors else None
         ev = self.detector.update(t, None, f_ft_world, acc, t_ft)
         if ev is not None:
