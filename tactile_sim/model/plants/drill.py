@@ -81,6 +81,8 @@ class DrillPlant(Plant):
         self.screw_mocap = (int(model.body(SCREW_BODY).mocapid[0]) if self.cfg.drill.mode == "screw" else -1)
         self._buf = np.zeros(6)
         self.trigger = 0.0
+        # the bit's direction in the tool frame: the inline driver's +z, the pistol driver's -y
+        self.bit_local = np.array([0.0, -1.0, 0.0]) if self.cfg.drill.form == "pistol" else np.array([0.0, 0.0, 1.0])
         self.reset()
 
     # ---- model ----
@@ -147,7 +149,7 @@ class DrillPlant(Plant):
         dt = m.opt.timestep
         t = float(d.time)
         tip = d.site_xpos[self.tip_site].copy()
-        a_t = d.xmat[self.tool].reshape(3, 3)[:, 2]  # bit axis (tool z)
+        a_t = d.xmat[self.tool].reshape(3, 3) @ self.bit_local  # bit axis
         self.misalign = float(np.arccos(np.clip(a_t @ self.a, -1.0, 1.0)))
         v = body_point_velocity(m, d, self.tool, tip, self._buf)
         screw = dc.mode == "screw"
@@ -230,6 +232,13 @@ class DrillPlant(Plant):
                         self.state = "through"
                 else:
                     self.state = "free" if self.state != "through" else "through"
+        # physical bounds on the tip's loads (a bit knocked off the axis must not blow the contact springs up)
+        f_ax = float(F_tip @ self.a)
+        f_lat = F_tip - f_ax * self.a
+        n_lat = float(np.linalg.norm(f_lat))
+        if n_lat > dc.max_lateral:
+            f_lat *= dc.max_lateral / n_lat
+        F_tip = np.clip(f_ax, -dc.max_axial, dc.max_axial) * self.a + f_lat
         # rotor (the spindle, geared): J dw = tau_m - tau_load; a stalled screw clamps the spindle at zero speed
         w_new = self.w + (tau_m - tau_load) / dc.rotor_inertia * dt
         if advance and w_new < 0:
@@ -253,6 +262,37 @@ class DrillPlant(Plant):
                 "drill_axial_force": self.F_axial, "drill_state": float(STATES.index(self.state)),
                 "cam_outs": float(self.cam_outs), "clutch_slipping": float(self.clutch_slipping),
                 "bit_misalign": self.misalign}
+
+    def event_truth(self, t: float):
+        """The next load event the hand will feel, as a forecast truth (behaviors.forecast.ForecastTruth): while a
+        screw goes in, its seating, after which the clutch ratchets (periodic, at the detents' rate); while a hole is
+        drilled, the breakthrough, where the support fades and the flutes grab (a step); a running clutch or a
+        bit already through is the event under way. Untimed events (cam-out, a bind) are not forecast."""
+        from tactile_sim.behaviors.forecast import ForecastTruth
+
+        dc = self.cfg.drill
+        # spindle revolutions per second: the speed the motor settles to at this trigger and load, not the transient
+        # of a spin-up (tau_m = stall (u - w / w_free) = load)
+        w_free = dc.free_speed if dc.mode == "screw" else dc.hole_free_speed
+        w_ss = w_free * max(self.trigger - self.tau_out / dc.stall_torque, 0.0)
+        rev = max(self.w, w_ss) / (2 * np.pi)
+        if dc.mode == "screw":
+            f_rip = dc.clutch_detents * max(rev, 0.0)
+            if self.clutch_slipping or self.state == "seated":
+                return ForecastTruth(True, t, "periodic", f_rip, 0.4 * dc.clutch_torque)
+            if self.state == "engaged" and rev > 0:
+                remaining = max(dc.screw_len - self.depth, 0.0)
+                return ForecastTruth(True, t + remaining / (dc.pitch * rev), "periodic",
+                                     dc.clutch_detents * dc.free_speed / (2 * np.pi), 0.4 * dc.clutch_torque)
+            return ForecastTruth(False)
+        T = dc.board_thickness
+        if self.state == "through":
+            return ForecastTruth(True, t, "step", 0.0, self.F_axial)
+        if self.state in ("drilling", "catch") and rev > 0 and self.F_axial > 0:
+            f_rev = max(self.feed_per_rev(self.F_axial), 1e-6)
+            remaining = max(T - dc.exit_len - self.depth, 0.0)
+            return ForecastTruth(True, t + remaining / (f_rev * rev), "step", 0.0, self.F_axial)
+        return ForecastTruth(False)
 
     def done(self) -> bool:
         return self.completed
