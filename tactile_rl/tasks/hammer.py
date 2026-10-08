@@ -1,5 +1,5 @@
-"""Tactile-Hammer-VegaWuji-{rate}Hz: the Vega U hammers the small nail with the light hammer; the base is a scripted swing
-from the CPU's base library (BaseTrajectoryCommand), and the residual adjusts the WUJI's MIT commands at `rate`.
+"""Tactile-Hammer-VegaWuji-{rate}Hz: the Vega U hammers the small nail with the light hammer; the base is a scripted
+swing from the CPU's base library (BaseTrajectoryCommand), and the residual adjusts the WUJI's MIT commands at `rate`.
 
 The scene is residual_training_config(rate) on the reduced scene: Vega U + WUJI Hand 2 with MIT drives, the TaxelScan
 fast profile, the light hammer and the small nail, 0.25 ms physics; decimation = 1 / (rate x timestep). Every episode

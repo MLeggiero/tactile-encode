@@ -58,6 +58,7 @@ def test_observation_groups_and_a_zero_residual(library, rate):
         assert obs["teacher"].shape == (4, obs_dim(stack) + sum(PRIVILEGED.values())) == obs["critic"].shape
         assert torch.equal(obs["teacher"][:, :obs_dim(stack)], obs["student"])
         term = env.action_manager.get_term("residual")
+        assert term.map.trig.numel() == 0  # the trigger interlock is the drill task's only (trigger_indices)
         zero = torch.zeros(4, 60, device=env.device)
         for _ in range(int(0.03 * rate)):
             obs, *_ = env.step(zero)
@@ -70,6 +71,51 @@ def test_observation_groups_and_a_zero_residual(library, rate):
         status = o[:, sl["board_status"]].reshape(4, stack, 4, 2)
         assert np.all(status[:, 0, :, 0] < 0.6)  # every board's newest frame is fresh (< 3 ms)
         assert int(term.n_stale.sum()) <= 4 * 3  # only before the first frames and readback arrive
+        cur = o[:, sl["hand_current"]].reshape(4, stack, 20)
+        for env_cur in cur:  # a slower policy sees every millisecond: `stack` distinct 1 kHz samples
+            assert len({row.tobytes() for row in env_cur}) == stack
+    finally:
+        env.close()
+
+
+def test_unperturbed_base_outputs_are_the_librarys(library):
+    """Unperturbed, the synergy scalar and the lookahead an env sees each tick are the library's recorded values, and a
+    zero-error forecast reports the swing's planned contact."""
+    from dataclasses import replace
+
+    from mjlab.envs import ManagerBasedRlEnv
+
+    from tactile_sim.config import ForecastCfg
+
+    cfg = hammer_env_cfg(1000.0, library=library, num_envs=4, perturb=False, assign="sequential")
+    cfg.commands["base"].forecast = replace(ForecastCfg(), mask_prob=0.0, dropout=0.0, bias_sigma=0.0,
+                                            jitter_sigma=0.0, class_confusion=0.0, freq_err=0.0, amp_err=0.0)
+    env = ManagerBasedRlEnv(cfg, device="cuda:0")
+    try:
+        env.reset()
+        cmd = env.command_manager.get_term("base")
+        lib = cmd.lib
+        zero = torch.zeros(4, 60, device=env.device)
+        seen_forecast = False
+        for k in range(1, 1000):
+            env.step(zero)
+            i = torch.full((4,), k, device=env.device)
+            e = cmd.entry
+            assert torch.equal(cmd.s_now, lib.s[e, i])
+            arm = cmd.lookahead.reshape(4, 3, 27)[:, :, 20:]
+            assert torch.allclose(arm, lib.look[e, i], atol=1e-6)
+            fc = cmd.forecast
+            on = fc[:, 0] == 1
+            if k >= 100 and bool(on.any()):
+                seen_forecast = True
+                # the visible update was issued on the 10 Hz grid 100 ms (the latency) or more ago, with the truth's
+                # event time as of then
+                t_issue = (k - 100) // 100 * 100
+                t_ev = lib.fc_t_event[e, torch.full_like(i, t_issue)]
+                want = (t_ev - k * 1e-3).clamp(-1.0, 1.0)
+                assert torch.allclose(fc[on, 1].double(), want[on], atol=1e-5)
+                assert torch.allclose(fc[on, -1].double(), torch.full_like(want[on], (k - t_issue) * 1e-3), atol=1e-5)
+        assert seen_forecast
     finally:
         env.close()
 
@@ -121,12 +167,20 @@ def test_nail_plant_writes_its_fields_per_world(library):
         nail = rt.nail
         zero = torch.zeros(3, 60, device=env.device)
         seen_contact = torch.zeros(3, dtype=torch.bool, device=env.device)
+        depths = []  # the nail's depth after the last two substeps: a substep's pre-step reads the previous one's
+
+        def keep(r):
+            depths.append(r.nail.depth().clone())
+            del depths[:-2]
+
+        rt.recorders.append(keep)
         for _ in range(900):  # past the blows (~0.86 s after the windup)
             env.step(zero)
             seen_contact |= nail.force > 0
         assert seen_contact.all()
         fl = env.sim.model.dof_frictionloss[:, nail.dof]
-        assert torch.allclose(fl, nail.resistance().float(), rtol=1e-4)  # set from depth before the last substep
+        want = (nail.r0 + nail.r_per_m * depths[0].double().clamp(min=0.0)).float()  # before the last substep
+        assert torch.allclose(fl, want, rtol=1e-6)
         k = nail.k_face
         sr = env.sim.model.pair_solref[:, nail.pair]
         assert torch.allclose(sr[:, 0], (-k).float())

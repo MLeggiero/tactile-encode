@@ -78,9 +78,8 @@ def test_codec_and_features_are_bit_exact_on_the_golden_frames(bits):
 
 
 def test_codec_matches_the_reference_over_the_whole_range():
-    from tactile_sim.sensors.taxel_codec import to_mn
-
     from tactile_rl.sensors.taxel_codec import to_mn as to_mn_t
+    from tactile_sim.sensors.taxel_codec import to_mn
 
     spec = CodecSpec()
     codec = TorchCodec(spec, DEV)

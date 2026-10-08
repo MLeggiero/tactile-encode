@@ -109,16 +109,20 @@ class TorchForecastModel:
         self.count = torch.clamp(self.count + push.long(), max=self.D)
         nxt = (torch.floor(t * self.update_rate + 1e-9) + 1.0) / self.update_rate
         self.next_update = torch.where(due, nxt, self.next_update)
-        # pop the updates whose latency has passed, in order; the newest is what the residual sees
-        for _ in range(self.D):
-            h = self.head
-            ready = (self.count > 0) & (self.p_t[self._ar, h] + self.latency <= t + 1e-12)
-            self.vis = self.vis | ready
-            self.v_t = torch.where(ready, self.p_t[self._ar, h], self.v_t)
-            self.v_v = torch.where(ready[:, None], self.p_v[self._ar, h], self.v_v)
-            self.v_e = torch.where(ready, self.p_e[self._ar, h], self.v_e)
-            self.head = torch.where(ready, (h + 1) % self.D, h)
-            self.count = self.count - ready.long()
+        # pop the updates whose latency has passed, in order (issue times are monotone: the ready ones lead the
+        # ring); the newest of them is what the residual sees
+        k = torch.arange(self.D, device=self.dev)[None]
+        order = (self.head[:, None] + k) % self.D
+        ready = (k < self.count[:, None]) & (self.p_t.gather(1, order) + self.latency[:, None] <= t[:, None] + 1e-12)
+        m = torch.cumprod(ready.long(), dim=1).sum(1)
+        got = m > 0
+        last = (self.head + m - 1) % self.D
+        self.vis = self.vis | got
+        self.v_t = torch.where(got, self.p_t[self._ar, last], self.v_t)
+        self.v_v = torch.where(got[:, None], self.p_v[self._ar, last], self.v_v)
+        self.v_e = torch.where(got, self.p_e[self._ar, last], self.v_e)
+        self.head = (self.head + m) % self.D
+        self.count = self.count - m
         show = ~self.masked & self.vis & ~torch.isnan(self.v_e)
         s_t = torch.hypot(self.bias_sigma, self.jitter_sigma)
         fv, av = self.v_v[:, n], self.v_v[:, n + 1]

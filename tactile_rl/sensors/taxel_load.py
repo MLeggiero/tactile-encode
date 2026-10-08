@@ -18,6 +18,8 @@ analytic, mirroring MuJoCo's ray_capsule (engine_ray.c and MuJoCo Warp's ray.py)
 
 Contacts come from MuJoCo Warp's pooled contact buffer: valid hand/tool contacts are sorted by (world, patch) into at
 most `max_per_patch` slots per patch (overflow is counted, never silently dropped), without a host synchronization.
+The stateless core (rays, distances, the foundation's weights) can run through torch.compile (`compiled`), which fuses
+its elementwise chains; the shape-refresh bookkeeping stays eager.
 """
 
 from __future__ import annotations
@@ -81,7 +83,7 @@ def ray_capsule_local(lpnt: torch.Tensor, lvec: torch.Tensor, radius: torch.Tens
 
 class TaxelLoadModel:
     def __init__(self, parts, mj_model: mujoco.MjModel, num_envs: int, device: str | torch.device = "cpu",
-                 prefix: str = "", max_per_patch: int = 8):
+                 prefix: str = "", max_per_patch: int = 8, compiled: bool = False):
         """`parts`: tactile_sim.sim.training_parts.TrainingParts (its `skin`, `tool_geoms`, `handle_geom`); `mj_model`:
         the compiled model the contacts come from, its names prefixed by `prefix` (mjlab: "robot/")."""
         s = parts.cfg.sensors
@@ -134,6 +136,8 @@ class TaxelLoadModel:
         self.shape_dt = float(s.ts_shape_dt)
         N = self.n_env
         self.skin_depth = torch.full((N,), float(s.ts_skin_depth), **f32)
+        self.compiled = bool(compiled)  # torch.compile the stateless core (the env does; ~50x fewer kernels)
+        self._core_compiled = torch.compile(self._core, dynamic=False) if self.compiled else None
         self.reset_state()
 
     def reset_state(self) -> None:
@@ -203,16 +207,33 @@ class TaxelLoadModel:
     def loads(self, f, pos, occ, xpos, xmat, cpos, cmat, t: torch.Tensor) -> torch.Tensor:
         """The model on given contacts (N, P, K), patch body poses (N, P, 3) / (N, P, 3, 3) and the capsule's pose
         (N, 3) / (N, 3, 3); see the module doc."""
-        N, P, dev = self.n_env, self.P, self.dev
         f, pos, xpos, xmat, cpos, cmat = (x.float() for x in (f, pos, xpos, xmat, cpos, cmat))
-        out = torch.zeros(N, self.T, dtype=torch.float32, device=dev)
+        core = self._core_compiled if self.compiled else self._core
+        total, loaded, reach_all, gauss, new_shape, new_fallback = core(f, pos, occ, xpos, xmat, cpos, cmat,
+                                                                         self.skin_depth)
+        refresh = loaded & (~self.has_shape | (t[:, None] - self.t_shape >= self.shape_dt - 1e-12))
+        r_t = refresh[:, self.patch]
+        self.shape = torch.where(r_t, new_shape, self.shape)
+        self.fallback = torch.where(refresh, new_fallback, self.fallback)
+        self.t_shape = torch.where(refresh, t[:, None], self.t_shape)
+        self.has_shape = loaded
+        load_t = loaded[:, self.patch]
+        out = torch.where(load_t, torch.where(self.fallback[:, self.patch], gauss, total[:, self.patch] * self.shape),
+                          torch.zeros_like(gauss))
+        self.taxels, self.total = out, total
+        self.contact_f, self.contact_pos, self.contact_ok = f, pos, reach_all
+        return out
+
+    def _core(self, f, pos, occ, xpos, xmat, cpos, cmat, skin_depth):
+        """The stateless part: per patch the load and the contacts that count, the Gaussian spread and a fresh
+        foundation shape (with whether it found the tool). A pure function of its inputs (compiled in the env)."""
+        N, P, dev = f.shape[0], self.P, f.device
         total = torch.zeros(N, P, dtype=torch.float32, device=dev)
         new_shape = torch.zeros(N, self.T, dtype=torch.float32, device=dev)
         new_fallback = torch.zeros(N, P, dtype=torch.bool, device=dev)
         gauss = torch.zeros(N, self.T, dtype=torch.float32, device=dev)
         loaded = torch.zeros(N, P, dtype=torch.bool, device=dev)
-        reach_all = torch.zeros(N, P, self.K, dtype=torch.bool, device=dev)
-        gap = torch.zeros(N, self.T, dtype=torch.float32, device=dev)
+        reach_all = torch.zeros(N, P, f.shape[2], dtype=torch.bool, device=dev)
         for (ks, idx), (pos_g, org_g, nrm_g, pb2) in zip(self.groups, self.group_taxels, strict=True):
             Rg, xg = xmat[:, ks], xpos[:, ks]  # (N, p, 3, 3), (N, p, 3)
             # rays from each taxel along its normal, mapped into the handle capsule's frame
@@ -222,7 +243,6 @@ class TaxelLoadModel:
             lvec = torch.einsum("nji,npkj->npki", cmat, v)
             hit = ray_capsule_local(lpnt, lvec, self.radius, self.half)
             g = torch.where(hit >= 0, hit - BACK, torch.full_like(hit, float("inf")))  # (N, p, n)
-            gap[:, idx] = g
             # the contacts in each patch body's frame, squared distances to its taxels (N, p, n, K)
             q = torch.einsum("npji,npkj->npki", Rg, pos[:, ks] - xg[:, :, None])  # (N, p, K, 3)
             d2 = pb2[None, :, :, None] + (q * q).sum(-1)[:, :, None, :] - \
@@ -242,20 +262,9 @@ class TaxelLoadModel:
             near = (reach[:, :, None, :] & (d2 <= self.shape_r2)).any(-1)  # (N, p, n)
             fin = near & torch.isfinite(g)
             gmin = torch.where(fin, g, torch.full_like(g, float("inf"))).min(-1).values  # (N, p)
-            w = torch.clamp(self.skin_depth[:, None, None] - (g - gmin[..., None]), min=0.0)
+            w = torch.clamp(skin_depth[:, None, None] - (g - gmin[..., None]), min=0.0)
             w = torch.where(fin, w, torch.zeros_like(w))
             sw = w.sum(-1)
             new_shape[:, idx] = w / sw.clamp(min=1e-30)[..., None]
             new_fallback[:, ks] = sw <= 0
-        refresh = loaded & (~self.has_shape | (t[:, None] - self.t_shape >= self.shape_dt - 1e-12))
-        r_t = refresh[:, self.patch]
-        self.shape = torch.where(r_t, new_shape, self.shape)
-        self.fallback = torch.where(refresh, new_fallback, self.fallback)
-        self.t_shape = torch.where(refresh, t[:, None], self.t_shape)
-        self.has_shape = loaded
-        load_t = loaded[:, self.patch]
-        out = torch.where(load_t, torch.where(self.fallback[:, self.patch], gauss, total[:, self.patch] * self.shape),
-                          torch.zeros_like(out))
-        self.taxels, self.total = out, total
-        self.contact_f, self.contact_pos, self.contact_ok = f, pos, reach_all
-        return out
+        return total, loaded, reach_all, gauss, new_shape, new_fallback

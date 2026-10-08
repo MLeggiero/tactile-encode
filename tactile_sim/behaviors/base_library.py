@@ -263,12 +263,14 @@ def record_episode(seed: int, n_strikes: int = 10, rate: float = 1000.0, timeste
         k1 = rec.starts[j + 1]["k"] if j + 1 < len(rec.starts) else len(rows["t"])
         s = strikes.get(st["strike"])
         t1 = rec.starts[j + 1]["t0"] if j + 1 < len(rec.starts) else t_end
+        nan = float("nan")
         out = {"hit": False, "drop": bool(tb.grip.dropped), "advance": float(rows["depth"][k1 - 1] - st["depth0"]),
-               "peak": 0.0, "peak2": 0.0, "width": 0.0, "impulse": 0.0, "v_face": float("nan"), "t_contact": float("nan"),
-               "slip_trans": float("nan"), "slip_rot": float("nan"), "t_swing": float("nan"),
-               "t_c_pred": float("nan"), "v_cmd": float("nan")}
+               "peak": 0.0, "peak2": 0.0, "width": 0.0, "impulse": 0.0, "v_face": nan, "t_contact": nan,
+               "slip_trans": nan, "slip_rot": nan, "t_swing": nan, "t_c_pred": nan, "v_cmd": nan}
         if s is not None:
-            out.update(hit=bool(s.hit), drop=bool(s.drop), peak=float(s.peak_force_truth),
+            # the testbed's advance: from the swing's start to the strike's end (the nail creeps ~0.1 mm in the
+            # windup under its soft friction constraint, so the entry's start is not the same)
+            out.update(hit=bool(s.hit), drop=bool(s.drop), advance=float(s.depth_inc), peak=float(s.peak_force_truth),
                        peak2=peak2.get(st["strike"], 0.0), width=float(s.pulse_width),
                        impulse=float(s.impulse), v_face=float(s.v_strike_actual),
                        t_contact=float(s.t_contact_truth - st["t0"]), slip_trans=float(s.slip_trans),

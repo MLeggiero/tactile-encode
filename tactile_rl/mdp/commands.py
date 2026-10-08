@@ -38,8 +38,8 @@ from tactile_rl.mdp.forecast import TorchForecastModel
 from tactile_rl.mdp.runtime import tactile_runtime
 from tactile_sim.behaviors.base_library import DRIVE_STATE, arm_tick_phase_ms, base_signature, load_library
 from tactile_sim.config import ForecastCfg
-from tactile_sim.sim.training_parts import residual_training_config
 from tactile_sim.control.obs_spec import LOOKAHEAD, N_ARM, N_JOINTS
+from tactile_sim.sim.training_parts import residual_training_config
 from tactile_sim.sim.wuji_drive import JOINT_GROUPS, joint_group
 
 if TYPE_CHECKING:
@@ -336,7 +336,8 @@ class BaseTrajectoryCommand(CommandTerm):
         lpf = P["sdk_lpf_hz"][e]
         i_rated = P["i_rated"][e][:, self.group]  # (n, J)
         rt.drive.set_params(ids, cmd_latency=P["cmd_latency"][e], sdk_lpf_hz=lpf, tau_i=P["tau_i"][e],
-                            i_rated=i_rated, effort_limit_ratio=P["effort_limit_ratio"][e][:, None], t_amb=P["t_amb"][e])
+                            i_rated=i_rated, effort_limit_ratio=P["effort_limit_ratio"][e][:, None],
+                            t_amb=P["t_amb"][e])
         rt.scan.set_params(ids, gain_mismatch=P["ts_gain_mismatch"][e], offset_lsb=P["ts_offset_lsb"][e],
                            f_half=P["ts_f_half"][e], bandwidth=P["ts_bandwidth"][e],
                            bridge_latency=(P["ts_bridge_lo"][e], P["ts_bridge_hi"][e]),

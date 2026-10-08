@@ -191,7 +191,7 @@ class TorchTaxelScan:
     # ------------------------------------------------------------------ one physics step
     def step(self, t: torch.Tensor, raw: torch.Tensor) -> None:
         """`t` (N,) float64 the time now (after the step); `raw` (N, n_taxels) the taxel loads (N)."""
-        T_, dev = self.period, self.dev
+        T_ = self.period
         raw = raw.double()
         fresh = self.fresh
         xf_prev = torch.where(fresh[:, None], raw, self.xf)
@@ -293,7 +293,7 @@ class TorchTaxelScan:
 
     # ------------------------------------------------------------------ views
     def decoded(self) -> torch.Tensor:
-        """The host's latest taxel values (N, float64): the codes decoded back to newtons (the testbed sensor's value)."""
+        """The host's latest taxel values (N, float64): the codes decoded back to newtons (the testbed's value)."""
         return self.codec.decode(self.codes)
 
     def board_status(self) -> tuple[torch.Tensor, torch.Tensor]:

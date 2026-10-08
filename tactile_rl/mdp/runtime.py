@@ -39,7 +39,7 @@ PREFIX = f"{ENTITY}/"
 
 class TactileRuntime:
     def __init__(self, env: ManagerBasedRlEnv, scene_key: str, task: str = "hammer",
-                 mask_blocks: tuple[str, ...] = ()):
+                 mask_blocks: tuple[str, ...] = (), compiled: bool = True):
         self.env = env
         self.parts = parts = training_parts(scene_key)
         self.cfg = cfg = parts.cfg
@@ -58,7 +58,8 @@ class TactileRuntime:
         self.hand_ids = joint_ids(robot, parts.hand_joints, dev)
         self.arm_ids = joint_ids(robot, parts.arm_joints, dev)
         m = sim.mj_model
-        self.load = TaxelLoadModel(parts, m, N, dev, prefix=PREFIX)
+        # MuJoCo Warp gives a capsule/mesh pair one contact: at most two per patch (a distal pad has two hulls)
+        self.load = TaxelLoadModel(parts, m, N, dev, prefix=PREFIX, max_per_patch=4, compiled=compiled)
         self.scan = TorchTaxelScan(parts.skin, cfg.sensors, self.dt, N, dev)
         w = cfg.wuji
         every = int(round(1.0 / (w.sdk_rate * self.dt)))
