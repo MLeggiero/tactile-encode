@@ -46,4 +46,5 @@ if "--compare" in sys.argv:
             a, b = np.asarray(res["norm_stats"][key][st]), np.asarray(ref[key][st])
             rng = np.asarray(ref[key]["q99"]) - np.asarray(ref[key]["q01"])
             err = np.abs(a - b) / np.maximum(rng, 1e-6)
-            print(f"  {key:7s} {st:4s}: max |diff| {np.abs(a - b).max():.2e}, max relative to the q01-q99 range {err.max():.2e}")
+            print(f"  {key:7s} {st:4s}: max |diff| {np.abs(a - b).max():.2e}, "
+                  f"max relative to the q01-q99 range {err.max():.2e}")
