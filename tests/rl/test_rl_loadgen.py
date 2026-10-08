@@ -98,6 +98,14 @@ def test_zero_initialized_gru_actor_and_the_entropy_schedule():
                          distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.3})
     assert m.is_recurrent and isinstance(m.rnn.rnn, torch.nn.GRU) and m.rnn.rnn.hidden_size == 256
     assert torch.equal(m(obs), torch.zeros(5, 60))  # a = 0: the base
+    # the normalizer: a feature that never moved is not blown up when it does
+    from tactile_rl.algos.models import RobustNormalization
+
+    norm = RobustNormalization(3)
+    norm.update(torch.tensor([[0.0, 1.0, 2.0], [0.0, 3.0, 2.0]]))
+    y = norm(torch.tensor([[1.0, 2.0, 2.0]]))
+    assert float(y[0, 0]) == pytest.approx(5.0) and float(y[0, 1]) == pytest.approx(0.0)
+    assert isinstance(m.obs_normalizer, RobustNormalization)
     cfg = teacher_runner_cfg(1000.0, "loadgen", max_iterations=100)
     assert cfg.actor.rnn_type == "gru" and cfg.critic.hidden_dims == (512, 256, 128)
     assert cfg.num_steps_per_env == 128 and cfg.obs_groups == {"actor": ("teacher",), "critic": ("teacher",)}
@@ -231,7 +239,7 @@ def test_reset_randomization_writes_per_world_parameters():
         fc = env.command_manager.get_term("base").forecaster
         assert float(fc.latency.min()) >= 0.05 - 1e-9 and float(fc.latency.max()) <= 0.25 + 1e-9
         assert float(fc.mask_prob.mean()) == pytest.approx(0.25)
-        assert dr.param_vector().shape == (64, 32)
+        assert dr.param_vector().shape == (64, 33)
     finally:
         env.close()
 
@@ -253,13 +261,14 @@ def test_curriculum_stages():
         cur.win = torch.tensor([100.0, 0.0, 0.0, 0.0], dtype=torch.float64, device=dev)
         cur._evaluate()
         assert cur.stage == 1 and cmd.enabled and cmd.amp_scale == pytest.approx(0.25)
+        assert cmd.hold_level == (0.5, 1.0)
         assert dr.scale == pytest.approx(0.3) and dr.forecast_mode == "clean"
         cur.win = torch.tensor([100.0, 0.0, 200.0, 150.0], dtype=torch.float64, device=dev)  # 75 % within target
         cur._evaluate()
         assert cur.stage == 1
         cur.win = torch.tensor([100.0, 0.0, 200.0, 170.0], dtype=torch.float64, device=dev)
         cur._evaluate()
-        assert cur.stage == 2 and cmd.amp_scale == 1.0 and dr.scale == 1.0
+        assert cur.stage == 2 and cmd.amp_scale == 1.0 and dr.scale == 1.0 and cmd.hold_level == (0.3, 0.8)
         assert dr.forecast_mode == "noisy" and dr.forecast_masking
     finally:
         env.close()

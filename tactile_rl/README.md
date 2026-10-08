@@ -133,6 +133,15 @@ loop, grip profile, margin step, hold, post switch); regenerate it then.
   contacts, the base's true plan and the true contact (onset, time since, peak), the nail (depth, resistance, gap,
   approach speed, force), the drives (currents, winding temperatures, fault, latency, low-pass and current-loop
   coefficients), the randomization (25 values including the perturbations). The PPO config trains on `teacher`.
+- **Rewards (M3)**, integrated over the substeps (`TactileRuntime.acc`; the reward manager multiplies by the policy
+  step, so each term returns its integral over the step divided by the step): +1 per mm of nail advance; −1 per mm
+  and −1 per degree of slip path (the tool's pose in the hand on the 1 kHz clock, low-passed at 30 Hz so the grasp's
+  ringing is not slip); −1 per (mm + degree)·s of drift from the entry's start pose; −10 per J of rebound energy
+  (the tool's kinetic energy relative to the hand, mean over [5, 60] ms after a blow's onset); the effort terms: −1 per
+  s of mean (i / i_rated)², −10 per s of torque roughness about its 50 Hz low-pass and of torque above rated (per rated
+  torque, squared), −0.1 per s of joint-limit load (limit constraint force per rated torque, squared), −10 per s of
+  thermal margin, −0.1 per s of residual size; −50 for a lost grasp, −20 for a thermal fault. The same at every rate
+  (`test_rewards_are_integrated_over_substeps`).
 
 ## How the load-generator env works (M3)
 
@@ -158,6 +167,48 @@ loop, grip profile, margin step, hold, post switch); regenerate it then.
 - **Observations.** `teacher` = the student's 740 + 148 privileged (the tool in the hand, patch contacts, the event
   truth, the wrench on the tool, the drives, the 32 randomization values); the registered task returns `teacher` only
   (the critic reads it too), the test configurations every group.
+
+## Milestone 3 results (desktop, RTX 5070 Ti, 2026-10-08)
+
+### P3 on the hard nail (`python -m tactile_rl.parity.p3`)
+
+The library re-recorded on feat/residual-l2 51e7ca1 (the nail's friction constraint hard, `multiccd` off,
+`residual_dr`'s nail at 50–150 N and 2.5–7.5 kN/m): 776 swings from 100 episodes (~8 per episode until the nail is in).
+Every swing plays once per condition from the CPU's state at its windup, unperturbed, with its episode's
+randomization, zero residual. Mean per strike [90 % bootstrap interval]; against the validator: the relative
+difference of the means and the two-sample KS p; "ok" when within 10 % (slip 15 %), the intervals overlap and p > 0.01.
+
+| per strike | CPU 8 kHz, noslip 5 (validator) | CPU 4 kHz | GPU 4 kHz | GPU 2 kHz |
+|---|---|---|---|---|
+| hits | 776 / 776 | 776 / 776 | 776 / 776 | 776 / 776 |
+| nail advance (mm) | 2.54 [2.48, 2.60] | 2.63, ok (3.7 %, p 0.18) | 2.69, **6.1 %**, intervals apart (p 0.03) | 3.21, **27 %** (p 6e-25) |
+| peak force, 2nd sample (N) | 185 [182, 187] | 185, ok (0.2 %) | 185, ok (0.4 %) | 185, ok (0.2 %) |
+| pulse width (ms) | 6.52 [6.12, 6.94] | 6.24, ok (4.3 %, p 0.012) | 5.87, 9.9 % (p 2e-6) | 4.75, 27 % |
+| slip, translation (mm) | 1.08 [1.05, 1.10] | 1.07, ok (0.4 %) | 1.11, ok (2.8 %) | 1.06, ok (1.4 %) |
+| slip, rotation (deg) | 1.59 [1.53, 1.65] | 1.55, ok (2.5 %) | 1.75, **10.3 %** (p 1e-3) | 1.71, 7.9 % (p 9e-3) |
+
+- **The M2 gap is closed.** With the hard nail the training physics (0.25 ms, no noslip) passes every test against the
+  validator: noslip no longer changes how far a blow drives (2.63 against 2.54 mm; it was 5.0 against 1.1 mm).
+  Replaying the CPU training physics under MuJoCo 3.11 (the GPU's version) gives the same table to 0.4 %.
+- **MuJoCo Warp at 0.25 ms against the CPU at the same physics** passes on advance (2.3 %), peak force (0.2 %), pulse
+  width (6 %) and slip translation (3.3 %) and fails only on **slip rotation: +13 %** (1.75 against 1.55°, paired
+  +0.2° per strike, KS p 1e-3): the GPU grasp gives a little more in rotation. Against the validator, the GPU's
+  advance (+6 %: 3.7 % from the step and noslip, 2.3 % from the GPU) and rotation (+10 %) are inside the plan's
+  tolerances, but with 776 strikes the intervals no longer overlap; on 200-strike subsets (the plan's minimum) the
+  GPU passes advance, peak and translation in 50 of 50 and rotation in 43 of 50.
+- **0.5 ms physics is not usable for the hammer**: the nail advances 27 % further and the pulses are 27 % shorter.
+
+### Throughput with rewards, randomization and the curriculum (load generator, C2, zero residual)
+
+`python -m tactile_rl.bench.throughput --task loadgen --stage 2 --rate 1000 --envs 1024 4096 --seconds 0.2`:
+
+| worlds | policy | ms per env step | simulated s / wall s | physics share of the step | env GPU memory (GB) |
+|---|---|---|---|---|---|
+| 1024 | 1 kHz | 28.3 | 36 | 34 % | 0.73 |
+| 4096 | 1 kHz | 53.5 | **76** | 42 % | 2.67 |
+
+Peaks: 24 broadphase candidates and 7.3 contacts per world, 61 constraint rows. In training (4096 envs, 128-step
+rollouts, the teacher's update) an iteration takes ~9 s: 7.7 s collecting, 1.2 s learning, ~58 sim-s per wall-s.
 
 ## Results (desktop, RTX 5070 Ti, 2026-10-08)
 
@@ -192,7 +243,8 @@ taxel distribution), the centre-of-pressure distance (taxel pitches).
   with multi-contact gives up to 3 (handle on a fingertip) and 5 (face on nail). The patch loads then split
   differently (12 % median). With multi-contact off on the CPU too, the patch sums agree to 0.16 % (hold 0.05 %, p99
   0.19 %); the strike tail (p99 1.0) is states where one side has a contact the other lacks.
-  `PhysicsCfg.multiccd = False` turns it off on both sides (World and `mujoco_cfg`); the default is unchanged.
+  `PhysicsCfg.multiccd = False` turns it off on both sides (World and `mujoco_cfg`); since 51e7ca1 `residual_config`
+  sets it, so the validator and the training scene make single contacts.
 
 ### Strikes on the GPU against the CPU (`python -m tactile_rl.parity.strikes --validator --perturbed 4`)
 
@@ -387,33 +439,33 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
 
 ## Known differences and open issues
 
-- **The nail without noslip (the main training/validator difference).** The nail's resistance is Coulomb friction on
-  its slide joint (`frictionloss`, a soft constraint). The validator's noslip 5 post-processes that constraint too:
-  on the same arm streams it drives the nail 0.75 mm per blow, the training physics (no noslip, as MuJoCo Warp must
-  run) 4.74 mm, at either step size; without noslip the nail also creeps ~0.1 mm while the hammer winds up. The GPU
-  follows the no-noslip CPU closely (above), so the gap is CPU-side and plant-side: recalibrate the nail for the
-  no-noslip physics (resistance, `friction_solref`; the plan's contact recalibration lists the nail's solref), or run
-  the validator without noslip for the nail. Until then, validator and training disagree on how far a blow drives.
-- **Contacts per pair (the main CPU/GPU difference on the hammer scene).** MuJoCo Warp generates one contact for
-  capsule/mesh, cylinder/cylinder and cylinder/box pairs whatever `multiccd` says; CPU MuJoCo's multi-contact gives
-  several. The light hammer is primitives, so every hand/handle contact and the face/nail contact differ: patch loads
-  12 % apart at the median, few states with the same contact set. With multi-contact off on the CPU too the hold meets
-  P1's targets and the skin loads agree to 0.16 % at the median. Choosing `PhysicsCfg(multiccd=False)` for the
-  residual experiments (validator included) is a decision for the experiment; it changes the validator's grasp
-  contacts, not the GPU's.
+- **Closed in M3: the nail without noslip and the contacts per pair.** The nail's friction constraint is hard
+  (`NailPlantCfg.friction_solimp`, 51e7ca1), so noslip no longer changes it, and `residual_config` turns multi-contact
+  off, so the validator makes one contact per convex pair as MuJoCo Warp does (P3 above; M2's analysis: the validator's
+  grasp slips and drops the same with or without the extra contacts).
+- **Rotation slip on the GPU** (P3): 13 % more than the CPU at the same physics; with the M1 hold creep (below) the
+  GPU grasp yields a little more than the validator's. The plan's contact recalibration (impulse slip, ripple, hold
+  creep) is the remedy; until then a teacher trained on the GPU meets a slightly firmer grasp in the validator.
+- **The hold creeps on the GPU**: under the load generator's hold (no loads) the tool's slip path is ~0.16 mm and 0.3°
+  per second, low-frequency (a 30 Hz low-pass barely changes it): it counts against the slip rewards and fills ~20 % of
+  an event's 0.7 mm / 1.4° budget.
+- **The base's wrap rests some joints on their limits** (the joint-limit load penalty is −0.025 per second for the
+  zero residual), hence its light weight (−0.1).
 - **The face/nail contact at impact.** Single contact on both sides, MuJoCo Warp still misses the cylinder/cylinder
   contact in a sixth of the strike states where the CPU finds one. Blows agree to a few percent in advance and peak
   force all the same (above).
-- **The library must match the base.** The library records the base the CPU ran (`residual_config`'s grip loop and
-  profile); `BaseLibrary` warns on a mismatch. The current library was recorded with the open-loop constant grip
-  (feat/residual-l2 b46b62a); it lives on the desktop (`~/scratch/tactile-gpu-runs/m2/lib/hammer_v1.npz`; `*.npz`
-  files are not committed).
+- **The library must match the base and the scene.** The library records the base the CPU ran (`residual_config`'s
+  grip loop and profile; `BaseLibrary` warns on a mismatch) and its start states come from the scene's plant. The
+  current library (`~/scratch/tactile-gpu-runs/m3/lib/hammer_v2.npz` on the desktop; `*.npz` files are not
+  committed) has the hard nail and single contacts; M2's (`m2/lib/hammer_v1.npz`) is stale.
 - **Peak force is spiky.** A blow's largest single-step force can be a one-sample solver spike (1 in 203 blows at the
   training physics, 9 in 203 at the validator's, up to ~10x the pulse). `peak2` (the second-largest sample) is the
   robust metric. With the old closed grip loop the spikes depended on the drives' command jitter; CPU replays draw
   the jitter from the entry's index, so they do not depend on what a World played before.
-- **Hooks are launch-bound** (above): ~50 % of the step at 4096 worlds. Fusing them is the next speed step; the scan's
-  float64 ADC chain should stay unfused (or be checked) to keep the frame-for-frame parity.
+- **Hooks are launch-bound** (above): ~50 % of the hammer's step at 4096 worlds, 58 % of the load generator's with the
+  rewards and randomization. Above the plan's 15 %, but the step meets the throughput goal (76 sim-s per wall-s); fusing
+  them is the next speed step, and the scan's float64 ADC chain should stay unfused (or be checked) to keep the
+  frame-for-frame parity.
 - **The GPU hold creeps ~10x more than the CPU** (M1): 0.14 mm in 1 s at 0.25 ms against 0.011 mm (CPU, no noslip). The
   contact recalibration is the remedy.
 - **MuJoCo version drift** (M1): the validator (3.14) and the training venv (3.11) compile mesh frames differently;
@@ -423,13 +475,11 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
 
 ## What remains
 
-- **The GPU load generator** (`model/loadgen.py`) and **the drill** (plant, pistol driver, trigger, DrillBase): the
-  interlock is ready for task "drill".
-- **Rewards** from the plan (substep-integrated slip path, nail advance, rebound energy, I²t, thermal margin,
-  smoothness): the hammer's are placeholders.
-- **Randomization events** independent of the library (the library entries carry one `residual_dr` draw each, applied at
-  reset), and the forecast's error model per env.
-- **Curriculum** C0–C4, **contact recalibration** (static-hold creep, impulse slip, ripple, and the nail's
-  resistance without noslip), **teacher PPO** (GRU 256, zero-initialized output) and **DAgger** students, ONNX
-  export.
+- **The drill** on the GPU (plant, pistol driver, trigger, the drill base; its rewards): the interlock is ready for
+  task "drill"; `TorchSynergy` needs WrapSynergy's `levels()` / `s_trigger` split first.
+- **Curriculum C3–C4**: hammer taps with scripted and replayed swings mixed 70/30 with the load generator (the hammer
+  task has the rewards and terminations; its randomization comes from the library's entries, the events can replace
+  them), then latency extremes and VLA chunks.
+- **Teachers at every rate** to convergence, **contact recalibration** (static-hold creep, impulse slip, ripple),
+  **DAgger** students with the auxiliary labels (`aux_labels`), ONNX export.
 - **Speed:** CUDA graphs or Warp kernels for the hooks; dropping mjlab's per-step `forward()`.

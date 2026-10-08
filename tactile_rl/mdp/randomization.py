@@ -128,7 +128,7 @@ class TactileDR:
             "ts_f_half", "ts_bandwidth", "ts_skin_depth", "ts_drop_prob", "ts_bridge_hi", "dead_taxel_frac",
             "rt_phase", "servo_p_mult", "arm_kd_scale", "nail_r0", "nail_r_per_m", "face_tc", "vdr_zeta0",
             "fc_bias_sigma", "fc_jitter_sigma", "fc_class_confusion", "fc_freq_err", "fc_amp_err", "fc_latency",
-            "fc_update_rate", "fc_dropout", "fc_mask_prob")
+            "fc_update_rate", "fc_dropout", "fc_mask_prob", "hold_level")
 
     def __init__(self, env: ManagerBasedRlEnv, scene_key: str, cfg: ResidualDRCfg | None = None,
                  extra: DRExtraCfg | None = None):
@@ -176,7 +176,8 @@ class TactileDR:
             "nail_r_per_m": float(p.resistance_per_m), "face_tc": float(sc.hammer.face_solref[0]),
             "vdr_zeta0": float(p.vdr_zeta0),
             "fc_bias_sigma": 0.0, "fc_jitter_sigma": 0.0, "fc_class_confusion": 0.0, "fc_freq_err": 0.0,
-            "fc_amp_err": 0.0, "fc_latency": 0.05, "fc_update_rate": 10.0, "fc_dropout": 0.0, "fc_mask_prob": 0.0}
+            "fc_amp_err": 0.0, "fc_latency": 0.05, "fc_update_rate": 10.0, "fc_dropout": 0.0, "fc_mask_prob": 0.0,
+            "hold_level": 1.0}  # the base's grip (the load generator's command draws it)
         self.v = {k: torch.full((N,), self.nominal[k], **f64) for k in self.KEYS}
         # model nominal arrays the scales multiply
         self.jf0 = torch.as_tensor(m.dof_frictionloss[parts_dofs(m, parts)], **f64)
@@ -220,11 +221,11 @@ class TactileDR:
                 v["ts_bandwidth"] / 500.0, v["ts_skin_depth"] / 0.003, v["ts_drop_prob"] / 0.01,
                 v["dead_taxel_frac"] / 0.02, v["rt_phase"] / 0.001, v["servo_p_mult"], v["arm_kd_scale"],
                 v["nail_r0"] / 100.0, v["nail_r_per_m"] / 5e3, v["face_tc"] / 0.003, v["vdr_zeta0"],
-                v["fc_bias_sigma"] / 0.03, v["fc_latency"] / 0.25, v["fc_mask_prob"]]
+                v["fc_bias_sigma"] / 0.03, v["fc_latency"] / 0.25, v["fc_mask_prob"], v["hold_level"]]
         return torch.stack(cols, dim=1).float()
 
 
-PARAM_DIM = 32
+PARAM_DIM = 33
 
 
 def parts_dofs(m, parts) -> np.ndarray:

@@ -137,8 +137,8 @@ def drive_internals(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def randomization(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """The randomization the env runs with: (N, 25) the library entry's (BaseTrajectoryCommand.param_vector), (N, 32)
-    the reset events' draws (randomization.TactileDR.param_vector)."""
+    """The randomization the env runs with: (N, 25) the library entry's (BaseTrajectoryCommand.param_vector), (N, 33)
+    the reset events' draws and the base's hold level (randomization.TactileDR.param_vector)."""
     cmd, _ = _parts(env)
     return cmd.param_vector()
 
@@ -158,7 +158,7 @@ PRIVILEGED_BY_TASK = {
     "hammer": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "nail_state": 5, "drive_internals": 44,
                "randomization": 25},
     "loadgen": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "load_truth": 6, "drive_internals": 44,
-                "randomization": 32},
+                "randomization": 33},
 }
 PRIVILEGED = PRIVILEGED_BY_TASK["hammer"]
 assert math.isfinite(sum(PRIVILEGED.values()))

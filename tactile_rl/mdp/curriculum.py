@@ -1,16 +1,21 @@
 """The training curriculum's stages C0-C2 (the plan's "Curriculum"; C3 and C4, the plants and the mixed stage, come
 with the hammer and drill teachers).
 
-| Stage | Loads | Randomization | Forecast |
-|---|---|---|---|
-| C0 | none: the hold | near nominal (scale 0.1) | clean |
-| C1 | load generator at a quarter of the amplitudes | scale 0.3 | clean (exact, timely, never masked) |
-| C2 | the full band | the full table | noisy (the plan's ranges), whole episodes masked 25 % |
+| Stage | Loads | Base grip | Randomization | Forecast |
+|---|---|---|---|---|
+| C0 | none: the hold | the settled hold | near nominal (scale 0.1) | clean |
+| C1 | load generator at a quarter of the amplitudes | 0.5-1.0 of it | scale 0.3 | clean (exact, timely, never masked) |
+| C2 | the full band | 0.3-0.8 of it (the plan's hold level) | the full table | noisy, 25 % of episodes masked |
 
-A stage advances when, over the episodes that ended since it began (at least `min_episodes`), drops stay below
-`drop_max` and, once there are loads, at least `ok_min` of the events (at least `min_events`) kept the tool's slip
-within the load generator's target. Stage settings apply to episodes that start after the change (the load
-generator's amplitude and whether it runs, the DR scale, the forecast's mode).
+The base grip below the settled hold is what leaves the residual a job: at the hold the WUJI's closing joints already
+run near their current ceiling (the SDK effort limit is the rated current), and a residual that grips harder and
+stiffens cannot change the slip; at half the hold it recovers the hold's slip (tactile_rl/README.md).
+
+A stage advances when, over the episodes that ended recently (at least `min_episodes`; each evaluation that does not
+pass halves the window's counts, so older episodes fade), drops stay below `drop_max` and, once there are loads, at
+least `ok_min` of the events (at least `min_events`) kept the tool's slip within the load generator's target. Stage
+settings apply to episodes that start after the change (the load generator's amplitude and whether it runs, the DR
+scale, the forecast's mode).
 """
 
 from __future__ import annotations
@@ -25,9 +30,12 @@ if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
 
 STAGES = (
-    {"name": "C0", "loads": False, "amp_scale": 0.0, "dr_scale": 0.1, "forecast": "clean", "mask": False},
-    {"name": "C1", "loads": True, "amp_scale": 0.25, "dr_scale": 0.3, "forecast": "clean", "mask": False},
-    {"name": "C2", "loads": True, "amp_scale": 1.0, "dr_scale": 1.0, "forecast": "noisy", "mask": True},
+    {"name": "C0", "loads": False, "amp_scale": 0.0, "hold": (1.0, 1.0), "dr_scale": 0.1, "forecast": "clean",
+     "mask": False},
+    {"name": "C1", "loads": True, "amp_scale": 0.25, "hold": (0.5, 1.0), "dr_scale": 0.3, "forecast": "clean",
+     "mask": False},
+    {"name": "C2", "loads": True, "amp_scale": 1.0, "hold": (0.3, 0.8), "dr_scale": 1.0, "forecast": "noisy",
+     "mask": True},
 )
 
 
@@ -61,6 +69,7 @@ class TactileCurriculum:
         if cmd is not None and hasattr(cmd, "enabled"):
             cmd.enabled = bool(s["loads"])
             cmd.amp_scale = float(s["amp_scale"])
+            cmd.hold_level = tuple(s["hold"])
         dr = tactile_dr(self.env, self.scene_key)
         dr.scale = float(s["dr_scale"])
         dr.forecast_mode = s["forecast"]
@@ -95,6 +104,8 @@ class TactileCurriculum:
             self.stage += 1
             self.apply()
             self.win.zero_()
+        else:
+            self.win *= 0.5  # a full window that did not pass fades: the stage is judged on recent episodes
 
     def reset(self, env_ids=None) -> None:
         del env_ids
