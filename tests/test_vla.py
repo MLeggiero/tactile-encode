@@ -178,6 +178,8 @@ def test_lerobot_export_writes_the_groot_layout(tmp_path):
     mod = json.loads((out / "meta/modality.json").read_text())
     assert mod["action"]["right_arm"] == {"start": 0, "end": 7} and mod["action"]["right_hand"]["end"] == ACTION_DIM
     assert len((out / "meta/episodes_stats.jsonl").read_text().splitlines()) == 2
+    robot = json.loads((out / "meta/vega_wuji.json").read_text())
+    assert list(robot["hand_tables"]) == ["hammer the nail into the board"]  # one table per task
     assert export([raw], out, only_success=False, overwrite=True)["episodes"] == 3
     with pytest.raises(FileExistsError):
         export([raw], out)

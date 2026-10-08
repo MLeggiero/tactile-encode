@@ -5,7 +5,7 @@
                                                episode_index, index, task_index, annotation.human.task_description
     videos/chunk-000/observation.images.ego_view/episode_000000.mp4
     meta/info.json  episodes.jsonl  tasks.jsonl  stats.json  episodes_stats.jsonl  modality.json
-    meta/vega_wuji.json                        what the vectors mean, the camera, the hand's MIT table
+    meta/vega_wuji.json                        what the vectors mean, the camera, the hand's MIT table per task
 
 State and action are absolute (vla.action): GR00T's modality config makes the arm relative itself
 (ActionRepresentation.RELATIVE), openpi's DeltaActions transform does the same. Only successful episodes are
@@ -77,6 +77,7 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
     hist = np.zeros((3, 256), np.int64)
     fps = shape = None
     first_meta = None
+    tables: dict[str, dict] = {}  # the hand's MIT table, per task (the drill's trigger finger runs stiffer)
     n_skipped = 0
     index = 0
     for f in files:
@@ -98,6 +99,8 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
         e = len(episodes)
         task = meta["instruction"]
         ti = tasks.setdefault(task, len(tasks))
+        if tables.setdefault(task, meta["hand_table"]) != meta["hand_table"]:
+            raise ValueError(f"{f}: its hand table differs from the rest of {task!r}")
         chunk = e // chunk_size
         cols = {"observation.state": state, "action": action,
                 "timestamp": (np.arange(T) / fps).astype(np.float32), "frame_index": np.arange(T, dtype=np.int64),
@@ -146,8 +149,8 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
     fm = first_meta
     robot = {"state": "right arm joint angles (7, rad) then WUJI Hand 2 joint angles (20, rad), as the host reads",
              "action": "right arm joint position targets (7, rad, before the host's gravity-droop compensation) then "
-                       "WUJI MIT position targets q* (20, rad) under the hand table below",
-             "hand_table": fm["hand_table"], "head_pose": fm["head_pose"], "camera": fm["config"]["vla"],
+                       "WUJI MIT position targets q* (20, rad) under the task's hand table below",
+             "hand_tables": tables, "head_pose": fm["head_pose"], "camera": fm["config"]["vla"],
              "arm_command_rate": fm["config"]["arm"]["command_rate"]}
     _dump(meta_dir / "info.json", info)
     _dump(meta_dir / "stats.json", stats)
