@@ -127,10 +127,14 @@ def main(argv: list[str] | None = None) -> None:
     t.max_steps = p["max_steps"]
     t.warmup_ratio = 0.05
     t.save_only_model = False
-    t.experiment_name = Path(a.output_dir).name
+    t.experiment_name = None  # checkpoints straight under output_dir
+    # a requeued (preempted) job picks up from its last checkpoint; newer GR00T makes resuming a config field
+    resume = any(Path(a.output_dir).glob("checkpoint-*"))
+    if hasattr(t, "resume_from_checkpoint"):
+        t.resume_from_checkpoint = resume
     if p["frozen_bf16"]:
         store_frozen_action_head_in_bf16()
-    print(f"GR00T N1.7 fine-tune, profile {a.profile}: {p}", flush=True)
+    print(f"GR00T N1.7 fine-tune, profile {a.profile}: {p}; resuming: {resume}", flush=True)
     run(config)
 
 
