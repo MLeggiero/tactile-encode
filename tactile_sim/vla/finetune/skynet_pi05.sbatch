@@ -22,15 +22,19 @@ set -euo pipefail
 work="$HOME/scratch/DexVLA/tactile"
 meta="$HOME/scratch/DexVLA/meta"
 config="${CONFIG:-pi05_vega_wuji}"
-export HF_LEROBOT_HOME="$work/lerobot" OPENPI_DATA_HOME="$work/openpi-cache" WANDB_MODE=disabled
+export OPENPI_DATA_HOME="$work/openpi-cache" WANDB_MODE=disabled
 export LD_LIBRARY_PATH="$meta/.pixi/envs/data/lib:${LD_LIBRARY_PATH:-}"  # FFmpeg for torchcodec
 export XLA_PYTHON_CLIENT_MEM_FRACTION=0.9
+src="$(readlink -f "$work/data/${DATASET:-vega_wuji_tools}")"
+# LeRobot opens and seeks a video for every sample. From the shared /coc storage (with GR00T runs reading alongside)
+# that took ~0.7 s a sample, 22 s a step; the dataset (a few hundred MB) goes on the node's own disk instead
+export HF_LEROBOT_HOME="${TMPDIR:-/tmp}/tactile-lerobot-$SLURM_JOB_ID"
+trap 'rm -rf "$HF_LEROBOT_HOME"' EXIT
 mkdir -p "$HF_LEROBOT_HOME/local"
-ln -sfn "$work/data/${DATASET:-vega_wuji_tools}" "$HF_LEROBOT_HOME/local/vega_wuji_tools"
+cp -r "$src" "$HF_LEROBOT_HOME/local/vega_wuji_tools"
 cd "$work/openpi"
 nvidia-smi > "$work/logs/gpus-$SLURM_JOB_ID.txt"
 stats="assets/$config/local/vega_wuji_tools/norm_stats.json"
-src="$(readlink -f "$HF_LEROBOT_HOME/local/vega_wuji_tools")"
 if [[ ! -f "$stats" || "$(cat "$stats.src" 2>/dev/null)" != "$src" ]]; then
     mkdir -p "$(dirname "$stats")"  # from the parquet files (openpi's own pass decodes every video frame: a day)
     .venv/bin/python "$work/finetune/openpi_norm_stats.py" "$src" "$stats"
@@ -39,4 +43,4 @@ fi
 exp="${EXP:-vega_wuji}"
 if [[ -d "checkpoints/$config/$exp" ]]; then flag=--resume; else flag=--overwrite; fi
 .venv/bin/python scripts/train.py "$config" --exp-name="$exp" "$flag" --fsdp-devices="${SLURM_GPUS_ON_NODE:-4}" \
-    ${STEPS:+--num-train-steps="$STEPS" --save-interval="$STEPS"}
+    --num-workers="${WORKERS:-12}" ${STEPS:+--num-train-steps="$STEPS" --save-interval="$STEPS"}
