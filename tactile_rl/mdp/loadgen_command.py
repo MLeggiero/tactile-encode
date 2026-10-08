@@ -221,6 +221,10 @@ class LoadGenCommand(CommandTerm):
             return out
         return dr.param_vector()
 
+    def episode_events(self, env_ids: torch.Tensor) -> torch.Tensor:
+        """(n, 2) float64: each env's events so far this episode and those within the slip target (scored windows)."""
+        return self.ep[env_ids, :2].double()
+
     def take_totals(self) -> torch.Tensor:
         """(4,) events, events within the slip target, their net slip (mm, degrees) since the last call; restarts."""
         out = self.tot.clone()

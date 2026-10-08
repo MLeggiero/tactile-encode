@@ -159,6 +159,9 @@ class MixedBaseCommand(CommandTerm):
     def take_totals(self) -> torch.Tensor:
         return self.lg.take_totals()
 
+    def episode_events(self, env_ids: torch.Tensor) -> torch.Tensor:
+        return self.lg.episode_events(env_ids)  # (a hammer episode has none)
+
     # ------------------------------------------------------------------ per policy tick
     def _update_metrics(self) -> None:
         self.lg._update_metrics()

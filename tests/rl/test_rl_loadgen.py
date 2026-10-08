@@ -270,6 +270,12 @@ def test_curriculum_stages():
         cur._evaluate()
         assert cur.stage == 2 and cmd.amp_scale == 1.0 and dr.scale == 1.0 and cmd.hold_level == (0.3, 0.8)
         assert dr.forecast_mode == "noisy" and dr.forecast_masking
+        # a stage is judged on the episodes that began in it: one under way at the change counts for neither stage
+        env.step(torch.zeros(16, env.action_manager.total_action_dim, device=dev))
+        cur.win.zero_()
+        cur.ep_stage[:8], cur.ep_stage[8:] = 1, 2
+        cur(env, torch.arange(16, device=dev))
+        assert float(cur.win[0]) == 8.0 and bool((cur.ep_stage == 2).all())
     finally:
         env.close()
 
@@ -319,8 +325,8 @@ def test_c3_mixes_hammer_and_load_generator_episodes(library):
     from tactile_rl.tasks.residual import residual_env_cfg
     from tactile_sim.control.obs_spec import TASKS, obs_dim, obs_slices
 
-    env = ManagerBasedRlEnv(residual_env_cfg(1000.0, library=library, num_envs=64, start_stage=3, max_stage=3),
-                            device="cuda:0")
+    env = ManagerBasedRlEnv(residual_env_cfg(1000.0, library=library, num_envs=64, start_stage=3, max_stage=3,
+                                             nan_policy="error"), device="cuda:0")
     try:
         obs, _ = env.reset()
         assert obs["teacher"].shape == (64, obs_dim(1) + sum(PRIVILEGED_BY_TASK["mixed"].values()))
@@ -337,13 +343,15 @@ def test_c3_mixes_hammer_and_load_generator_episodes(library):
         act = env.action_manager.get_term("residual")
         zero = torch.zeros(64, env.action_manager.total_action_dim, device=env.device)
         total = torch.zeros(64, device=env.device)
-        for _ in range(400):
+        assert bool(torch.isnan(cmd.ham.lib.fc_t_event).any())  # the library's "no event" (a last swing's tail)
+        for _ in range(1000):
             ham_now = cmd.is_hammer.clone()
-            _, rew, *_ = env.step(zero)
+            obs, rew, *_ = env.step(zero)
             total += rew
             torch.testing.assert_close(act.command, act.base)
-            # only a hammer episode can end with its entry
+            # only a hammer episode can end with its entry; the teacher's observation stays finite (no event: 0)
             assert not bool((env.termination_manager.get_term("base_done") & ~ham_now).any())
+            assert bool(torch.isfinite(obs["teacher"]).all())
         assert bool(torch.isfinite(total).all())
     finally:
         env.close()

@@ -34,11 +34,17 @@ ALL_GROUPS = ("student", "teacher", "critic", "aux_labels")
 TEACHER_GROUPS = ("teacher",)
 
 
-def observation_groups(task: str, groups: tuple[str, ...] = ALL_GROUPS) -> dict[str, ObservationGroupCfg]:
+def observation_groups(task: str, groups: tuple[str, ...] = ALL_GROUPS,
+                       nan_policy: str = "disabled") -> dict[str, ObservationGroupCfg]:
     """`student` (obs_spec's layout), `teacher` and `critic` (the student's plus the privileged state), and
     `aux_labels` (the students' auxiliary targets: the event truth and, on the load generator, the wrench); `groups`
-    picks which the env returns."""
-    return {k: v for k, v in _all_groups(task).items() if k in groups}
+    picks which the env returns. `nan_policy` is mjlab's per group ("warn": a non-finite value is reported and zeroed,
+    the plan's NaN guard for long runs; "error" in tests), checked once per group and step."""
+    out = {k: v for k, v in _all_groups(task).items() if k in groups}
+    for g in out.values():
+        g.nan_policy = nan_policy
+        g.nan_check_per_term = False
+    return out
 
 
 def _all_groups(task: str) -> dict[str, ObservationGroupCfg]:

@@ -105,7 +105,7 @@ def event_truth(env: ManagerBasedRlEnv) -> torch.Tensor:
     tr = cmd.truth
     t = rt.t
     valid = tr["valid"].float()
-    dt_ev = torch.clamp(tr["t_event"] - t, -1.0, 1.0).float() * valid
+    dt_ev = torch.where(tr["valid"], torch.clamp(tr["t_event"] - t, -1.0, 1.0), torch.zeros_like(t)).float()
     reg = torch.zeros(rt.N, len(REGIMES), device=rt.dev)
     reg.scatter_(1, tr["regime"][:, None], 1.0)
     reg = reg * valid[:, None]

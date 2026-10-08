@@ -17,6 +17,9 @@ path and I^2 t over all envs (Episode_Metrics/dropped, slip_mm, slip_deg, i2t) a
 (Episode_Metrics/hammer_dropped, ...: the load generator's share is the difference), and the hammer's net slip over the
 strikes that kept the grasp (Episode_Metrics/hammer_net_mm, hammer_net_deg, over hammer_strike).
 
+Observations carry mjlab's NaN guard ("warn": a non-finite value is reported in the log and zeroed) so one env cannot
+end a long run; tests build with "error".
+
 The library: `library`, else $TACTILE_BASE_LIBRARY, else runs/base_library/hammer_v1.npz.
 """
 
@@ -93,7 +96,7 @@ def residual_env_cfg(rate: float = 1000.0, library: str | None = None, timestep:
                      num_envs: int = 4096, episode_s: float = 3.0, start_stage: int = 0, max_stage: int = 3,
                      min_episodes: int = 2000, min_events: int = 2000, obs_groups: tuple[str, ...] = ALL_GROUPS,
                      nconmax: int | None = NCONMAX, njmax: int | None = NJMAX,
-                     stage_cap_s: float | None = STAGE_CAP_S) -> ManagerBasedRlEnvCfg:
+                     stage_cap_s: float | None = STAGE_CAP_S, nan_policy: str = "warn") -> ManagerBasedRlEnvCfg:
     key = loadgen_scene_key(rate, timestep)
     events = {"tactile_fields": EventTermCfg(func=tactile_model_fields, mode="startup"),
               "state_bank": EventTermCfg(func=build_state_bank, mode="startup", params={"scene_key": key}),
@@ -118,7 +121,7 @@ def residual_env_cfg(rate: float = 1000.0, library: str | None = None, timestep:
         scene=SceneCfg(num_envs=num_envs, env_spacing=2.0, entities={ENTITY: robot_entity_cfg(key)},
                        sensors=(TactileHubCfg(),)),
         commands={"base": MixedBaseCommandCfg(scene_key=key, library=library_path(library))},
-        observations=observation_groups("mixed", obs_groups),
+        observations=observation_groups("mixed", obs_groups, nan_policy),
         actions={
             "residual": ResidualHandActionCfg(entity_name=ENTITY, scene_key=key, task="hammer"),
             "substep": SubstepHooksCfg(entity_name=ENTITY, scene_key=key),

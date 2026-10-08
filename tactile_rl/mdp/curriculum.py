@@ -12,11 +12,11 @@ The base grip below the settled hold is what leaves the residual a job: at the h
 run near their current ceiling (the SDK effort limit is the rated current), and a residual that grips harder and
 stiffens cannot change the slip; at half the hold it recovers the hold's slip (tactile_rl/README.md).
 
-A stage advances when, over the episodes that ended recently (at least `min_episodes`; each evaluation that does not
-pass halves the window's counts, so older episodes fade), drops stay below `drop_max` and, once there are loads, at
-least `ok_min` of the events (at least `min_events`) kept the tool's slip within the load generator's target. Stage
-settings apply to episodes that start after the change (the load generator's amplitude and whether it runs, the DR
-scale, the forecast's mode).
+A stage advances when, over the episodes that began in it and ended recently (at least `min_episodes`; each evaluation
+that does not pass halves the window's counts, so older episodes fade), drops stay below `drop_max` and, once there are
+loads, at least `ok_min` of their events (at least `min_events`) kept the tool's slip within the load generator's
+target. Stage settings apply to episodes that start after the change (the load generator's amplitude and whether it
+runs, the DR scale, the forecast's mode), so the episodes under way at a change count for neither stage.
 
 `stage_cap_s` (simulated seconds summed over the envs; None: the gates alone) bounds the time a stage may take: past
 it the stage advances at its next evaluation whether or not it passed, and `capped` counts the stages that did. A
@@ -65,6 +65,7 @@ class TactileCurriculum:
         self.stage_cap_s = None if cap is None else float(cap)
         dev = env.device
         self.win = torch.zeros(4, dtype=torch.float64, device=dev)  # episodes, drops, events, events ok
+        self.ep_stage = torch.full((env.num_envs,), self.stage, dtype=torch.long, device=dev)  # each episode's stage
         self.calls = 0
         self.capped = 0
         self.stage_t0 = 0  # env.common_step_counter when the stage began
@@ -94,16 +95,22 @@ class TactileCurriculum:
         del params
         if self._applied != self.stage:
             self.apply()
-        if isinstance(env_ids, torch.Tensor) and env.common_step_counter > 0:
-            cmd = base_command_term(env)
-            drops = env.termination_manager.get_term(self.drop_term)[env_ids].double().sum()
-            tot = cmd.take_totals() if hasattr(cmd, "take_totals") else torch.zeros(4, dtype=torch.float64,
-                                                                                    device=env.device)
-            self.win += torch.stack([torch.as_tensor(float(len(env_ids)), dtype=torch.float64, device=env.device),
-                                     drops, tot[0], tot[1]])
-            self.calls += 1
-            if self.calls % self.eval_every == 0:
-                self._evaluate()
+        if isinstance(env_ids, torch.Tensor):
+            if env.common_step_counter > 0:
+                cmd = base_command_term(env)
+                # a stage is judged on the episodes that began in it (those under way when it began ran the last one's)
+                same = (self.ep_stage[env_ids] == self.stage).double()
+                drops = (env.termination_manager.get_term(self.drop_term)[env_ids].double() * same).sum()
+                if hasattr(cmd, "episode_events"):
+                    ev = cmd.episode_events(env_ids) * same[:, None]
+                    n_ev, n_ok = ev[:, 0].sum(), ev[:, 1].sum()
+                else:
+                    n_ev = n_ok = torch.zeros((), dtype=torch.float64, device=env.device)
+                self.win += torch.stack([same.sum(), drops, n_ev, n_ok])
+                self.calls += 1
+                if self.calls % self.eval_every == 0:
+                    self._evaluate()
+            self.ep_stage[env_ids] = self.stage  # their next episodes begin in the stage as it is now
         return {"stage": float(self.stage), "capped": float(self.capped), **self.last}
 
     def sim_seconds(self, since: int = 0) -> float:

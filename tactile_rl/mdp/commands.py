@@ -257,12 +257,13 @@ class BaseTrajectoryCommand(CommandTerm):
         self.lookahead = look.reshape(self.num_envs, -1)
         # forecast truth in env time, then the forecast model
         valid = lib.fc_valid[e, i]
-        t_ev = self.delay + lib.fc_t_event[e, i] / self.warp
+        # the library stores no event as NaN: 0 where none is planned, as the load generator's truth
+        t_ev = torch.where(valid, self.delay + lib.fc_t_event[e, i] / self.warp, torch.zeros_like(self.delay))
         self.truth = {"valid": valid, "t_event": t_ev, "regime": lib.fc_regime[e, i].clamp(min=0),
                       "f": lib.fc_f[e, i] * self.warp, "amp": lib.fc_amp[e, i] * self.amp * self.warp,
                       "phase": lib.phase[e, i], "t_c_pred": self.delay + lib.t_c_pred[e] / self.warp}
-        self.forecast = self.forecaster(tau, valid, torch.where(valid, t_ev, torch.zeros_like(t_ev)),
-                                        self.truth["regime"], self.truth["f"], self.truth["amp"]).float()
+        self.forecast = self.forecaster(tau, valid, t_ev, self.truth["regime"], self.truth["f"],
+                                        self.truth["amp"]).float()
 
     # ------------------------------------------------------------------ resets
     def _resample_command(self, env_ids: torch.Tensor) -> None:
