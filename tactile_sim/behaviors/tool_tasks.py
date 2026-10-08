@@ -179,16 +179,48 @@ class PositionDrillFeed(_ToolBehavior):
     (or the board), then command it press_depth past where it is so the servos push, ramped over press_time; pull
     the trigger trigger_delay later; keep the target press_depth ahead of the bit as the screw goes in (a hole: advance
     at feed_rate); release release_delay after the tool reports the screw seated (clutch slipping) or the bit
-    through; back out. The bit is the pistol driver's
-    -y axis or the inline driver's +z."""
+    through; back out. The bit is the pistol driver's -y axis or the inline driver's +z. With DrillCfg.aim_from_tool
+    the hand's orientation and path are corrected once, at the start, for where the tool settled (aim_from_tool)."""
 
     def reset(self) -> None:
+        self.R = self.w.tcp_R_nominal.copy()  # a reset aims afresh from the nominal frame
         super().reset()
         dc = self.cfg.drill
         self.a = -self.R[:, 1] if dc.form == "pistol" else self.R[:, 2]
         self.t_trigger = float("nan")
         self.t_done_seen = float("nan")
         self.trigger = 0.0  # the base's trigger command (0..1)
+        self._t_pull: float | None = None
+        self._pulled = False
+        self._t_release: float | None = None
+        self.aim_correction = (0.0, np.zeros(3))  # (rad turned, m shifted) at the start
+        if dc.aim_from_tool:
+            R_fix, shift = self.aim_from_tool()
+            self.R = R_fix @ self.R
+            self.cmd.R_eq = self.R.copy()
+            self.cmd.R_K = self.R.copy()
+            self.x0 = self.x0 - shift
+            self.cmd.x_eq = self.x0.copy()
+            self.aim_correction = (float(np.arccos(np.clip((np.trace(R_fix) - 1) / 2, -1, 1))), -shift)
+
+    def aim_from_tool(self) -> tuple[np.ndarray, np.ndarray]:
+        """One look at the tool where the grasp settled, before the task (as a robot would take with its head
+        camera): the turn of the hand that lines the bit up with the work's axis, and how far across that axis the
+        bit tip then sits from it. The base turns its orientation by the first and shifts its whole path by the
+        second."""
+        plant, d = self.w.plant, self.w.data
+        a_bit = d.xmat[plant.tool].reshape(3, 3) @ plant.bit_local
+        axis = np.cross(a_bit, plant.a)
+        sin, cos = float(np.linalg.norm(axis)), float(a_bit @ plant.a)
+        R_fix = np.eye(3)
+        if sin > 1e-9:
+            k = axis / sin
+            K = np.array([[0, -k[2], k[1]], [k[2], 0, -k[0]], [-k[1], k[0], 0]])
+            R_fix = np.eye(3) + sin * K + (1 - cos) * K @ K  # Rodrigues: a_bit onto the work axis
+        tcp = self.w.ctrl_pose()[0]
+        tip = tcp + R_fix @ (d.site_xpos[plant.tip_site] - tcp)  # the tip once the hand has turned about the TCP
+        e = tip - plant.head0
+        return R_fix, e - (e @ plant.a) * plant.a
 
     def target(self, t: float) -> np.ndarray:
         """Where the base wants the grasp frame at time t (the residual's lookahead evaluates this ahead)."""
@@ -231,7 +263,28 @@ class PositionDrillFeed(_ToolBehavior):
                 self._set_phase("retract", t)
         if self.phase == "retract" and t - self.t_phase >= 0.6:
             self._set_phase("done", t)
-        plant.trigger = self.trigger
+        if getattr(plant, "trigger_qadr", -1) >= 0:
+            # a trigger part: the index finger pulls it, its closing level ramped toward the command over
+            # trigger_pull_time; the motor runs on the trigger's travel
+            syn = self.w.hand.synergy
+            goal = dc.trigger_rest + self.trigger * (dc.trigger_full - dc.trigger_rest)
+            if self.trigger <= 0.0 and self._pulled:
+                # letting go: the finger relaxes fully for trigger_release_time, then rests on the trigger again
+                # (resting on a part-pulled trigger can hold it there)
+                if self._t_release is None:
+                    self._t_release = t
+                if t - self._t_release < dc.trigger_release_time:
+                    goal = 0.0
+                else:
+                    self._pulled = False
+            if self.trigger > 0.0:
+                self._pulled, self._t_release = True, None
+            dt = t - self._t_pull if self._t_pull is not None else 0.0
+            step = (dc.trigger_full - dc.trigger_rest) * dt / dc.trigger_pull_time
+            syn.s_trigger += float(np.clip(goal - syn.s_trigger, -step, step))
+            self._t_pull = t
+        else:
+            plant.trigger = self.trigger
         self.cmd.x_eq = self.target(t)
 
 

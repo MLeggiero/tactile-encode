@@ -3,9 +3,11 @@
 Runs inside Isaac-GR00T's environment (it imports gr00t, not tactile_sim). It is GR00T's own
 gr00t/experiment/launch_finetune.py with the dataset, embodiment and modality config filled in and a profile:
 
-- "16gb" (an RTX 5070 Ti): the diffusion transformer frozen, only the new embodiment's state/action encoders and
-  decoder trained (about 0.33 B parameters); frozen weights in bf16, gradient checkpointing, micro-batches of 16
-  with gradient accumulation. A first model, to test the pipeline and the closed loop; it adapts less than
+- "16gb" (an RTX 5070 Ti with nothing else on it): the diffusion transformer and the VL self-attention frozen,
+  only the new embodiment's state/action encoders and decoder trained (about 0.33 B parameters); frozen weights in
+  bf16, gradient checkpointing, micro-batches of 4 with 16-step gradient accumulation. It does not fit next to
+  other GPU work (RL training, the demos' renderers). A first model, to test the pipeline and the closed loop; it
+  adapts less than
 - "full" (the user's 96 GB GPU, overnight): GR00T's default post-training recipe, projector and diffusion
   transformer trained (1.6 B parameters, about 35 GB at batch 32).
 
@@ -14,10 +16,12 @@ Before training, GR00T needs its relative-action statistics:
     python gr00t/data/stats.py --dataset-path <ds> --embodiment-tag NEW_EMBODIMENT \
         --modality-config-path tactile_sim/vla/finetune/gr00t_vega_wuji_config.py
 
-torchcodec (GR00T's video decoder) needs FFmpeg 4-7 shared libraries; on the desktop they come from a separate
-conda env: LD_LIBRARY_PATH=~/scratch/envs/ffmpeg7/lib.
+On the desktop two libraries GR00T's environment expects come from separate conda envs, leaving the user's
+`gr00t` env as it is: torchcodec (the video decoder) needs FFmpeg 4-7 shared libraries
+(LD_LIBRARY_PATH=~/scratch/envs/ffmpeg7/lib), and the installed deepspeed, which transformers imports even on one
+GPU, needs an nvcc to read the CUDA version (CUDA_HOME=~/scratch/envs/cuda128, conda-forge cuda-nvcc 12.8).
 
-    cd ~/Isaac-GR00T && LD_LIBRARY_PATH=~/scratch/envs/ffmpeg7/lib python \
+    cd ~/Isaac-GR00T && CUDA_HOME=~/scratch/envs/cuda128 LD_LIBRARY_PATH=~/scratch/envs/ffmpeg7/lib python \
         <repo>/tactile_sim/vla/finetune/gr00t_finetune.py --dataset-path <ds> --output-dir <out> --profile 16gb
 """
 
@@ -31,11 +35,33 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 PROFILES = {
-    "16gb": {"tune_diffusion_model": False, "load_bf16": True, "gradient_checkpointing": True, "micro_batch": 16,
-             "grad_accum": 4, "max_steps": 20_000},
-    "full": {"tune_diffusion_model": True, "load_bf16": False, "gradient_checkpointing": False, "micro_batch": 32,
-             "grad_accum": 1, "max_steps": 20_000},
+    "16gb": {"tune_diffusion_model": False, "tune_vlln": False, "load_bf16": True, "frozen_bf16": True,
+             "gradient_checkpointing": True, "micro_batch": 4, "grad_accum": 16, "max_steps": 20_000},
+    "full": {"tune_diffusion_model": True, "tune_vlln": True, "load_bf16": False, "frozen_bf16": False,
+             "gradient_checkpointing": False, "micro_batch": 32, "grad_accum": 1, "max_steps": 20_000},
 }
+
+
+def store_frozen_action_head_in_bf16() -> None:
+    """Keep the action head's frozen modules (the diffusion transformer, the VL self-attention) in bf16 instead of
+    GR00T's fp32: about 2.6 GB less on the GPU. Training runs under bf16 autocast, so their compute is unchanged."""
+    import torch
+    from gr00t.model.gr00t_n1d7.setup import Gr00tN1d7Pipeline
+
+    original = Gr00tN1d7Pipeline.return_model
+
+    def return_model(self):
+        model = original(self)
+        head = model.action_head
+        for name in ("model", "vl_self_attention"):
+            mod = getattr(head, name, None)
+            if mod is not None and not any(p.requires_grad for p in mod.parameters()):
+                mod.to(torch.bfloat16)
+        n_train = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"frozen action-head modules in bf16; {n_train / 1e6:.0f} M trainable parameters", flush=True)
+        return model
+
+    Gr00tN1d7Pipeline.return_model = return_model
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -75,6 +101,7 @@ def main(argv: list[str] | None = None) -> None:
     m.tune_visual = a.tune_visual
     m.tune_projector = True
     m.tune_diffusion_model = p["tune_diffusion_model"]
+    m.tune_vlln = p["tune_vlln"]
     m.state_dropout_prob = a.state_dropout
     m.random_rotation_angle = None
     m.color_jitter_params = None
@@ -101,6 +128,8 @@ def main(argv: list[str] | None = None) -> None:
     t.warmup_ratio = 0.05
     t.save_only_model = False
     t.experiment_name = Path(a.output_dir).name
+    if p["frozen_bf16"]:
+        store_frozen_action_head_in_bf16()
     print(f"GR00T N1.7 fine-tune, profile {a.profile}: {p}", flush=True)
     run(config)
 

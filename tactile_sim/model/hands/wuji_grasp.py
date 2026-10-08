@@ -22,7 +22,7 @@ import numpy as np
 
 from tactile_sim import names
 from tactile_sim.config import SimConfig
-from tactile_sim.control.hand import WrapSynergy
+from tactile_sim.control.hand import WrapSynergy, trigger_finger
 from tactile_sim.model.hands import wuji
 from tactile_sim.model.xmlutil import sub
 
@@ -65,7 +65,7 @@ def hover_hand_rotation(cfg: SimConfig | None = None) -> np.ndarray:
     the grasp seats under gravity the way the task will load it."""
     from tactile_sim.model.builder import tcp_rotation
 
-    return tcp_rotation(cfg) @ wuji.R_HAND_TCP.T
+    return tcp_rotation(cfg) @ wuji.hand_tcp_rotation(cfg).T
 
 
 def _gravity_in_tool(cfg: SimConfig) -> list[float]:
@@ -84,7 +84,13 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
            "grip": h.grip_from_head, "mass": (h.head_mass, h.handle_mass), "g": _gravity_in_tool(cfg),
            "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}
     if cfg.plant.kind == "drill":  # the pistol driver: its whole geometry (hammer keys keep their old values)
-        key["tool"] = {k: v for k, v in cfg.to_dict()["drill"].items() if k.startswith("pistol_")}
+        dc = cfg.to_dict()["drill"]
+        key["tool"] = {k: v for k, v in dc.items() if k.startswith("pistol_")}
+        if dc["trigger_mode"] == "finger":  # and its trigger (keys without one keep their old values)
+            key["trigger"] = {k: v for k, v in dc.items() if k.startswith("trigger_") and k not in
+                              ("trigger_contact", "trigger_delay", "trigger_level", "trigger_slew",
+                               "trigger_full", "trigger_pull_time")}
+            key["trigger"]["relaxed"] = 2  # keyframes with the index relaxed on the released trigger
     blob = json.dumps(key, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
@@ -143,11 +149,13 @@ def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:
     q_base = np.zeros(4)
     mujoco.mju_mulQuat(q_base, q_hand, q_mount_inv)
     base = sub(wb, "body", name="flange", pos=(0, 0, 0.5), quat=q_base)
-    info = wuji.add_wuji_hand(base, root, cfg.gripper, hand_path, (0, 0, 0))
-    from tactile_sim.model.builder import add_tool, tool_contact_geoms
+    info = wuji.add_wuji_hand(base, root, cfg.gripper, hand_path, (0, 0, 0),
+                              tcp_q=wuji.tcp_quat(wuji.hand_tcp_rotation(cfg)))
+    from tactile_sim.model.builder import add_tool, tool_contact_geoms, trigger_contact_pairs
 
     add_tool(wb, cfg, root)
     wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), cfg.gripper)
+    trigger_contact_pairs(contact, info["col_geoms"], cfg)
     eq = sub(root, "equality")
     sub(eq, "weld", name=names.GRASP_WELD, body1=names.HAND_BODY, body2=names.HAMMER_BODY, active="false",
         solref=(0.005, 1))
@@ -175,7 +183,7 @@ def _rel(m, d, hand, hb):
 
 
 def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_time: float = 0.6,
-               hold_time: float = 0.5) -> WrapGrasp:
+               hold_time: float = 0.5, relax_time: float = 0.3) -> WrapGrasp:
     xml, info = build_scene(cfg, hand_path)
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -185,6 +193,14 @@ def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_ti
     act = np.array([m.actuator(f"m_{j}").id for j, _ in joints])
     syn = WrapSynergy.for_wuji(joints, cfg.gripper.thumb_close, cfg.gripper.thumb_preshape,
                                cfg.gripper.finger_synergy)
+    dc = cfg.drill
+    has_trigger = cfg.plant.kind == "drill" and dc.form == "pistol" and dc.trigger_mode == "finger"
+    if has_trigger:
+        # the hand closes on the trigger held at rest, the index finger with the grip, so the tool seats as on the
+        # plain grip; then the trigger is let go and the index relaxes to its resting level (below)
+        tj = m.joint(names.TRIGGER_JOINT).id
+        trigger_range = m.jnt_range[tj].copy()
+        m.jnt_range[tj] = (0.0, 1e-6)
     hand, hb = m.body(names.HAND_BODY).id, m.body(names.HAMMER_BODY).id
     tcp = m.site(names.TCP_SITE).id
     hq = m.joint("hammer_free").qposadr[0]
@@ -215,6 +231,18 @@ def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_ti
     run(seat_time)
     pa, Ra = _rel(m, d, hand, hb)
     run(hold_time)
+    if has_trigger:
+        # the keyframe as a task starts from it: the index lets go (the trigger still held at rest), then rests on
+        # the freed trigger at its own level, and the tool re-seats under the lighter index. The resting finger has
+        # two equilibria, trigger out and trigger part-pulled; coming from the released side it finds the first
+        trigger_finger(syn, cfg)
+        syn.s_trigger = 0.0
+        run(0.5 * relax_time)
+        m.jnt_range[tj] = trigger_range
+        syn.s_trigger = dc.trigger_rest
+        run(relax_time)
+        pa, Ra = _rel(m, d, hand, hb)
+        run(hold_time)
     p1, R1 = _rel(m, d, hand, hb)
     q1 = np.zeros(4)
     mujoco.mju_mat2Quat(q1, R1.reshape(-1))

@@ -32,6 +32,7 @@ import numpy as np
 
 from tactile_sim import names
 from tactile_sim.model.plants.base import Plant, add_table, apply_point_forces, body_point_velocity
+from tactile_sim.model.tools import trigger_level
 from tactile_sim.model.xmlutil import sub
 
 DRILL_BOARD = "drill_board"
@@ -81,6 +82,9 @@ class DrillPlant(Plant):
         self.screw_mocap = (int(model.body(SCREW_BODY).mocapid[0]) if self.cfg.drill.mode == "screw" else -1)
         self._buf = np.zeros(6)
         self.trigger = 0.0
+        # a trigger part (DrillCfg.trigger_mode "finger"): the motor reads its travel; else the base sets self.trigger
+        self.trigger_qadr = (int(model.joint(names.TRIGGER_JOINT).qposadr[0])
+                             if self.cfg.drill.form == "pistol" and self.cfg.drill.trigger_mode == "finger" else -1)
         # the bit's direction in the tool frame: the inline driver's +z, the pistol driver's -y
         self.bit_local = np.array([0.0, -1.0, 0.0]) if self.cfg.drill.form == "pistol" else np.array([0.0, 0.0, 1.0])
         self.reset()
@@ -148,6 +152,8 @@ class DrillPlant(Plant):
         dc, d, m = self.cfg.drill, self.d, self.m
         dt = m.opt.timestep
         t = float(d.time)
+        if self.trigger_qadr >= 0:
+            self.trigger = trigger_level(dc, float(d.qpos[self.trigger_qadr]))
         tip = d.site_xpos[self.tip_site].copy()
         a_t = d.xmat[self.tool].reshape(3, 3) @ self.bit_local  # bit axis
         self.misalign = float(np.arccos(np.clip(a_t @ self.a, -1.0, 1.0)))

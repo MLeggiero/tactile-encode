@@ -91,7 +91,8 @@ about 10 points or more on hammer and drill in closed loop.
   regenerate stats with `gr00t/data/stats.py` when the horizon changes; lower `state_dropout_prob` for tasks that
   depend on proprioception; serve with `gr00t/eval/run_gr00t_server.py` (ZeroMQ, port 5555).
 - On the desktop, GR00T's video decoder (torchcodec 0.4) needs FFmpeg 4–7 shared libraries, which the `gr00t`
-  conda env does not have (it has FFmpeg 2.8); a separate env provides them (`docs/vla_in_sim.md`).
+  conda env does not have (it has FFmpeg 2.8), and its deepspeed needs an nvcc the desktop lacks; separate envs
+  provide both (`docs/vla_in_sim.md`).
 
 ## Sources
 

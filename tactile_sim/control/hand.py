@@ -23,6 +23,8 @@ from dataclasses import dataclass
 import numpy as np
 
 THUMB_JOINTS = ("r_thumb_cmc_flex", "r_thumb_cmc_abd", "r_thumb_mcp", "r_thumb_ip")
+# the finger on a tool's trigger: its flexion joints (the residual's ResidualCfg.trigger_joints by default)
+TRIGGER_FINGER = ("r_index_finger_mcp_flex", "r_index_finger_pip", "r_index_finger_dip")
 # finger flexion torque ratios from the two flexor tendons' moment arms (MCP, PIP, DIP)
 TENDON_RATIO = {"mcp_flex": 1.0, "pip": (7.5 + 7.0) / 20.0, "dip": 5.0 / 20.0}
 
@@ -53,6 +55,9 @@ class WrapSynergy:
     coupled: list[tuple[int, int]] | None = None
     coupling_ratio: float = 2.0 / 3.0
     coupling_kp: float = 3.0  # Nm/rad
+    # a trigger finger (a tool's trigger under it): these joints close at their own level s_trigger, not the grip's
+    trigger: tuple[int, ...] = ()
+    s_trigger: float = 0.0
 
     @classmethod
     def for_wuji(cls, joints: list[tuple[str, float]], thumb_close: tuple[int, int, int, int],
@@ -73,11 +78,17 @@ class WrapSynergy:
                        if n.endswith("_dip") and n[: -len("_dip")] + "_pip" in names]
         return cls(names, tau_max, d, q_hold, weight=w, coupled=coupled)
 
+    def levels(self, s: float) -> np.ndarray:
+        """Closing level per joint: the grip's s, the trigger finger's own."""
+        lv = np.full(len(self.joints), float(np.clip(s, 0.0, 1.0)))
+        if self.trigger:
+            lv[list(self.trigger)] = float(np.clip(self.s_trigger, 0.0, 1.0))
+        return lv
+
     def torque(self, s: float, q: np.ndarray, qd: np.ndarray) -> np.ndarray:
-        s = float(np.clip(s, 0.0, 1.0))
         shaping = self.close_dir == 0
         w = 1.0 if self.weight is None else self.weight
-        tau = s * self.close_dir * w * self.tau_max - self.kd * qd
+        tau = self.levels(s) * self.close_dir * w * self.tau_max - self.kd * qd
         tau[shaping] += self.kp * (self.q_hold[shaping] - q[shaping])
         for i, j in self.coupled or ():
             # the fingertip joint is driven to its share of the middle joint's flexion, plus its tendon share
@@ -90,14 +101,22 @@ class WrapSynergy:
         shaping joints, the damping on every joint, and on a coupled fingertip joint a PD to its share of the
         middle joint's angle as last read (`q`). The drives' current ceiling plays the part of the clip in
         `torque`."""
-        s = float(np.clip(s, 0.0, 1.0))
         n = len(self.joints)
         shaping = self.close_dir == 0
         w = 1.0 if self.weight is None else self.weight
-        tau = s * self.close_dir * w * self.tau_max * np.ones(n)
+        tau = self.levels(s) * self.close_dir * w * self.tau_max * np.ones(n)
         q_t = np.where(shaping, self.q_hold, q).astype(float)
         kp = np.where(shaping, self.kp, 0.0)
         for i, j in self.coupled or ():
             q_t[i] = self.coupling_ratio * q[j]
             kp[i] = self.coupling_kp
         return q_t, np.zeros(n), kp, np.full(n, self.kd), tau
+
+
+def trigger_finger(synergy: WrapSynergy, cfg) -> None:
+    """With a trigger part on the tool (DrillCfg.trigger_mode "finger"), the index finger closes at its own level,
+    starting at the drill's trigger_rest; a base pulls the trigger by raising synergy.s_trigger."""
+    dc = cfg.drill
+    if cfg.plant.kind == "drill" and dc.form == "pistol" and dc.trigger_mode == "finger":
+        synergy.trigger = tuple(synergy.joints.index(j) for j in TRIGGER_FINGER if j in synergy.joints)
+        synergy.s_trigger = dc.trigger_rest

@@ -16,7 +16,7 @@ import mujoco
 import numpy as np
 
 from tactile_sim import names
-from tactile_sim.control.hand import WrapSynergy
+from tactile_sim.control.hand import WrapSynergy, trigger_finger
 from tactile_sim.control.interface import HandCommand
 
 
@@ -46,7 +46,8 @@ class HandIO:
     def __init__(self, world):
         self.world = world
         m = world.model
-        self.tool_geoms = frozenset(g for g in range(m.ngeom) if m.geom_bodyid[g] == world.hammer_body)
+        # the held tool's geoms, its moving parts (a trigger) included
+        self.tool_geoms = frozenset(g for g in range(m.ngeom) if m.body_rootid[m.geom_bodyid[g]] == world.hammer_body)
         # first-order lag between the commanded grip and the grip the drives apply (GripperCfg.grip_lag)
         lag = world.cfg.gripper.grip_lag
         self._lag_a = 1.0 - float(np.exp(-world.dt / lag)) if lag > 0.0 else 1.0
@@ -360,6 +361,7 @@ class WujiHandIO(HandIO):
         self.jids = np.array([m.joint(j).id for j in self.joint_names])
         self.act = np.array([m.actuator(f"m_{j}").id for j in self.joint_names])
         self.synergy = WrapSynergy.for_wuji(joints, g.thumb_close, g.thumb_preshape, g.finger_synergy)
+        trigger_finger(self.synergy, world.cfg)
         self._grids = {}
         self.patches = []
         self._skin_by_geom = {}

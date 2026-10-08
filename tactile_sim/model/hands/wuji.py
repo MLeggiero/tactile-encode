@@ -34,6 +34,10 @@ FINGERS = ("thumb", "index_finger", "middle_finger", "ring_finger", "pinky")
 # TCP (= hammer grasp frame) axes in the hand frame: handle along -x (head on the thumb side), striking
 # face toward the fingertips (-z), hammer z along the palm normal
 R_HAND_TCP = np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+# the pistol driver held as a person holds a drill (DrillCfg.pistol_grasp = "pistol"): the grip across the palm as the
+# hammer's handle (the housing on the thumb side), turned about it so the bit points out from the palm; the fingers
+# wrap around the grip's front and the index finger, next to the housing, comes round to the trigger
+R_HAND_TCP_PISTOL = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
 PALM_SURFACE_Y = 0.0173  # palm hull's +y face, hand frame
 PALM_PATCH_NOMINAL = (-0.003, PALM_SURFACE_Y - 0.00025, -0.085 + 0.0285)  # palm body frame, under the handle
 
@@ -99,11 +103,19 @@ def mount_quat(yaw: float) -> tuple[float, float, float, float]:
     return _quat_mul(qy, flip)
 
 
-def tcp_quat() -> tuple[float, float, float, float]:
+def hand_tcp_rotation(cfg=None) -> np.ndarray:
+    """The tool (grasp) frame's axes in the hand frame for this configuration's wrap."""
+    if cfg is not None and cfg.plant.kind == "drill" and cfg.drill.form == "pistol" and \
+            cfg.drill.pistol_grasp == "pistol":
+        return R_HAND_TCP_PISTOL
+    return R_HAND_TCP
+
+
+def tcp_quat(R: np.ndarray | None = None) -> tuple[float, float, float, float]:
     import mujoco
 
     q = np.zeros(4)
-    mujoco.mju_mat2Quat(q, R_HAND_TCP.reshape(-1))
+    mujoco.mju_mat2Quat(q, (R_HAND_TCP if R is None else R).reshape(-1))
     return tuple(float(x) for x in q)
 
 
@@ -202,7 +214,7 @@ def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, han
 
 
 def contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], handle_geoms: list[str],
-                  g: GripperCfg) -> None:
+                  g: GripperCfg, self_pairs: bool = True) -> None:
     skin = dict(condim=4, friction=(g.hand_friction, g.hand_friction, g.pad_torsion, 0.0001, 0.0001),
                 solref=g.hand_solref, solimp=g.pad_solimp)
     for bname, geoms in col_geoms.items():
@@ -211,6 +223,8 @@ def contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], handle_g
         for gm in geoms:
             for hg in handle_geoms:
                 sub(contact, "pair", geom1=gm, geom2=hg, **skin)
+    if not self_pairs:
+        return
     # the wrap must not pass through itself: thumb on the index/middle fingers, fingertips on the palm
     thumb = [gm for b, gs in col_geoms.items() if "thumb_middle" in b or "thumb_distal" in b for gm in gs]
     fingers = [gm for b, gs in col_geoms.items() if ("index" in b or "middle_finger" in b) and

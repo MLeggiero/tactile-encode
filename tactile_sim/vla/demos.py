@@ -1,10 +1,11 @@
 """Scripted demos for the VLA (L3) on the Vega U + WUJI Hand 2.
 
 Each episode runs a task's scripted base in the CPU testbed the experiment evaluates in (MIT drives, the TaxelScan
-fast profile, the residual slot at zero), with the residual experiment's physics randomization, the task shifted
-on the table (TASK_SHIFT), the strike speed varied, and a VisualDR draw. The head stays aimed at the unshifted
-task, so the task moves in the image. A recorder on the 1 kHz clock samples, at VlaCfg.fps (frame k at the first
-millisecond at or after k / fps):
+fast profile, the residual slot at zero), with the residual experiment's physics randomization, the task shifted on
+the table (TASK_SHIFT), and a VisualDR draw: the hammer's swing (its strike speed varied) until the nail is home, or
+the drill's feed driving a screw, the trigger pulled by the index finger (DrillCfg trigger_mode "finger"). The head
+stays aimed at the unshifted task, so the task moves in the image. A recorder on the 1 kHz clock samples, at
+VlaCfg.fps (frame k at the first millisecond at or after k / fps):
 
 - the head camera, streamed to an h264 mp4;
 - the state: the arm's joint_pos and the hand's hand_q, as the host reads them;
@@ -35,6 +36,7 @@ INSTRUCTIONS = {"hammer": "hammer the nail into the board", "drill": "drive the 
 TASK_SHIFT = 0.03  # m, uniform on each horizontal axis: the whole task (board, nail, hover) moved on the table
 STRIKE_SPEED = (0.85, 1.15)  # x the nominal strike speed
 MAX_STRIKES = 20  # an episode ends when the nail is home, or after this many strikes
+DRILL_T_MAX = 10.0  # s: a screw that has not seated by then is a failed demo
 VIDEO_KEY = "observation.images.ego_view"
 START = 0.02  # s: recording starts after the grip loop and the arm's first commands have run
 
@@ -177,23 +179,55 @@ def demo_config(task: str, seed: int, fast: bool = False):
     return cfg.replace(**over), {"dr": dr, "overrides": over}
 
 
-def run_demo(job: DemoJob) -> dict:
+def _hammer_episode(cfg, seed: int):
+    """The scripted swing until the nail is home (or MAX_STRIKES): testbed, base, run() -> outcome."""
     from tactile_sim.behaviors.base_sources import SwingBase
     from tactile_sim.episode import Episode
+
+    ep = Episode(cfg, seed=seed)
+    base = SwingBase(ep.tb, ep.swing, rng=np.random.default_rng(10_000 + seed))
+
+    def run() -> dict:
+        res = ep.run(MAX_STRIKES)
+        tb = ep.tb
+        return {"success": bool(tb.world.plant.done() and not tb.grip.dropped), "dropped": bool(tb.grip.dropped),
+                "n_strikes": len(res.strikes)}
+
+    return ep.tb, base, run
+
+
+def _drill_episode(cfg, seed: int):
+    """The scripted drill feed (screw): approach, press, pull the trigger with the index finger, release when the
+    clutch clicks, back out."""
+    from tactile_sim.behaviors.base_sources import DrillBase
+    from tactile_sim.tool_task import ToolTask
+
+    tt = ToolTask(cfg, seed=seed, t_max=DRILL_T_MAX)
+    base = DrillBase(tt.tb, tt.behavior, rng=np.random.default_rng(10_000 + seed))
+
+    def run() -> dict:
+        s = tt.run().summary
+        return {"success": bool(s["done"] and not s["lost"]), "dropped": bool(s["lost"]), "t_done": s["t_done"],
+                "cam_outs": s["cam_outs"]}
+
+    return tt.tb, base, run
+
+
+EPISODES = {"hammer": _hammer_episode, "drill": _drill_episode}
+
+
+def run_demo(job: DemoJob) -> dict:
     from tactile_sim.vla.action import HandTable
     from tactile_sim.vla.camera import EgoCamera
 
     npz = job.stem.with_suffix(".npz")
     if npz.exists():
         return {"status": "skip", "path": str(npz)}
-    if job.task != "hammer":
-        raise NotImplementedError("drill demos wait for the trigger under the index finger (drill v2)")
     t_wall = time.time()
     cfg, draw = demo_config(job.task, job.seed, job.fast)
-    ep = Episode(cfg, seed=job.seed)
-    tb = ep.tb
+    tb, base, run = EPISODES[job.task](cfg, job.seed)
     tb.sensors.set_noise_scale(draw["dr"]["_runtime"]["sensor_noise_scale"])
-    tb.residual.base_fn = SwingBase(tb, ep.swing, rng=np.random.default_rng(10_000 + job.seed))
+    tb.residual.base_fn = base
     cam = EgoCamera(tb.world.model, cfg)
     visual = cam.randomize(np.random.default_rng(20_000 + job.seed)) if cfg.vla.visual_dr else None
     table = HandTable.for_hand(tb.world.hand, cfg)
@@ -204,15 +238,12 @@ def run_demo(job: DemoJob) -> dict:
     rec = DemoRecorder(tb, cam, table, v.fps, video)
     tb.sched.register("vla_demo", 1000.0, rec)
     try:
-        res = ep.run(MAX_STRIKES)
+        outcome = run()
     finally:
         video.close()
         cam.close()
-    plant = tb.world.plant
-    success = bool(plant.done() and not tb.grip.dropped)
-    meta = {"task": job.task, "instruction": INSTRUCTIONS[job.task], "seed": job.seed, "fps": v.fps,
-            "success": success, "dropped": bool(tb.grip.dropped), "depth": float(plant.depth),
-            "n_strikes": len(res.strikes), "draw": draw, "visual": visual, "hand_table": table.to_dict(),
+    meta = {"task": job.task, "instruction": INSTRUCTIONS[job.task], "seed": job.seed, "fps": v.fps, **outcome,
+            "depth": float(tb.world.plant.depth), "draw": draw, "visual": visual, "hand_table": table.to_dict(),
             "hand_joints": list(tb.world.hand.joint_names),
             "head_pose": list(cfg.arm.head_pose), "config": cfg.to_dict(), "wall_s": time.time() - t_wall}
     mp4.with_suffix(".mp4.part").rename(mp4)
@@ -220,7 +251,8 @@ def run_demo(job: DemoJob) -> dict:
     np.savez(tmp, state=np.asarray(rec.state, np.float32), action=np.asarray(rec.action, np.float32),
              t=np.asarray(rec.t), image_hist=rec.stats.hist, meta=json.dumps(meta, default=_jsonable))
     tmp.rename(npz)
-    return {"status": "ok", "path": str(npz), "success": success, "frames": rec.k, "wall_s": meta["wall_s"]}
+    return {"status": "ok", "path": str(npz), "success": outcome["success"], "frames": rec.k,
+            "wall_s": meta["wall_s"]}
 
 
 def _jsonable(o):

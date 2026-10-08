@@ -270,6 +270,31 @@ class DrillCfg:
     pistol_grip_mass: float = 0.12
     pistol_battery_mass: float = 0.45
     pistol_battery_half: tuple[float, float, float] = (0.035, 0.05, 0.03)  # box beyond the grip's end
+    # how the WUJI wraps the pistol's grip: "side" (as the hammer's handle: the palm along the grip's side, the bit
+    # toward the fingertips) or "pistol" (as a person holds a drill: the palm behind the grip, the bit pointing out
+    # from it, the push into the palm, the index finger round the grip's front where the trigger is)
+    pistol_grasp: str = "side"
+    # the pistol's trigger. "script": the base sets the motor's trigger level itself (no trigger part). "finger": a
+    # sprung slide trigger on the grip's front, where the WUJI wrap lays the index finger's proximal segment; the
+    # index finger closes on it with its own level (trigger_rest / trigger_full below), and the motor runs on the
+    # trigger's travel past a dead band. The trigger sits trigger_x below the grip's top, trigger_angle around
+    # the grip from the front (-y) toward +z, and slides radially into the grip
+    trigger_mode: str = "script"
+    trigger_x: float = 0.002  # m
+    trigger_angle: float = 0.32  # rad
+    trigger_half: tuple[float, float, float] = (0.0045, 0.0035, 0.007)  # m: along the grip, radial, across
+    trigger_friction: float = 0.05  # skin on the trigger's smooth face (more and the finger's edge contact sticks)
+    trigger_travel: float = 0.006  # m
+    trigger_gap: float = 0.001  # m between the fully pulled trigger and the grip
+    trigger_force: tuple[float, float] = (8.0, 15.0)  # N of spring at rest and at full travel
+    trigger_damping: float = 1.0  # Ns/m
+    trigger_dead: float = 0.2  # fraction of the travel before the motor runs
+    # the index finger's closing level on the trigger (its share of the grip synergy's torque, apart from the grip
+    # level): resting on it, and at a full pull
+    trigger_rest: float = 0.15
+    trigger_full: float = 0.8
+    trigger_pull_time: float = 0.15  # s for the base to go from resting to a full pull
+    trigger_release_time: float = 0.25  # s the finger stays fully relaxed when the base lets go of a pull
     handle_radius: float = 0.018
     body_span: tuple[float, float] = (-0.10, 0.04)  # along the bit, tool frame
     body_mass: float = 0.8
@@ -293,7 +318,8 @@ class DrillCfg:
     screw_torque0: float = 0.25
     screw_torque_per_m: float = 40.0
     seat_stiffness: float = 3000.0  # Nm per m past flush
-    engage_radius: float = 0.002  # bit tip within this of the screw axis to engage the recess
+    engage_radius: float = 0.003  # bit tip within this of the screw axis to engage the recess (a #2 Phillips
+    # recess, ~6 mm across, steers a pressed bit that lands within about its radius into the cross)
     cam_ratio: float = 0.03  # cam-out when torque > cam_ratio * axial push (Phillips)
     cam_max_angle: float = 0.26  # rad of bit misalignment at which cam-out needs no torque
     cam_time: float = 0.015
@@ -324,6 +350,10 @@ class DrillCfg:
     trigger_delay: float = 0.1
     trigger_level: float = 1.0  # how far the base pulls the variable-speed trigger (0..1)
     release_delay: float = 0.3  # s the trigger stays pulled after the tool reports done (the clutch ratchets)
+    # aim the bit from where the tool settled in the hand (one look before the task), not from the grasp keyframe:
+    # turn the hand so the bit lines up with the work and shift the path onto its axis (a degree of tool rotation in
+    # the hand moves the tip ~4 mm, twice the screw recess's catch, and a tilted bit cams out of the recess sooner)
+    aim_from_tool: bool = True
     # holes on a position arm: past the press the target advances at feed_rate (feed-rate control, as a CNC drills;
     # chasing the bit with a stiff servo turns the feed law's thrust-feed coupling into a runaway)
     feed_rate: float = 0.003  # m/s
@@ -642,6 +672,13 @@ class ResidualDRCfg:
     ts_bridge_hi: tuple[float, float] = (0.0005, 0.001)  # s, upper end of the host-bridge latency
     servo_p_mult: tuple[float, float] = (0.7, 1.4)  # Vega arm stiffness multiplier
     sensor_noise_scale: tuple[float, float] = (0.5, 2.0)  # log-uniform
+    # the drill (plant kind "drill"), as multiples of its configured values unless noted
+    drill_stall_scale: tuple[float, float] = (0.75, 1.25)
+    drill_clutch_scale: tuple[float, float] = (0.7, 1.1)  # higher needs more push than the Vega's press gives
+    drill_detents: tuple[int, int] = (4, 12)  # clutch detents per revolution, inclusive
+    drill_cam_scale: tuple[float, float] = (0.8, 1.3)
+    drill_exit_len: tuple[float, float] = (0.001, 0.004)  # m, the hole's breakthrough
+    pistol_mass_scale: tuple[float, float] = (0.85, 1.3)  # the housing and the battery
 
 
 @dataclass
@@ -862,10 +899,8 @@ LIGHT_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
 VEGA_DRILL_OVERRIDES: dict[str, dict[str, Any]] = {
     "plant": {"kind": "drill"},
     "drill": {"form": "pistol", "mode": "screw", "stall_torque": 3.0, "clutch_torque": 1.5, "press_depth": 0.012,
-              "drill_torque_per_feed": 1500.0},
+              "drill_torque_per_feed": 1500.0, "trigger_mode": "finger"},
     "swing": {"arc_radius": 0.0},
-    # the base pulls the trigger itself until the trigger is a joint under the index finger: no finger interlock
-    "residual": {"trigger_joints": ()},
 }
 
 

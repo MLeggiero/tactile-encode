@@ -117,12 +117,26 @@ def add_tool(wb, cfg: SimConfig, root) -> str:
 
 
 def tool_contact_geoms(cfg: SimConfig) -> list[str]:
-    """The held tool's geoms a wrap grasp touches: the hammer's handle slices, or the pistol driver's grip."""
+    """The held tool's geoms a wrap grasp touches: the hammer's handle slices, or the pistol driver's grip (its
+    trigger, when it has one, gets its own pairs: trigger_contact_pairs)."""
     if cfg.plant.kind == "drill" and cfg.drill.form == "pistol":
         return [names.HAMMER_HANDLE_GEOM]
     if cfg.plant.kind != "nail":
         raise ValueError(f"the WUJI Hand 2 wraps the hammer or the pistol driver, not a {cfg.plant.kind!r} tool")
     return handle_segment_geoms(cfg.hammer)
+
+
+def trigger_contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], cfg: SimConfig) -> None:
+    """Hand-trigger contact pairs when the pistol has a trigger part (DrillCfg.trigger_mode "finger"): the hand's skin
+    on the trigger's smooth face, at DrillCfg.trigger_friction."""
+    if not (cfg.plant.kind == "drill" and cfg.drill.form == "pistol" and cfg.drill.trigger_mode == "finger"):
+        return
+    from dataclasses import replace
+
+    from tactile_sim.model.hands import wuji
+
+    g = replace(cfg.gripper, hand_friction=cfg.drill.trigger_friction)
+    wuji.contact_pairs(contact, col_geoms, [names.TRIGGER_GEOM], g, self_pairs=False)
 
 
 def _scene_setup(root: ET.Element, cfg: SimConfig) -> tuple[ET.Element, ET.Element]:
@@ -319,6 +333,7 @@ def _add_wuji(root, cfg: SimConfig, contact, left_hand: bool = True) -> dict:
     wb = root.find("worldbody")
     info["hammer_source"] = add_tool(wb, cfg, root)
     wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), g)
+    trigger_contact_pairs(contact, info["col_geoms"], cfg)
     info["grasp"] = grasp
     if left_hand and cfg.arm.robot.startswith("vega") and cfg.arm.left_hand:
         left = hand_xml("wuji2_left")

@@ -26,6 +26,7 @@ STATE_DIM = ACTION_DIM = N_ARM + N_JOINTS
 ARM = slice(0, N_ARM)
 HAND = slice(N_ARM, N_ARM + N_JOINTS)
 ARM_NAMES = VEGA_ARM
+TRIGGER_KP_SCALE = 4.0
 
 
 @dataclass(frozen=True)
@@ -37,11 +38,15 @@ class HandTable:
     tau: np.ndarray
 
     @classmethod
-    def from_synergy(cls, synergy, s_ref: float, joint_names: list[str], kp_nom_groups) -> HandTable:
-        """The synergy's MIT law at the grip level s_ref, with the vendor's nominal Kp on the closing joints (whose
-        synergy Kp is 0), so a target steers them around the squeeze the feedforward holds."""
+    def from_synergy(cls, synergy, s_ref: float, joint_names: list[str], kp_nom_groups,
+                     trigger_kp_scale: float = TRIGGER_KP_SCALE) -> HandTable:
+        """The synergy's MIT law at the grip level s_ref (a trigger finger at its resting level), with the vendor's
+        nominal Kp on the closing joints (whose synergy Kp is 0), so a target steers them around the squeeze the
+        feedforward holds. A trigger finger's Kp is trigger_kp_scale times stiffer, so a full pull stays within
+        about a radian of where the finger is."""
         _, _, kp, kd, tau = synergy.mit_command(s_ref, np.zeros(len(joint_names)))
         kp_nom = np.asarray(kp_nom_groups, float)[[JOINT_GROUPS.index(joint_group(n)) for n in joint_names]]
+        kp_nom[list(getattr(synergy, "trigger", ()))] *= trigger_kp_scale
         return cls(np.where(kp > 0, kp, kp_nom), np.asarray(kd, float), np.asarray(tau, float))
 
     @classmethod

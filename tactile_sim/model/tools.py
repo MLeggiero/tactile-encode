@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import xml.etree.ElementTree as ET
 
+import numpy as np
+
 from tactile_sim import names
 from tactile_sim.config import DrillCfg, SawCfg
 from tactile_sim.model.xmlutil import sub
@@ -97,7 +99,41 @@ def add_pistol_driver(worldbody: ET.Element, dc: DrillCfg) -> str:
     sub(b, "site", name=BIT_TIP_SITE, pos=tip, size=0.002, group=4)
     sub(b, "site", name=names.HAMMER_FACE_SITE, pos=tip, size=0.003, group=4)
     sub(b, "site", name=names.HAMMER_IMU_SITE, pos=(xh, 0, 0), size=0.003, group=4)
+    if dc.trigger_mode == "finger":
+        add_pistol_trigger(b, dc)
+    elif dc.trigger_mode != "script":
+        raise ValueError(f"unknown trigger_mode {dc.trigger_mode!r} (expected 'script' or 'finger')")
     return "pistol_driver"
+
+
+def pistol_trigger_frame(dc: DrillCfg) -> tuple[np.ndarray, np.ndarray]:
+    """The trigger's centre at rest and the direction it is pulled (radially into the grip), in the tool frame."""
+    a = dc.trigger_angle
+    out = np.array([0.0, -np.cos(a), np.sin(a)])  # from the grip's axis, the front (-y) turned toward +z
+    x = -dc.pistol_grip_from_head + dc.pistol_housing_radius + dc.trigger_x
+    r = dc.pistol_grip_radius + dc.trigger_gap + dc.trigger_travel + dc.trigger_half[1]
+    return np.array([x, 0.0, 0.0]) + r * out, -out
+
+
+def add_pistol_trigger(tool_body: ET.Element, dc: DrillCfg) -> None:
+    """A box on a slide joint, pulled into the grip against a preloaded spring (DrillCfg trigger_*): joint position 0
+    at rest, trigger_travel fully pulled. It collides only through explicit pairs with the hand."""
+    c, pull = pistol_trigger_frame(dc)
+    y_b = -pull  # the box's y: radial, outward
+    tb = sub(tool_body, "body", name=names.TRIGGER_BODY, pos=c, xyaxes=(1, 0, 0, *y_b))
+    f0, f1 = dc.trigger_force
+    k = (f1 - f0) / dc.trigger_travel
+    sub(tb, "joint", name=names.TRIGGER_JOINT, type="slide", axis=(0, -1, 0), limited="true",
+        range=(0, dc.trigger_travel), stiffness=k, springref=-f0 / k, damping=dc.trigger_damping, armature=0.01,
+        solreflimit=(0.002, 1.0))  # hard stops (MuJoCo's default limit is soft for a part this light)
+    sub(tb, "geom", name=names.TRIGGER_GEOM, type="box", size=dc.trigger_half, mass=0.008, rgba=(0.85, 0.2, 0.1, 1),
+        contype=0, conaffinity=0)
+
+
+def trigger_level(dc: DrillCfg, travel: float) -> float:
+    """The motor's speed command (0..1) for a trigger pulled `travel` metres: nothing through the dead band."""
+    x = travel / dc.trigger_travel
+    return float(np.clip((x - dc.trigger_dead) / (1.0 - dc.trigger_dead), 0.0, 1.0))
 
 
 def pistol_tip_local(dc: DrillCfg) -> tuple[float, float, float]:

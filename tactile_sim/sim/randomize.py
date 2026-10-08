@@ -65,7 +65,7 @@ def residual_dr(cfg: SimConfig, rng: np.random.Generator) -> dict[str, dict]:
 
     lpf = u(r.sdk_lpf_hz) if rng.uniform() < r.sdk_lpf_prob else None
     kt = u(r.kt_scale)
-    return {
+    out = {
         "hammer": {"head_mass": u(r.head_mass)},
         "gripper": {"hand_friction": u(r.hand_friction), "hand_solref": (u(r.hand_solref_tc), 1.0)},
         "plant": {"resistance_0": u(r.nail_resistance_0), "resistance_per_m": u(r.nail_resistance_per_m),
@@ -82,6 +82,16 @@ def residual_dr(cfg: SimConfig, rng: np.random.Generator) -> dict[str, dict]:
         "_runtime": {"sensor_noise_scale": float(np.exp(rng.uniform(*np.log(r.sensor_noise_scale)))),
                      "face_timeconst": u(r.face_timeconst)},
     }
+    if cfg.plant.kind == "drill":  # drawn after everything else, so the hammer's draws for a seed are unchanged
+        dc = cfg.drill
+        mass = u(r.pistol_mass_scale)
+        out["drill"] = {"stall_torque": dc.stall_torque * u(r.drill_stall_scale),
+                        "clutch_torque": dc.clutch_torque * u(r.drill_clutch_scale),
+                        "clutch_detents": int(rng.integers(r.drill_detents[0], r.drill_detents[1] + 1)),
+                        "cam_ratio": dc.cam_ratio * u(r.drill_cam_scale), "exit_len": u(r.drill_exit_len),
+                        "pistol_housing_mass": dc.pistol_housing_mass * mass,
+                        "pistol_battery_mass": dc.pistol_battery_mass * mass}
+    return out
 
 
 def apply_residual_dr(cfg: SimConfig, overrides: dict[str, dict]) -> SimConfig:

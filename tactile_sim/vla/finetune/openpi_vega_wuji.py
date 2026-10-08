@@ -7,6 +7,8 @@ Standalone (it imports openpi, not tactile_sim). In an openpi checkout:
     #     *__import__("openpi.policies.vega_wuji_policy", fromlist=["_"]).train_configs(),
     ln -s <dataset> ~/.cache/huggingface/lerobot/local/vega_wuji_hammer      # LeRobot finds local repos here
     uv run scripts/compute_norm_stats.py --config-name pi05_vega_wuji
+    uv run python -c "from openpi.policies.vega_wuji_policy import widen_norm_stats as w; \
+        w('assets/pi05_vega_wuji/local/vega_wuji_hammer/norm_stats.json')"
     XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_vega_wuji --exp-name=<run> --overwrite
     uv run scripts/serve_policy.py policy:checkpoint --policy.config=pi05_vega_wuji --policy.dir=<checkpoint>
 
@@ -15,6 +17,10 @@ base checkpoint's projections load as they are (no re-initialized layers). Arm a
 chunk's first state (DeltaActions on the first 7), hand targets stay absolute, as in the GR00T config. The head
 camera is base_0_rgb; both wrist slots are masked. Full fine-tuning needs more than 70 GB (the 96 GB GPU); the
 LoRA variant (pi05_vega_wuji_lora) needs about 23 GB.
+
+Scripted demos hold some hand targets still (the abduction joints' keyframe), so their 1st-99th percentile range
+is zero, and openpi's quantile normalization divides by it without clipping: widen_norm_stats gives every range at
+least min_width. On the desktop torchcodec needs FFmpeg 4-7 libraries: LD_LIBRARY_PATH=~/scratch/envs/ffmpeg7/lib.
 
 Served policy inputs (tactile_sim.vla.client.OpenPiPolicy sends these): {"observation/image": uint8 (H, W, 3),
 "observation/state": float32 (27,), "prompt": str}; output {"actions": (H, 27)}.
@@ -98,4 +104,28 @@ def train_configs(repo_id: str = "local/vega_wuji_hammer") -> list:
                                       paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora")
     lora = dataclasses.replace(full, name="pi05_vega_wuji_lora", model=lora_model, ema_decay=None,
                                freeze_filter=lora_model.get_freeze_filter())
-    return [full, lora]
+    # the pipeline end to end on a tiny random model (fits any GPU): data, transforms, norm stats, training steps
+    debug = dataclasses.replace(full, name="pi05_vega_wuji_debug", batch_size=2, num_train_steps=10,
+                                model=pi0_config.Pi0Config(pi05=True, action_horizon=16, discrete_state_input=False,
+                                                           paligemma_variant="dummy", action_expert_variant="dummy"),
+                                weight_loader=weight_loaders.NoOpWeightLoader(), ema_decay=None, overwrite=True,
+                                exp_name="debug", wandb_enabled=False,
+                                data=dataclasses.replace(data, assets=C.AssetsConfig(
+                                    assets_dir="./assets/pi05_vega_wuji", asset_id=repo_id)))
+    return [full, lora, debug]
+
+
+def widen_norm_stats(path: str, min_width: float = 0.02) -> None:
+    """Give every state/action dimension a 1st-99th percentile range of at least min_width (rad), centred where it
+    was, and a standard deviation of at least a quarter of that, in an openpi norm_stats.json."""
+    import json
+
+    with open(path) as f:
+        stats = json.load(f)
+    for v in stats["norm_stats"].values():
+        lo, hi = np.asarray(v["q01"], float), np.asarray(v["q99"], float)
+        mid, half = 0.5 * (lo + hi), 0.5 * np.maximum(hi - lo, min_width)
+        v["q01"], v["q99"] = (mid - half).tolist(), (mid + half).tolist()
+        v["std"] = np.maximum(np.asarray(v["std"], float), 0.25 * min_width).tolist()
+    with open(path, "w") as f:
+        json.dump(stats, f, indent=2)
