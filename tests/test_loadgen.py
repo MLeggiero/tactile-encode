@@ -20,7 +20,7 @@ def test_schedules_mix_every_regime_without_overlap():
     assert frac == pytest.approx(np.asarray(cfg.p_kind) / sum(cfg.p_kind), abs=0.05)
     for ev in eps:
         spans = [((e.t0 - e.duration) if (e.kind == "step" and e.sign > 0) else e.t0, _end(e)) for e in ev]
-        for (a0, a1), (b0, _) in zip(spans, spans[1:], strict=False):
+        for (_, a1), (b0, _) in zip(spans, spans[1:], strict=False):
             assert b0 >= a1 - 1e-12
         assert all(0.2 <= s0 and s1 <= 10.0 + 2.0 for s0, s1 in spans)
     n = np.mean([len(ev) for ev in eps])
