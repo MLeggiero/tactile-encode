@@ -32,8 +32,8 @@ nvidia-smi > "$work/logs/gpus-$SLURM_JOB_ID.txt"
 stats="assets/$config/local/vega_wuji_tools/norm_stats.json"
 src="$(readlink -f "$HF_LEROBOT_HOME/local/vega_wuji_tools")"
 if [[ ! -f "$stats" || "$(cat "$stats.src" 2>/dev/null)" != "$src" ]]; then
-    .venv/bin/python scripts/compute_norm_stats.py --config-name "$config"
-    .venv/bin/python -c "from openpi.policies.vega_wuji_policy import widen_norm_stats as w; w('$stats')"
+    mkdir -p "$(dirname "$stats")"  # from the parquet files (openpi's own pass decodes every video frame: a day)
+    .venv/bin/python "$work/finetune/openpi_norm_stats.py" "$src" "$stats"
     echo "$src" > "$stats.src"
 fi
 exp="${EXP:-vega_wuji}"
