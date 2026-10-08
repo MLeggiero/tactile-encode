@@ -52,6 +52,26 @@ On the 96 GB GPU: the same with `--profile full`, and π0.5 per the header of `f
   state on g1's RTX 5080: 1.84 optimizer steps/s at micro-batch 4 × 8 accumulation (~59 samples/s), so 5k steps at
   batch 32 take ~45 min (a 20-step probe is dominated by start-up and suggests far less). It does not fit next to
   RL training or the demo renderers on one 16 GB card.
+- **First closed loop (E2-lite, 2026-10-08)**: the `16gb` model (combined dataset v1, 5k steps, loss 0.053) served on
+  g1, the VLA alone, 20 seeds a task under the hard nail (51e7ca1).
+  - Hammer: 0/20 done; it drops the hammer in every episode, mostly within 1-2 s and before any strike.
+  - Drill: 0/20 seated; it holds the drill but the bit never meets the screw, and the drill turns 9-28° in the hand.
+  - The cause: the model's chunks alternate frame to frame by about 0.03 rad (e.g. a wrist target 1.270, 1.298,
+    1.265, 1.271, 1.285, 1.265 ...). The demos are smooth, at similar speeds. The arm follows the alternation as
+    acceleration spikes of hundreds of rad/s², and the hammer turns 24° in the hand within 0.7 s.
+  - Not the cause: the demos' exact actions replayed through the same client under the same physics hold the
+    hammer and drive the nail home (3 demos, latency 0 and 0.1 s). The hand table is also not the cause: its Kp
+    on the closing joints is 0.22-0.55 Nm/rad, so the model's 0.05-0.1 rad hand errors change the squeeze
+    (MCP 1.4 Nm, PIP/DIP 0.21 Nm) by under 10 %.
+  - Client-side remedies cut the drops but complete nothing: a 0.1 s chunk fade-in (`--blend`) gives 85 % drops;
+    adding one pass of a [1, 2, 1] filter along each chunk (`--smooth`) gives 70 %. A better-trained model (the full
+    recipe) is the fix to test.
+- **30 Hz actions soften a blow**: a replayed swing meets the nail on time but at 0.7-0.9 m/s where the scripted
+  one did at 1.16 (30 Hz targets cannot carry the strike profile's braking in its last ~30 ms), driving it 40-55 %
+  as far. A VLA's strikes have the same limit.
+- **Dataset v2 (recording on g1)** uses the hard nail, multiccd off, and the hammer's first windup at once (0.15 s
+  instead of a 0.7 s idle hold, which looks the same in every frame). 84 of the first 85 hammer demos succeed
+  (v1: 39 %).
 - **Compute (2026-10-08)**: g1 (RTX 5080, 20 cores) runs GR00T fine-tunes/serving and the CPU testbed (env at
   `g1:~/tactile-encode/.venv`, MuJoCo 3.14.0); Skynet (A40s, overcap) runs the full recipes via
   `vla/finetune/skynet_*.sbatch` (`~/scratch/DexVLA/tactile`).
