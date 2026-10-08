@@ -66,6 +66,33 @@ XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 uv run scripts/train.py pi05_vega_wuji --exp-
 More than 70 GB. On an RTX PRO 6000 (Blackwell) use one GPU (JAX multi-GPU collectives hang there). The tiny
 `pi05_vega_wuji_debug` config runs the same pipeline in a few minutes if anything needs checking first.
 
+## On GT's Skynet instead (Slurm, A40s)
+
+The job scripts in `tactile_sim/vla/finetune/` run the same recipes on Skynet's `overcap` partition (preemptible;
+the jobs requeue and resume). They live under `~/scratch/DexVLA/tactile` (`finetune/`, `data/`, `runs/`, `logs/`),
+with datasets staged under versioned names. Submit from the login node; nothing runs there.
+
+```bash
+sbatch --export=ALL,PROFILE=full,MAX_STEPS=20000,RUN=full_tools_v2,DATASET=vega_wuji_tools_v2 finetune/skynet_gr00t.sbatch
+```
+
+```bash
+sbatch --export=ALL,DATASET=vega_wuji_tools_v2 finetune/skynet_openpi_prep.sbatch
+```
+
+```bash
+sbatch --export=ALL,DATASET=vega_wuji_tools_v2 finetune/skynet_pi05.sbatch
+```
+
+- **GR00T** (1 A40): reuses the DexVLA `meta` runtime and weights read-only, and runs offline from a local copy of
+  the backbone. Each checkpoint names that copy, so before serving one elsewhere point it back at the hub id (the
+  `sed` line in the header of `skynet_gr00t.sbatch`). About 1 s per step at batch 32; each checkpoint with its
+  optimizer state is ~20 GB.
+- **π0.5**: built once by `skynet_openpi_env.sbatch`, a CPU job. `skynet_openpi_prep.sbatch` (CPU) fetches the base
+  checkpoint and computes the norm stats, so the 4-A40 job (`skynet_pi05.sbatch`, FSDP) starts training at once.
+- **Smoke first**: `RUN=smoke MAX_STEPS=20 SAVE_STEPS=10 --time=00:30:00` (GR00T), or `EXP=smoke STEPS=20
+  --time=01:00:00` (π0.5).
+
 ## 4. Bring back, and the closed-loop runs (desktop)
 
 Copy the final checkpoints to the desktop (`~/runs/vla/`). Serve one model at a time on the 5070 Ti (GR00T:
