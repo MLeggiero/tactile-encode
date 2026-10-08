@@ -528,6 +528,21 @@ class ResidualCfg:
 
 
 @dataclass
+class ForecastCfg:
+    """How far the load-regime forecast a base hands the residual is from the truth (behaviors.forecast)."""
+
+    mask_prob: float = 0.25  # whole episodes without a forecast (the residual must work without one)
+    dropout: float = 0.05  # updates lost within an episode
+    bias_sigma: float = 0.015  # s, per-episode bias of the predicted event time
+    jitter_sigma: float = 0.010  # s, per-update noise on the predicted event time
+    class_confusion: float = 0.1  # up to this much probability moved off the true regime, per episode
+    freq_err: float = 0.1  # log-normal sigma of the predicted dominant frequency
+    amp_err: float = 0.25  # log-normal sigma of the predicted amplitude
+    update_rate: float = 10.0  # Hz the forecast is refreshed at
+    latency: float = 0.1  # s from the state a forecast reflects to when the residual sees it
+
+
+@dataclass
 class DRCfg:
     enabled: bool = False
     head_mass_scale: tuple[float, float] = (0.8, 1.2)
@@ -562,6 +577,7 @@ class SimConfig:
     swing: SwingCfg = field(default_factory=SwingCfg)
     reactive: ReactiveCfg = field(default_factory=ReactiveCfg)
     residual: ResidualCfg = field(default_factory=ResidualCfg)
+    forecast: ForecastCfg = field(default_factory=ForecastCfg)
     dr: DRCfg = field(default_factory=DRCfg)
     logging: LoggingCfg = field(default_factory=LoggingCfg)
 

@@ -48,7 +48,7 @@ OBS_BLOCKS: tuple[tuple[str, int, bool, str], ...] = (
     ("last_action", 3 * N_JOINTS, False, "the residual's previous squashed action"),
     ("base_hand_now", N_JOINTS, False, "base hand target q* (rad)"),
     ("base_lookahead", (N_JOINTS + N_ARM) * len(LOOKAHEAD), False,
-     "base hand and arm targets at the lookahead times, relative to now (rad)"),
+     "base targets at each lookahead time (hand 20 then arm 7, per time), relative to now (rad)"),
     ("forecast", FORECAST_DIM, False, "load-regime forecast (forecast_vector); all zero when masked"),
     ("task", len(TASKS), False, "one-hot task"),
     ("trigger_enable", 1, False, "1 while the base allows the drill trigger"),
