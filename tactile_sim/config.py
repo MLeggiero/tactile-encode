@@ -363,6 +363,25 @@ class SensorsCfg:
     ts_skin_depth: float = 0.002  # compressible skin depth: taxels within this of the deepest press carry load (m)
     ts_shape_dt: float = 0.0005  # load shape refresh period (s); the total follows the contacts every step
     ts_shape_radius: float = 0.04  # taxels this close to a contact are tested against the tool (m)
+    # --- readout model. "rev2": a board per patch (or one per hand, ts_boards), each frame visible ts_latency after
+    # its scan ends. "rev3": the 1 kHz fast profile (docs/taxelscan_fast_profile.md): patches grouped onto boards of
+    # at most ts_max_per_board taxels (ts_board_map), every board scanning from the hardware SYNC edge; the master
+    # polls the frames one period later, in board order, and the host gets mu-law codes plus patch features
+    ts_model: str = "rev2"
+    ts_board_map: tuple[tuple[str, ...], ...] = (
+        ("palm",), ("thumb_middle", "thumb_distal", "index_middle", "index_distal"),
+        ("middle_middle", "middle_distal", "ring_middle", "ring_distal"), ("pinky_middle", "pinky_distal"))
+    ts_max_per_board: int = 128
+    ts_taxel_time: float | None = None  # s per taxel; None = ts_settle + ts_oversample / ts_adc_rate
+    ts_bus_baud: float = 12.5e6  # RS-485, 8N1
+    ts_turnaround: float = 1e-5  # s per board poll: request plus bus turnaround
+    ts_poll_lead: float = 5e-5  # s from the SYNC edge to the first poll
+    ts_bridge_latency: tuple[float, float] = (1.25e-4, 1e-3)  # s, master -> host, uniform (USB full speed)
+    ts_drop_prob: float = 0.0  # probability a frame never reaches the host
+    ts_code_bits: int = 8  # taxel map codes: 8 (U8) or 6 (U6)
+    ts_mu: float = 255.0
+    ts_f_max: float = 30.0  # N, the top code
+    ts_contact_mn: int = 50  # mN, a taxel at or above counts toward the patch's contact area
     joint_rate: float = 1000.0
     joint_latency: float = 0.0
     joint_pos_quant: float = 2.0**-14

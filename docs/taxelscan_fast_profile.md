@@ -43,6 +43,11 @@ bank conversions per channel pair. At that rate 128 taxels take about 1.30 ms. O
 The simulation takes the board map, the per-taxel time and the poll schedule as parameters, so whatever the
 firmware measures can be modelled exactly. That includes a frame rate below 1 kHz.
 
+In the simulation, set `SensorsCfg.ts_model = "rev3"` (`tactile_sim/sensors/taxelscan.py`,
+`TaxelScanRev3Sensor`). The relevant fields are `ts_board_map`, `ts_taxel_time`, `ts_bus_baud`,
+`ts_turnaround`, `ts_poll_lead`, `ts_bridge_latency`, `ts_drop_prob` and `ts_code_bits`. Each patch
+sensor's value is the decoded codes; its `features`, `codes` and `sync_id` hold the rest of the frame.
+
 ## Frame layout (little endian)
 
 | Offset | Type | Field |
