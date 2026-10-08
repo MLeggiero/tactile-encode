@@ -320,6 +320,10 @@ class SceneCfg:
     handle_dir: tuple[float, float, float] = (1.0, 0.0, 0.0)
     table: bool = True  # a table under the board when it lies flat (strike within 30 deg of vertical)
     table_half: tuple[float, float] = (0.35, 0.45)  # tabletop half extents (m)
+    # the reduced training scene (model.builder.build_reduced_scene; Vega U + WUJI Hand 2 + hammer + nail only): the
+    # striking arm, its hand, the tool and the plant, without the left arm, the left hand, the head or visual-only
+    # meshes. The GPU training env (tactile_rl) is built from the same MJCF, so the CPU testbed can run its exact model
+    reduced: bool = False
 
 
 @dataclass
