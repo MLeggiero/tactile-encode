@@ -30,7 +30,7 @@ from tactile_sim.experiments.residual_experiment import paired_bootstrap
 
 MAX_TIME = {"hammer": 40.0, "drill": 12.0}  # s per episode
 METRICS = {"hammer": ("done", "strikes", "advance_mm", "slip_rot_deg", "drops", "t_done"),
-           "drill": ("done", "cam_outs", "slip_rot_deg", "slip_trans_mm", "drops", "t_done")}
+           "drill": ("done", "cam_outs", "slip_rot_deg", "slip_trans_mm", "drops", "t_done", "aim_mm", "trigger")}
 
 
 @dataclass(frozen=True)
@@ -143,7 +143,8 @@ def per_seed(results: list[dict]) -> dict[str, dict[int, dict]]:
         m = {"done": float(r["done"]), "drops": float(r["dropped"]), "t_done": float(r["t_done"])}
         if r["task"] == "drill":
             m.update(cam_outs=float(r["cam_outs"]), slip_rot_deg=r["max_slip_rot_deg"],
-                     slip_trans_mm=r["max_slip_trans_mm"])
+                     slip_trans_mm=r["max_slip_trans_mm"], aim_mm=r.get("closest_aim_mm", math.nan),
+                     trigger=r.get("max_trigger", math.nan))
         else:
             st = r["strikes"]
             m.update(strikes=float(len(st)),

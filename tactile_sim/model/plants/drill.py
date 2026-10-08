@@ -124,6 +124,7 @@ class DrillPlant(Plant):
         self.cam_outs = 0
         self._cam_until = -np.inf
         self.tau_out = self.F_axial = self.misalign = 0.0
+        self.tip_lat, self.tip_ax = np.inf, -np.inf  # the bit tip off the axis, and along it past the head/surface (m)
         self.trigger = 0.0
         self.u = 0.0
         self.clutch_slipping = False
@@ -164,6 +165,7 @@ class DrillPlant(Plant):
         ax = float(rel @ self.a)
         lat = rel - ax * self.a
         r_lat = float(np.linalg.norm(lat))
+        self.tip_lat, self.tip_ax = r_lat, ax
         v_ax = float(v @ self.a)
         v_lat = v - v_ax * self.a
         T = dc.board_thickness

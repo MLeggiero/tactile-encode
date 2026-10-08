@@ -373,6 +373,7 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
     w, plant = tb.world, tb.world.plant
     p0, r0 = w.hammer_in_hand()
     slip_t = slip_r = 0.0
+    aim, trig = np.inf, 0.0  # the drill: the bit tip's closest approach to the screw's axis, the deepest pull
     t_done = float("nan")
     n_max = int(round(max_time / w.dt))
     try:
@@ -380,9 +381,12 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
             tb.step()
             if step_cb is not None:
                 step_cb(tb)
-            elif k % 8 == 0:  # the drill: the tool's travel in the hand
+            elif k % 8 == 0:  # the drill: the tool's travel in the hand, and its aim
                 p, r = w.hammer_in_hand()
                 slip_t, slip_r = max(slip_t, float(np.linalg.norm(p - p0))), max(slip_r, rotvec_diff(r0, r))
+                if plant.tip_ax > -0.01:  # within 10 mm of the head, along the axis
+                    aim = min(aim, plant.tip_lat)
+                trig = max(trig, plant.trigger)
             if np.isnan(t_done) and plant.done():
                 t_done = float(w.t)
             if tb.grip.dropped or (np.isfinite(t_done) and w.t - t_done >= after_done):
@@ -396,7 +400,7 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
            "chunks": vla.log.arrays()}
     if task == "drill":
         out.update(cam_outs=int(plant.cam_outs), state=plant.state, max_slip_trans_mm=1e3 * slip_t,
-                   max_slip_rot_deg=float(np.degrees(slip_r)))
+                   max_slip_rot_deg=float(np.degrees(slip_r)), closest_aim_mm=1e3 * aim, max_trigger=trig)
     else:
         out["strikes"] = strike_metrics(ep.truth.arrays())
     return out

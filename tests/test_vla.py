@@ -355,3 +355,4 @@ def test_a_replayed_drill_demo_seats_the_screw_through_the_vla_client(tmp_path):
     # the trigger is pulled by the index finger's replayed targets alone, and the screw goes home
     assert r["task"] == "drill" and r["done"] and not r["dropped"] and r["cam_outs"] <= 6
     assert r["max_slip_rot_deg"] < 15.0 and r["residual"]["nonfinite"] == 0
+    assert r["closest_aim_mm"] < 1e3 * cfg.drill.engage_radius and r["max_trigger"] > 0.5  # on the screw, pulled
