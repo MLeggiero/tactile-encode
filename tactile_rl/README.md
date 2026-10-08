@@ -30,7 +30,7 @@ GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mj
 | `plants/loadgen.py` | `TorchLoadGen`: `model/loadgen.py` batched (M3): per-env schedules of up to 16 events (impulse, periodic force or torque with drifting amplitude, breakthrough or appearing step, bind, push) drawn as `sample_schedule` draws them, the summed wrench (`LoadEvent.value`), `forecast_truth`, each event's window; `LoadApplicator` puts the wrench on the tool through `xfrc_applied` (force at the hammer face, torque about the handle). |
 | `mdp/runtime.py` | `TactileRuntime`, one per env: the substep clock, the sensors, the plant, the student's 1 kHz ring, the truth; the post-substep pipeline and the stale check. M3: pre-substep hooks (the load generator) and the reward integrands (`acc`, zeroed every policy step). |
 | `mdp/loadgen_command.py` | `LoadGenCommand` (M3): the load generator's base: the hold (arm at hover with each env's droop, the synergy at the hold scalar from the read-back angles), the schedule's loads every substep, the forecast of its next event, the per-event slip scoring for the curriculum and the metrics. |
-| `mdp/randomization.py` | The reset randomization (M3): `pair_solref_solimp`, `randomize_wuji_drive`, `randomize_taxelscan`, `randomize_plant`, `randomize_forecast` over ResidualDRCfg plus the plan's DR-table entries (`DRExtraCfg`), per env, scaled by the curriculum; the hammer's inertial for any head mass from a table compiled on the CPU; `TactileDR.param_vector` (32 values, teacher / critic). |
+| `mdp/randomization.py` | The reset randomization (M3): `pair_solref_solimp`, `randomize_wuji_drive`, `randomize_taxelscan`, `randomize_plant`, `randomize_forecast` over ResidualDRCfg plus the plan's DR-table entries (`DRExtraCfg`), per env, scaled by the curriculum; the hammer's inertial for any head mass from a table compiled on the CPU; `TactileDR.param_vector` (33 values with the base's hold level, teacher / critic). |
 | `mdp/curriculum.py` | `TactileCurriculum` (M3): stages C0 (hold, DR ×0.1, clean forecast), C1 (loads ×0.25, DR ×0.3, clean forecast), C2 (full band, full DR, noisy forecast masked in 25 % of episodes); advances when drops < 1 % and 80 % of events stay within the slip target. |
 | `algos/` | `ZeroInitRNNModel` (rsl_rl's RNNModel with a zero output layer) and `ScheduledPPO` (the entropy schedule), M3. |
 | `mdp/commands.py` | `BaseTrajectoryCommand`: the library on the GPU, per-env entry, start state and randomization, perturbations (time warp, amplitude, start delay), the 100 Hz arm stream, the synergy scalar, the lookahead, the forecast. |
@@ -69,10 +69,13 @@ PYTHONPATH=. ~/tactile-encode/.venv/bin/python -m tactile_rl.parity.p3 --lib run
     --skip gpu_4k,gpu_2k --out p3_cpu.json
 PYTHONPATH=. ~/tactile-encode/.venv/bin/python -m tactile_rl.parity.p3 --lib - --combine p3_cpu.json p3_gpu.json
 
-# the load-generator teacher at 1 kHz (tensorboard under --log-root)
+# the load-generator teacher at 1 kHz (tensorboard under --log-root; ~1.8 h for 600 iterations), then against the
+# zero residual on the same episodes
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.train Tactile-LoadGen-VegaWuji-1000Hz \
-    --env.scene.num-envs 4096 --agent.max-iterations 800 --agent.algorithm.entropy-decay-iterations 800 \
-    --log-root runs/rsl_rl
+    --env.scene.num-envs 4096 --agent.max-iterations 600 --agent.algorithm.entropy-decay-iterations 600 \
+    --agent.algorithm.desired-kl 0.02 --log-root runs/rsl_rl
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.teacher_eval <run>/model_599.pt \
+    --modes zero,teacher,zero@hold,teacher@hold
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.throughput --task loadgen --stage 2 \
     --rate 1000 250 --envs 1024 4096 --seconds 0.2
 
@@ -150,7 +153,8 @@ loop, grip profile, margin step, hold, post switch); regenerate it then.
   drift reference is the tool's pose in the hand at 0.2 s, once the reset has settled; the episode ends on a time-out,
   a lost grasp (2 cm or 30° from it, −50), a thermal fault (−20) or a non-finite state.
 - **Base.** The hold: the arm on its servos at the hover pose with each env's droop for its randomized gains, the hand
-  at the grip synergy's hold scalar from the read-back angles; the lookahead is zero.
+  at a fraction of the grip synergy's hold scalar (the base's hold level, drawn per episode: C0 1.0, C1 0.5–1.0, C2
+  0.3–0.8) from the read-back angles; the lookahead is zero.
 - **Loads.** A schedule per env and episode, drawn as `tactile_sim.model.loadgen.sample_schedule` draws it (Poisson,
   2 events per second, from 0.2 s): half-sine impulses of 0.5–5 ms and 50–700 N within 20° of the strike axis; a
   periodic force along it (5–40 N) or torque about the handle (0.2–1.5 Nm) at 1–100 Hz with a drifting amplitude;
@@ -161,11 +165,15 @@ loop, grip profile, margin step, hold, post switch); regenerate it then.
   same events (`test_rl_loadgen.py`).
 - **Forecast.** The schedule's next event (or the one under way) through the torch ForecastModel; the error model per
   env from `randomize_forecast`.
-- **Events scored.** An event's slip is the tool's slip path in the hand while it is under way and 50 ms after; within
-  0.7 mm and 1.4° it meets the target (the plan's G3 slip numbers). Logged per episode: events, the fraction within
-  the target, slip per event (`Metrics/base/*`); the curriculum's window: drop rate, events within the target.
-- **Observations.** `teacher` = the student's 740 + 148 privileged (the tool in the hand, patch contacts, the event
-  truth, the wrench on the tool, the drives, the 32 randomization values); the registered task returns `teacher` only
+- **Events scored.** An event's net slip is the tool's pose in the hand 50 ms after it against its pose when it began;
+  within 0.7 mm and 1.4° it meets the target (the plan's G3 slip numbers). Logged per episode: events, the fraction
+  within the target, net slip and slip path per event, the hold level (`Metrics/base/*`); the curriculum's window
+  (recent episodes): drop rate, events within the target.
+- **Curriculum.** C0 the hold (DR ×0.1, clean forecast) → C1 loads ×0.25, base at 0.5–1.0 of the hold, DR ×0.3, clean
+  forecast → C2 the full band, base at 0.3–0.8, full DR, noisy forecast masked in 25 % of episodes; a stage advances
+  when drops < 1 % and 80 % of events meet the target.
+- **Observations.** `teacher` = the student's 740 + 149 privileged (the tool in the hand, patch contacts, the event
+  truth, the wrench on the tool, the drives, the 33 randomization values); the registered task returns `teacher` only
   (the critic reads it too), the test configurations every group.
 
 ## Milestone 3 results (desktop, RTX 5070 Ti, 2026-10-08)
@@ -181,11 +189,11 @@ difference of the means and the two-sample KS p; "ok" when within 10 % (slip 15 
 | per strike | CPU 8 kHz, noslip 5 (validator) | CPU 4 kHz | GPU 4 kHz | GPU 2 kHz |
 |---|---|---|---|---|
 | hits | 776 / 776 | 776 / 776 | 776 / 776 | 776 / 776 |
-| nail advance (mm) | 2.54 [2.48, 2.60] | 2.63, ok (3.7 %, p 0.18) | 2.69, **6.1 %**, intervals apart (p 0.03) | 3.21, **27 %** (p 6e-25) |
-| peak force, 2nd sample (N) | 185 [182, 187] | 185, ok (0.2 %) | 185, ok (0.4 %) | 185, ok (0.2 %) |
-| pulse width (ms) | 6.52 [6.12, 6.94] | 6.24, ok (4.3 %, p 0.012) | 5.87, 9.9 % (p 2e-6) | 4.75, 27 % |
-| slip, translation (mm) | 1.08 [1.05, 1.10] | 1.07, ok (0.4 %) | 1.11, ok (2.8 %) | 1.06, ok (1.4 %) |
-| slip, rotation (deg) | 1.59 [1.53, 1.65] | 1.55, ok (2.5 %) | 1.75, **10.3 %** (p 1e-3) | 1.71, 7.9 % (p 9e-3) |
+| nail advance (mm) | 2.54 [2.48, 2.60] | 2.63, ok (3.7 %, p 0.18) | 2.69, **6.1 %**, intervals apart (p 0.054) | 3.22, **27 %** (p 2e-25) |
+| peak force, 2nd sample (N) | 185 [182, 187] | 185, ok (0.2 %) | 185, ok (0.4 %) | 185, ok (0.3 %) |
+| pulse width (ms) | 6.52 [6.12, 6.94] | 6.24, ok (4.3 %, p 0.012) | 6.36, 2.4 % (p 1e-4) | 4.77, 27 % |
+| slip, translation (mm) | 1.08 [1.05, 1.10] | 1.07, ok (0.4 %) | 1.11, ok (2.7 %) | 1.06, ok (1.4 %) |
+| slip, rotation (deg) | 1.59 [1.53, 1.65] | 1.55, ok (2.5 %) | 1.75, **10.0 %** (p 3e-3) | 1.74, 9.2 % (p 3e-3) |
 
 - **The M2 gap is closed.** With the hard nail the training physics (0.25 ms, no noslip) passes every test against the
   validator: noslip no longer changes how far a blow drives (2.63 against 2.54 mm; it was 5.0 against 1.1 mm).
@@ -208,7 +216,80 @@ difference of the means and the two-sample KS p; "ok" when within 10 % (slip 15 
 | 4096 | 1 kHz | 53.5 | **76** | 42 % | 2.67 |
 
 Peaks: 24 broadphase candidates and 7.3 contacts per world, 61 constraint rows. In training (4096 envs, 128-step
-rollouts, the teacher's update) an iteration takes ~9 s: 7.7 s collecting, 1.2 s learning, ~58 sim-s per wall-s.
+rollouts, the GRU teacher's inference and update) an iteration takes 9–11 s: 7.7–9.7 s collecting, 1.2 s learning,
+48–58 sim-s per wall-s.
+
+### The first load-generator teacher (1 kHz)
+
+`python -m tactile_rl.train Tactile-LoadGen-VegaWuji-1000Hz --env.scene.num-envs 4096 --agent.max-iterations 600
+--agent.algorithm.entropy-decay-iterations 600 --agent.algorithm.desired-kl 0.02`: the plan's teacher (GRU 256 with a
+(256, 128) head and a zero output layer, MLP critic (512, 256, 128) on the same privileged group, γ = e^(−1 ms / 0.3 s)
+= 0.9967, λ = e^(−1 ms / 0.15 s) = 0.9934, 128-step rollouts, 5 epochs × 8 mini-batches, entropy 1e-3 → 0), from C0.
+It took four runs to get a teacher that learns; each fixed one thing:
+
+| run | what changed | what happened (C1, the loads at a quarter amplitude) |
+|---|---|---|
+| v1 | the plan's settings | the learning rate fell to its 1e-5 floor when the loads began and stayed: rsl_rl's normalizer scaled the features that never moved in C0 (the wrench, untouched taxels) ~100-fold |
+| v2 | `RobustNormalization` (scale floor 0.1, ±5 clip) | the rate stayed at 1e-5–1e-4 under the loads with the plan's desired KL of 0.005; events within the target flat at 57 % over 125 iterations |
+| v3 | desired KL 0.02 | the rate settled near 3e-4; still flat at 57 % over 240 iterations |
+| v4 | the base grips at 0.5–1.0 of the hold (the plan's base hold level), events scored on net slip | learns (below) |
+
+**Why v3 could not learn: at the settled hold the residual has no authority over slip.** Constant actions on the
+load generator (C1 amplitudes, 256 envs, 3 s, no randomization; "within target" here is v3's criterion, the slip
+path within 0.7 mm / 1.4°):
+
+| base grip | residual | events within target (path) | net slip per event (mm / °) | slip path per event (mm / °) | lost grasps |
+|---|---|---|---|---|---|
+| the hold | zero | 55 % | 0.69 / 1.28 | 1.51 / 2.89 | 0 % |
+| the hold | grip (τ_ff +0.6 rated toward closing) and stiffen (Kp ×4) | 57 % | 0.68 / 1.25 | 1.44 / 2.76 | 0 % |
+| half the hold | zero | 36 % | 1.15 / 2.98 | 2.57 / 5.85 | 6 % |
+| half the hold | grip and stiffen | 57 % | 0.67 / 1.24 | 1.44 / 2.76 | 0 % |
+| the hold, full band (C2 amplitudes) | zero | 8 % | 2.90 / 7.48 | 4.87 / 13.2 | 57 % |
+| the hold, full band | grip and stiffen | 10 % | 2.66 / 7.85 | 4.36 / 12.2 | 54 % |
+
+At the hold the closing joints already draw near the drives' current ceiling (the SDK effort limit is the rated
+current: mean |i| 0.81 rated, 0.84 with the residual pushing every closing joint to the limit), so gripping harder
+buys < 5 % (the feedforward alone 2 %, the stiffness alone 4 %, a position offset toward closing nothing); below the
+hold the residual restores the hold's slip. The slip path is about twice the net slip (the
+grasp's elastic excursion). The full band (700 N impulses, 3 Nm binds) loses the grasp in more than half the episodes
+whatever the residual does.
+
+**v4 learns** (training metrics with the exploration noise on, means over 50-iteration windows; 0.52 M env steps per
+iteration; the first loaded episodes end at iteration ~36):
+
+| iterations | env steps (M) | episode return | events within target | net slip per event (mm / °) | slip path per event (mm) | lost grasps | I²t per episode | action σ |
+|---|---|---|---|---|---|---|---|---|
+| 50–99 | 26–52 | −30.2 | 62.2 % | 0.745 / 1.68 | 1.69 | 0.61 % | 1.42 | 0.33 |
+| 150–199 | 79–104 | −27.7 | 62.3 % | 0.747 / 1.60 | 1.58 | 0.24 % | 1.44 | 0.37 |
+| 300–349 | 157–183 | −25.2 | 63.8 % | 0.756 / 1.49 | 1.45 | 0.07 % | 1.45 | 0.40 |
+| 550–599 | 288–314 | −24.0 | 65.1 % | 0.750 / 1.43 | 1.35 | 0.00 % | 1.47 | 0.41 |
+
+The teacher stops losing the grasp, cuts the rotation slip and the slip path by 15–20 % and draws a little more
+current (it grips harder when the base grips weakly); the net translation per event does not move yet, and the
+stage's gate (80 % of events within 0.7 mm / 1.4°) is far: no C2 in this run. It is learning, not converged.
+
+**The trained teacher against the zero residual** on the same 1024 episodes (the checkpoint at iteration 599, its
+mean action, no exploration noise; `python -m tactile_rl.bench.teacher_eval <checkpoint> --modes
+zero,teacher,zero@hold,teacher@hold`):
+
+| | events within 0.7 mm / 1.4° | net slip per event (mm / °) | slip path per episode (mm / °) | lost grasps | I²t per episode |
+|---|---|---|---|---|---|
+| C1 (its stage: base at 0.5–1.0 of the hold), zero residual | 61.2 % | 0.714 / 1.78 | 6.10 / 13.9 | 1.8 % | 1.37 |
+| C1, the teacher | **68.5 %** | **0.651 / 1.29** | **3.61 / 7.32** | **0 %** | 1.43 |
+| C1 with the base at the full hold, zero residual | 70.2 % | 0.567 / 1.12 | 4.25 / 8.45 | 0 % | 2.25 |
+| C1 with the base at the full hold, the teacher | 72.1 % | 0.572 / 1.09 | 3.35 / 6.46 | 0 % | 2.09 |
+| C2 (never trained there), zero residual | 14.9 % | 3.00 / 8.80 | 27.2 / 90.1 | 80.8 % | 0.88 |
+| C2, the teacher | 17.7 % | 2.66 / 7.92 | 22.5 / 78.5 | 73.0 % | 1.00 |
+
+Over a weak base grip the teacher keeps every grasp and buys back most of what the grip lacks (net rotation per
+event −27 %, slip path −40–47 %) for 4 % more I²t: it ends near the full hold's slip at 63 % of the full hold's
+current. Over the full hold it changes the net slip by nothing (0.572 against 0.567 mm, 1.09 against 1.12°), damps the
+slip path by ~22 % and saves 7 % I²t: the authority limit again. The full band (C2) is mostly lost grasps whatever the
+policy, as the authority probe predicted.
+
+Curves (reward, net slip, events within the target, lost grasps, I²t against env steps):
+`~/scratch/tactile-gpu-runs/m3/train/curves_v4.png` on the desktop (`curves_v4.csv` beside it); the run's tensorboard
+logs and checkpoints are in `~/scratch/tactile-gpu-runs/m3/train/tactile_loadgen_teacher_1000hz/`.
 
 ## Results (desktop, RTX 5070 Ti, 2026-10-08)
 
@@ -451,6 +532,16 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
   an event's 0.7 mm / 1.4° budget.
 - **The base's wrap rests some joints on their limits** (the joint-limit load penalty is −0.025 per second for the
   zero residual), hence its light weight (−0.1).
+- **The residual's authority** (the teacher section): at the settled hold the WUJI's closing joints run near the
+  current ceiling (effort limit = rated current), so the residual can only add a few percent of grip; the load
+  generator's base therefore grips below the hold (C1 0.5–1.0, C2 0.3–0.8). The hammer task's base still grips at
+  the hold (its library); the same hold-level randomization belongs there before the hammer teacher (C3).
+- **The load generator's full band is beyond this hand**: at C2 amplitudes (impulses to 700 N, binds to 3 Nm,
+  periodic torques to 1.5 Nm) more than half the episodes lose the grasp with the strongest constant residual. The
+  ranges (`LoadGenCfg`, shared with the CPU) want rescaling to the light hammer's loads (blows peak ~185 N) before C2
+  is a stage a teacher can pass.
+- **The plan's desired KL (0.005)** holds the adaptive learning rate at 1e-5–1e-4 once the loads begin (60-D actions
+  at σ 0.3); v4 ran at 0.02 (`teacher_runner_cfg(desired_kl=...)`, the default stays the plan's).
 - **The face/nail contact at impact.** Single contact on both sides, MuJoCo Warp still misses the cylinder/cylinder
   contact in a sixth of the strike states where the CPU finds one. Blows agree to a few percent in advance and peak
   force all the same (above).
@@ -480,6 +571,8 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
 - **Curriculum C3–C4**: hammer taps with scripted and replayed swings mixed 70/30 with the load generator (the hammer
   task has the rewards and terminations; its randomization comes from the library's entries, the events can replace
   them), then latency extremes and VLA chunks.
-- **Teachers at every rate** to convergence, **contact recalibration** (static-hold creep, impulse slip, ripple),
-  **DAgger** students with the auxiliary labels (`aux_labels`), ONNX export.
+- **Teachers at every rate** to convergence (the 1 kHz load-generator teacher is learning but far from it), the load
+  generator's ranges rescaled for this hand, **contact recalibration** (static-hold creep, impulse slip, ripple, the
+  GPU's 13 % extra rotation slip), **DAgger** students with the auxiliary labels (`aux_labels`), ONNX export (with
+  the robust normalizer folded in).
 - **Speed:** CUDA graphs or Warp kernels for the hooks; dropping mjlab's per-step `forward()`.
