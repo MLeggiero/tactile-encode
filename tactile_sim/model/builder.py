@@ -243,7 +243,8 @@ REDUCED_ROBOTS = ("vega_1u",)
 
 def build_reduced_scene(cfg: SimConfig, sensors: bool = True, markers: bool = True, visual: bool = False) -> SceneSpec:
     """The reduced training scene (SceneCfg.reduced): the Vega U on its fixed pedestal with only the striking (right)
-    arm, the right WUJI Hand 2 on torque motors, the hammer, and the nail plant with its board and table.
+    arm, the right WUJI Hand 2 on torque motors, the hammer and the nail plant with its board and table, or the pistol
+    driver (its trigger part and the trigger finger's capped friction) and the drill plant's board.
 
     Compared with build_scene: no left arm, no left hand and no head (the lift and the torso flip are fixed joints,
     so the removed branches never move the right arm's base and its dynamics are unchanged); no visual-only meshes
@@ -254,9 +255,11 @@ def build_reduced_scene(cfg: SimConfig, sensors: bool = True, markers: bool = Tr
     GPU); `markers` adds a site per taxel (for the viewer). The GPU training env builds this scene without either
     (see tactile_sim.sim.training_parts).
     """
-    if cfg.arm.robot not in REDUCED_ROBOTS or cfg.gripper.hand != "wuji2" or cfg.plant.kind != "nail":
-        raise ValueError(f"the reduced training scene is the WUJI Hand 2 with the hammer on a {REDUCED_ROBOTS} "
-                         f"(got robot {cfg.arm.robot!r}, hand {cfg.gripper.hand!r}, plant {cfg.plant.kind!r})")
+    pistol = cfg.plant.kind == "drill" and cfg.drill.form == "pistol"
+    if cfg.arm.robot not in REDUCED_ROBOTS or cfg.gripper.hand != "wuji2" or not (cfg.plant.kind == "nail" or pistol):
+        raise ValueError(f"the reduced training scene is the WUJI Hand 2 with the hammer or the pistol driver on a "
+                         f"{REDUCED_ROBOTS} (got robot {cfg.arm.robot!r}, hand {cfg.gripper.hand!r}, plant "
+                         f"{cfg.plant.kind!r})")
     from tactile_sim.model.robots import VEGA_HEAD, VEGA_LEFT_ARM, load_vega_tree
 
     root, source = load_vega_tree(cfg.arm)

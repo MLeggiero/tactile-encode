@@ -1,4 +1,4 @@
-# tactile_rl: GPU training env for the tactile residual (milestones 1–4)
+# tactile_rl: GPU training env for the tactile residual (milestones 1–5)
 
 GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mjlab 1.6.0, mirroring the CPU testbed
 (`tactile_sim`), which stays the reference and the validator. Plan: `~/.claude/plans/i-want-to-build-tidy-axolotl.md`
@@ -18,6 +18,13 @@ GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mj
   adds C3 (70 % hammer swings, 30 % load generator) as `Tactile-Residual-VegaWuji-*`, trains the 1 kHz and 250 Hz
   teachers through C0–C3 on one simulated-time budget, evaluates them against the zero residual at matched hold levels,
   and exports the teacher actor to ONNX.
+- **Milestone 5** distills both teachers into students and exports them to ONNX with `aux`. The students are DAgger
+  students that see only what the robot senses, with its timing: a GRU of 0.42–0.46 M parameters with auxiliary
+  heads for slip, regime and contact. They run in the 8 kHz CPU validator at the four hold levels against the zero
+  residual (E1-lite), and the same policies run on the GPU in the testbed's strike window, giving the first E6
+  transfer number. M5 also ports the 12 V drill: the drivetrain and the plant's laws, batched and exact against the
+  CPU, the dyno's ratings on the batched drivetrain, the Vega U + WUJI drill scene, the drill library and
+  zero-residual drill episodes against the CPU. Last, it trains the teachers' seeds 2 and 3.
 
 ## What is here
 
@@ -38,9 +45,11 @@ GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mj
 | `mdp/curriculum.py` | `TactileCurriculum` (M3): stages C0 (hold, DR ×0.1, clean forecast), C1 (loads ×0.25, DR ×0.3, clean forecast), C2 (full band, full DR, noisy forecast masked in 25 % of episodes), C3 (M4: 70 % hammer episodes); advances when, over the episodes that began in the stage, drops < 1 % and 80 % of events stay within the slip target, or after `stage_cap_s` simulated seconds in it (M4). |
 | `mdp/mixed_command.py` | `MixedBaseCommand` (M4): the hammer's `BaseTrajectoryCommand` and the `LoadGenCommand` side by side; per env and episode one of them (`hammer_frac`), the task block telling the student which. |
 | `tasks/residual.py` | `Tactile-Residual-VegaWuji-{rate}Hz` (M4): the curriculum C0–C3 in one task (the hammer's scene, rewards and terminations, the load generator's events and DR), per-kind metrics, mjlab's NaN guard on the observations. |
-| `export/onnx_export.py` | The teacher actor as an ONNX graph for the CPU runner (`obs, h_in → action, h_out`, normalizer folded in, opset 17) with its sidecar, and the torch / onnxruntime parity check on recorded inputs (M4). |
-| `bench/` | `throughput` (M1–M2), `teacher_eval` (M3), and M4's `loadgen_calibration` (single events by kind × amplitude × hold level; the band check), `hammer_hold` (every library swing at a hold level), `residual_eval` (policies at matched hold levels on the hammer and the load generator), `curves` (learning curves against simulated seconds). |
-| `algos/` | `ZeroInitRNNModel` (rsl_rl's RNNModel with a zero output layer) and `ScheduledPPO` (the entropy schedule), M3. |
+| `export/onnx_export.py` | The teacher actor as an ONNX graph for the CPU runner (`obs, h_in → action, h_out`, normalizer folded in, opset 17) with its sidecar, and the torch / onnxruntime parity check on recorded inputs (M4). M5: `--student`, a DAgger student as `obs, h_in → action, h_out, aux`, checked free running and per step on all three outputs. |
+| `bench/` | `throughput` (M1–M2), `teacher_eval` (M3), and M4's `loadgen_calibration` (single events by kind × amplitude × hold level; the band check), `hammer_hold` (every library swing at a hold level), `residual_eval` (policies at matched hold levels on the hammer and the load generator; M5: the CPU testbed's strike window), `curves` (learning curves against simulated seconds). M5: `transfer` (E6: the CPU validator's E1hold against the GPU's strike window). |
+| `algos/` | `ZeroInitRNNModel` (rsl_rl's RNNModel with a zero output layer) and `ScheduledPPO` (the entropy schedule), M3. M5: `student_model.py` (the student: per-sample encoders, GRU 192, action and auxiliary heads, its running normalizer, `StudentGraph` with the normalizer folded in) and `dagger.py` (`DaggerTrainer`: β schedule, labels from the teacher's privileged group, truncated BPTT, resume); `distill.py` is its CLI. |
+| `plants/drivetrain.py`, `plants/drill.py` | M5: the 12 V drill batched in float64. `TorchDrivetrain` is the motor line, brake, clutch ramp / drop / clicks and the housing's momentum. `TorchDrillLaws` is the bit tip's axial and lateral laws, the Torx / Phillips state machine, the hole's drilling, catch and breakthrough, the load noise, unbalance and the housing torque. `TorchDrillPlant` reads the tool's kinematics after each substep and writes the wrench through `xfrc_applied` before the next. |
+| `tasks/drill.py`, `tactile_sim/behaviors/drill_library.py` | M5: `drill_env_cfg`, the Vega U + WUJI drill scene at 0.25 ms (the trigger finger's friction capped at 0.9, the trigger face fixed at 0.05) driven by the drill library; `drill_library` records DrillBase feeds on the CPU with the trigger finger's own level. |
 | `mdp/commands.py` | `BaseTrajectoryCommand`: the library on the GPU, per-env entry, start state and randomization, perturbations (time warp, amplitude, start delay), the 100 Hz arm stream, the synergy scalar, the lookahead, the forecast. |
 | `mdp/forecast.py` | `TorchForecastModel`: `behaviors.forecast.ForecastModel` batched, every error parameter per env. |
 | `mdp/obs_builder.py` | `StudentObs`: `ResidualHandL2.fast_sample` / `observe` batched (obs_spec layout, `stack` deep, masks). |
@@ -49,8 +58,8 @@ GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mj
 | `mdp/rewards.py` | The plan's rewards, substep-integrated (M3): I²t, torque roughness about its 50 Hz low-pass, torque above rated, the hand's joint-limit loads, thermal margin, residual size; slip path in the hand (mm, degrees), drift from the reference pose, nail advance, rebound energy; the drop's and the thermal fault's penalties. |
 | `mdp/events.py`, `terminations.py` | M1's bank and `reset_from_state_bank`; `tactile_model_fields` (declares the per-world fields); `base_done`, `tool_left_hand` (2 cm or 30° from the reference pose). |
 | `tasks/` | `hammer.py`: `Tactile-Hammer-VegaWuji-{1000,500,250,100}Hz` and `hammer_scene_env_cfg` (the scene without base or sensors, for the parity scripts); `loadgen.py`: `Tactile-LoadGen-VegaWuji-*` (M3); `common.py`: the groups, rewards, terminations and DR events the tasks share; `rl_cfg.py`: the PPO settings per rate and `teacher_runner_cfg`; `hold.py`: M1's `Tactile-Hold-VegaWuji-*`. |
-| `parity/` | `model_fields` (P0), `one_step` (P1, also on strike states), `taxel_load` (the load model against the CPU's foundation), `strikes` (library entries on the GPU against the CPU), `p3` (M3: the plan's P3 over four conditions). |
-| `tests/rl/` | `test_rl_sensors.py` (codec, readback, rev3, forecast, student observation against the CPU), `test_rl_hammer.py` (the hammer task; M4: the hold level), `test_rl_loadgen.py` (M3: the load generator against the CPU's, the task, integrated rewards across rates, randomization, the curriculum, the teacher; M4: the C3 mix, stage caps, each stage on its own episodes), `test_rl_export.py` (M4: the ONNX export's parity and sidecar), M1's tests. CPU: `tests/test_base_library.py`, `tests/test_residual_l2.py`. |
+| `parity/` | `model_fields` (P0), `one_step` (P1, also on strike states), `taxel_load` (the load model against the CPU's foundation), `strikes` (library entries on the GPU against the CPU), `p3` (M3: the plan's P3 over four conditions). M5: `drill_plant` (the drill's laws on a CPU episode's recorded inputs and draws; the dyno on the batched drivetrain), `drill_episodes` (zero-residual drill episodes on the GPU against the CPU's). |
+| `tests/rl/` | `test_rl_sensors.py` (codec, readback, rev3, forecast, student observation against the CPU), `test_rl_hammer.py` (the hammer task; M4: the hold level), `test_rl_loadgen.py` (M3: the load generator against the CPU's, the task, integrated rewards across rates, randomization, the curriculum, the teacher; M4: the C3 mix, stage caps, each stage on its own episodes), `test_rl_export.py` (M4: the ONNX export's parity and sidecar), `test_rl_student.py` (M5: the student's size and zero start, sequence against steps, the future-slip labels, the export with `aux` and the CPU runner, DAgger and its resume, the transfer table), `test_rl_drill.py` (M5: the drivetrain step for step, the batched dyno, the laws on a recorded episode, the drill's training parts, a drill episode on the GPU), M1's tests. CPU: `tests/test_base_library.py`, `tests/test_residual_l2.py`, `tests/test_residual_experiment.py` (M5: the hold stage and its table). |
 
 ## How to run
 
@@ -106,6 +115,35 @@ PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.residual_e
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.export.onnx_export <run_1k>/model_999.pt \
     teacher_1k.onnx --task mixed --rate 1000 --record 64x160 --library $TACTILE_BASE_LIBRARY
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.curves curves <run_1k>:1kHz <run_250>:250Hz
+
+# M5: the students (DAgger: 300 iterations of 4096 envs x 0.128 s; ~1.2 h at 1 kHz, ~0.8 h at 250 Hz), then the ONNX
+# export with its parity check on 64 envs x 160 steps of the student playing C3
+for R in "1000 1k" "250 250"; do set -- $R
+  PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.distill --rate $1 \
+      --teacher <run_$2>/model_999.pt --library $TACTILE_BASE_LIBRARY --log-dir runs/students/s$2
+  PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.export.onnx_export runs/students/s$2/student_299.pt \
+      student_s$2.onnx --student --record 64x160 --library $TACTILE_BASE_LIBRARY
+done
+# M5: E1-lite in the 8 kHz validator (validator venv; 20 seeds x 4 hold levels, ~20 min per policy on 12 workers),
+# the same policies on the GPU (the strike window comes with residual_eval's hammer rows), the transfer table
+~/tactile-encode/.venv/bin/python -m tactile_sim.experiments.residual_experiment run --stage E1hold \
+    --policy s1k=student_s1k.onnx --policy s250=student_s250.onnx --workers 12 --root runs/residual_exp
+~/tactile-encode/.venv/bin/python -m tactile_sim.experiments.residual_experiment report --stage E1hold \
+    --root runs/residual_exp
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.residual_eval --library $TACTILE_BASE_LIBRARY \
+    --policies zero@1000,s1k=runs/students/s1k/student_299.pt@1000,t1k=<run_1k>/model_999.pt@1000 --out eval_1k.json
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.bench.transfer --cpu-root runs/residual_exp \
+    --gpu eval_1k.json eval_250.json
+
+# M5: the 12 V drill: the plant's laws and the dyno against the CPU; the drill libraries (training venv: the scene's
+# MuJoCo); twenty episodes of each on the GPU against the CPU's
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.drill_plant --modes screw,hole --seeds 0,1
+~/tactile-encode/.venv-rl/bin/python -m tactile_sim.behaviors.drill_library export --episodes 20 --mode screw \
+    --workers 8 --out runs/base_library/drill_screw_v1.npz
+~/tactile-encode/.venv-rl/bin/python -m tactile_sim.behaviors.drill_library export --episodes 20 --mode hole \
+    --workers 8 --t-max 20 --out runs/base_library/drill_hole_v1.npz
+PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.drill_episodes \
+    --lib runs/base_library/drill_screw_v1.npz --out replay_screw.json
 
 # reports
 PYTHONPATH=. ~/tactile-encode/.venv-rl/bin/python -m tactile_rl.parity.model_fields        # P0
@@ -230,6 +268,348 @@ loop, grip profile, margin step, hold, post switch); regenerate it then.
   with the logged hammer share.
 - **NaN guard.** The observations run mjlab's `nan_policy="warn"` (a non-finite value is printed with its envs and
   zeroed), so one env cannot end a long run; the tests use "error".
+
+## How the students work (M5)
+
+**The student** (`algos/student_model.py`) reads only the student group: what the robot senses, with its modelled
+timing (the TaxelScan's frames, the WUJI's read-back, the stale-input masks, the base's target and lookahead, the
+forecast).
+
+Per 1 kHz sample (a 250 Hz student reads the newest 4, through the same weights):
+- the palm's 128 taxels as an 8 × 16 image through two convolutions;
+- the ten finger patches through one shared MLP (each patch's 32 taxels and 6 features);
+- the palm's features, the boards' status, the joint angles and currents;
+- one projection per sample, then a mix over the stack.
+
+The policy-rate blocks (last action, the base, the forecast, the task, the trigger enable) go through a small MLP. A
+GRU of 192 units carries the state, and the heads are:
+- the action, as a pre-tanh mean, with its last layer zero at the start so that a fresh student is the base;
+- the auxiliary predictions: each patch's slip over the next 20 ms (mm), the load regime (5 regimes and none), and
+  contact (each patch, and the tool on the workpiece).
+
+The input normalizer works as the teacher's RobustNormalization does: running statistics, a 0.1 floor on the scale,
+a ±5 clip. It freezes after 100 iterations. The student has 0.425 M parameters at 1 kHz and 0.463 M at 250 Hz.
+
+**DAgger** (`algos/dagger.py`, `python -m tactile_rl.distill`) runs in Tactile-Residual's C3 (70 % hammer swings,
+30 % load generator, the base at 0.3–0.8 of its hold, the full randomization), with 4096 envs and one 0.128 s
+rollout per iteration, as the teachers' PPO:
+- Each env episode is driven by the teacher with probability β, drawn at every reset; otherwise the student drives.
+  The teacher labels every step.
+- β is 1 for 60 iterations (behaviour cloning), falls to 0 over the next 100, and then the student drives alone.
+- The loss is a smooth L1 on the squashed action (β 0.1), plus 0.5 × a Huber loss on the future slip (masked where
+  the 20 ms window leaves the rollout or the episode), plus 0.05 × cross-entropy on the regime, plus 0.05 ×
+  binary cross-entropy on contact. All labels come from the teacher's privileged observation.
+- Training is truncated BPTT over each rollout, with the student's state carried across rollouts and zeroed at
+  episode starts.
+- Each iteration runs 2 epochs of 8 minibatches; Adam starts at 5e-4 and decays on a cosine to 1e-4.
+
+300 iterations are 157 286 simulated s, 30 % of a teacher's budget. The run can continue from a checkpoint
+(`--resume`).
+
+**The export** (`onnx_export --student`) produces the plan's graph:
+- inputs `obs` [B, 740 | 2426] and `h_in` [B, 192];
+- outputs `action` [B, 60] (tanh), `h_out` [B, 192] and `aux` [B, 29] (`AUX_LAYOUT`: 11 slip, 6 regime logits,
+  12 contact logits);
+- the normalizer folded in; opset 17.
+
+The sidecar is the teacher's (PolicyMeta) plus the aux layout, the parameter count, the teacher it learnt from and the
+parity result. `OnnxPolicy` on the CPU reads `action` and `h_out` and ignores `aux`.
+
+## Milestone 5 results (desktop, RTX 5070 Ti, 2026-10-09)
+
+Runs, logs and exports are on the desktop under `~/scratch/tactile-gpu-runs/m5/`:
+- `students/` and `export/`: the students and their ONNX graphs;
+- `cpu/E1hold/`: the validator's episodes;
+- `eval_1k.json`, `eval_250.json`: the GPU evaluations;
+- `drill/`: the drill's libraries, replays and parity logs;
+- `seeds/`: the teachers' seeds.
+
+### The students (`python -m tactile_rl.distill`)
+
+Each of M4's teachers (`model_999.pt`) is distilled in 300 DAgger iterations of 4096 envs, which is 157 286 simulated
+s. The action gap is the mean absolute difference between the student's squashed action and the teacher's, on the
+rollout's steps: on the teacher's states while β = 1, and on the student's own once β = 0.
+
+| student | parameters | action gap: start, end of BC (50–59), end (290–299) | aux at the end: slip (Huber), regime (CE), contact (BCE) | return per episode, teacher / student driving | wall |
+|---|---|---|---|---|---|
+| s1k (1 kHz, 1 sample) | 425 001 | 0.264, 0.093, 0.139 | 0.0008, 0.375, 0.011 | −19.1 / −20.5 | 1.57 h (14.8 s per iteration) |
+| s250 (250 Hz, 4 samples) | 463 401 | 0.163, 0.041, 0.066 | 0.0010, 0.347, 0.012 | −20.0 / −21.5 | 0.88 h (9.7 s per iteration) |
+
+At iteration 0 the student is the base (a zero residual), so the starting gap is the teacher's mean |action|. The
+gap falls through behaviour cloning and rises again once the student drives. Two things push it up: the student's
+own states are the ones DAgger adds, and some of the teacher's actions depend on what only the teacher sees (the hold
+level, the randomization's parameters, the true slip). It then levels off over the on-policy iterations, at 53 %
+(1 kHz) and 40 % (250 Hz) of the teacher's mean action.
+
+The returns are training's (C3's mixed episodes, the policy's mean action). The 1 kHz run shared the GPU for part
+of its time.
+
+**The ONNX graphs** (`student_s1k.onnx`, `student_s250.onnx`, with sidecars) were checked on 10 240 recorded inputs:
+64 envs × 160 steps of each student playing C3, with episodes resetting along the way. The table gives the largest
+absolute error of the graph against torch.
+
+| student | action, free running | state, free running | aux, free running | action, per step | state, per step | aux, per step |
+|---|---|---|---|---|---|---|
+| s1k | 3.9e-7 | 3.5e-6 | 5.7e-6 | 3.9e-7 | 1.2e-6 | 3.8e-6 |
+| s250 | 3.6e-7 | 2.8e-6 | 5.7e-6 | 3.0e-7 | 1.4e-6 | 4.8e-6 |
+
+Both students agree to within 1e-5 on every output, running free as well as per step.
+
+### The students against their teachers on the GPU (`python -m tactile_rl.bench.residual_eval`)
+
+This is M4's evaluation: C3's settings, the base fixed at one hold level per run, 1024 episodes per cell from one
+seed, and each policy at its own rate playing its mean action.
+- The hammer rows of the zero residual and the teachers were rerun with the testbed's strike window. They repeat
+  M4's to within the GPU's ±1–3 %.
+- The load generator's zero and teacher rows are M4's.
+
+The student against its teacher, as ratios (the load generator's share within the slip target as a difference in
+points):
+
+| rate | hold | hammer net mm | hammer net deg | hammer path deg | hammer I²t | load gen. net mm | load gen. net deg | load gen. within target | load gen. I²t |
+|---|---|---|---|---|---|---|---|---|---|
+| 1000 | 0.3 | 1.01 | 1.00 | 1.06 | 0.98 | 0.97 | 1.03 | −1.3 | 1.02 |
+| 1000 | 0.5 | 1.02 | 0.98 | 1.06 | 0.98 | 0.98 | 1.03 | −0.3 | 1.02 |
+| 1000 | 0.8 | 1.02 | 0.98 | 1.04 | 0.99 | 0.98 | 1.01 | −0.4 | 1.00 |
+| 1000 | 1 | 1.03 | 1.01 | 1.04 | 1.00 | 0.99 | 1.00 | −0.3 | 1.01 |
+| 250 | 0.3 | 1.01 | 1.11 | 1.04 | 0.98 | 1.05 | 1.14 | −3.3 | 0.99 |
+| 250 | 0.5 | 1.00 | 1.00 | 1.04 | 0.99 | 1.03 | 1.10 | −2.2 | 1.00 |
+| 250 | 0.8 | 1.00 | 0.99 | 1.04 | 0.99 | 1.02 | 1.08 | −1.8 | 1.01 |
+| 250 | 1 | 1.00 | 1.02 | 1.02 | 0.99 | 1.01 | 1.05 | −0.9 | 1.02 |
+
+Both students reproduce their teachers on the GPU:
+- **The 1 kHz student** is within 3 % of its teacher in net slip and I²t, on the hammer and on the load generator.
+  Its rotational slip path on the hammer is within 6 %. Its lost grasps are the teacher's: none on the hammer, and
+  0.1–0.3 % on the load generator at 0.3–0.5. Its share of events within the slip target is within 1.3 points.
+- **The 250 Hz student** matches its teacher in net translation and I²t (±2 %), but rotates more:
+  - on the hammer, 11 % more at 0.3 (2.96 against 2.67°);
+  - on the load generator, 5–14 % more, which leaves it 1–3 points below its teacher within the target (70.7
+    against 74.0 % at 0.3).
+
+Neither student loses a hammer swing at any hold level; the zero residual loses 54 % at 0.3 and 9 % at 0.5. Each
+student has one seed.
+
+### E1-lite: the students in the 8 kHz validator (`residual_experiment run --stage E1hold`)
+
+The setup:
+- Each student runs zero-shot from its ONNX graph in `ResidualHandL2` (`OnnxPolicy`), at its own rate.
+- The testbed is the plan's: 0.125 ms, noslip 5, elliptic cones, the elastic-foundation taxels and the full plants.
+- The base swings the hammer by script, with the grip at 0.3, 0.5, 0.8 or 1.0 of its scalar from the episode's
+  start.
+- Each condition runs 20 seeds, sharing every seed's randomization draw across conditions. An episode runs up to 10
+  strikes, until the nail is home; a drop ends it.
+
+The measures:
+- **Lost** means the testbed's drop or the tool 2 cm / 30° from its pose at the swing's start.
+- **Slip** (net, and the 30 Hz low-passed path) is per kept strike, from the swing's start to the strike's end.
+- **I²t** is over the same window: the mean over joints of (i / i_rated)², integrated.
+- **Advance** is the nail's advance per strike.
+
+The zero residual's rows are the base alone.
+
+| policy | hold | episodes / strikes | lost per strike | episodes ended by a drop | first strike lost | net slip mm / deg | slip path mm / deg | I²t (swing to end) | advance mm | against zero, same hold: net mm, deg, I²t | against zero, full hold: net mm, deg, I²t |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| zero | 0.3 | 20 / 105 | 9.5 % | 50 % | 35 % | 1.674 / 3.036 | 8.93 / 24.49 | 0.044 | 1.99 | 1.00, 1.00, 1.00 | 1.61, 1.89, 0.11 |
+| s1k | 0.3 | 20 / 161 | 0 | 0 | 0 | 1.365 / 1.797 | 5.07 / 13.34 | 0.215 | 2.55 | 0.82, 0.59, 4.93 | 1.31, 1.12, 0.52 |
+| s250 | 0.3 | 20 / 161 | 0 | 0 | 0 | 1.230 / 1.947 | 5.59 / 13.59 | 0.180 | 2.52 | 0.73, 0.64, 4.13 | 1.18, 1.22, 0.44 |
+| zero | 0.5 | 20 / 160 | 1.2 % | 10 % | 5 % | 1.473 / 2.839 | 8.45 / 21.71 | 0.119 | 2.27 | 1.00, 1.00, 1.00 | 1.41, 1.77, 0.29 |
+| s1k | 0.5 | 20 / 155 | 0 | 0 | 0 | 1.187 / 1.661 | 4.66 / 11.91 | 0.278 | 2.60 | 0.81, 0.59, 2.34 | 1.14, 1.04, 0.68 |
+| s250 | 0.5 | 20 / 158 | 0 | 0 | 0 | 1.172 / 1.690 | 4.97 / 12.53 | 0.239 | 2.54 | 0.80, 0.60, 2.02 | 1.12, 1.05, 0.58 |
+| zero | 0.8 | 20 / 161 | 0 | 0 | 0 | 1.206 / 1.911 | 6.76 / 16.10 | 0.281 | 2.43 | 1.00, 1.00, 1.00 | 1.16, 1.19, 0.68 |
+| s1k | 0.8 | 20 / 156 | 0 | 0 | 0 | 1.121 / 1.804 | 4.30 / 10.81 | 0.373 | 2.58 | 0.93, 0.94, 1.33 | 1.08, 1.13, 0.91 |
+| s250 | 0.8 | 20 / 157 | 0 | 0 | 0 | 1.005 / 1.675 | 4.47 / 11.48 | 0.344 | 2.56 | 0.83, 0.88, 1.22 | 0.96, 1.05, 0.84 |
+| zero | 1 | 20 / 162 | 0 | 0 | 0 | 1.042 / 1.602 | 5.92 / 13.62 | 0.411 | 2.46 | 1.00, 1.00, 1.00 | 1.00, 1.00, 1.00 |
+| s1k | 1 | 20 / 157 | 0 | 0 | 0 | 1.103 / 1.774 | 4.35 / 10.68 | 0.441 | 2.58 | 1.06, 1.11, 1.07 | 1.06, 1.11, 1.07 |
+| s250 | 1 | 20 / 156 | 0 | 0 | 0 | 1.025 / 1.746 | 4.58 / 10.95 | 0.431 | 2.58 | 0.98, 1.09, 1.05 | 0.98, 1.09, 1.05 |
+
+Paired by seed against the zero residual at the full hold. Each seed contributes the mean of its kept strikes; each
+cell is the mean difference with its bootstrap 95 % interval.
+
+| policy | hold | seeds | net slip mm | net slip deg | slip path deg | I²t | advance mm |
+|---|---|---|---|---|---|---|---|
+| zero | 0.3 | 13 | +1.72 [+0.67, +3.02] | +3.22 [+1.05, +5.89] | +15.8 [+11.1, +22.0] | −0.369 [−0.374, −0.365] | +0.25 [−0.07, +0.63] |
+| s1k | 0.3 | 20 | +0.34 [+0.21, +0.46] | +0.19 [−0.04, +0.41] | −0.22 [−0.97, +0.54] | −0.195 [−0.201, −0.189] | +0.06 [−0.01, +0.16] |
+| s250 | 0.3 | 20 | +0.21 [+0.09, +0.31] | +0.29 [−0.05, +0.66] | +0.07 [−0.53, +0.66] | −0.230 [−0.235, −0.225] | +0.05 [−0.00, +0.12] |
+| zero | 0.5 | 19 | +0.49 [+0.28, +0.75] | +1.56 [+0.64, +2.70] | +8.94 [+7.22, +11.2] | −0.293 [−0.298, −0.288] | −0.16 [−0.38, −0.02] |
+| s1k | 0.5 | 20 | +0.15 [+0.05, +0.25] | +0.05 [−0.16, +0.26] | −1.80 [−2.51, −1.11] | −0.131 [−0.140, −0.122] | +0.13 [+0.04, +0.24] |
+| s250 | 0.5 | 20 | +0.15 [+0.03, +0.26] | +0.05 [−0.21, +0.30] | −1.09 [−1.65, −0.49] | −0.171 [−0.177, −0.165] | +0.07 [+0.02, +0.13] |
+| zero | 0.8 | 20 | +0.17 [+0.07, +0.28] | +0.38 [+0.07, +0.75] | +2.72 [+1.90, +3.74] | −0.130 [−0.133, −0.128] | −0.01 [−0.05, +0.04] |
+| s1k | 0.8 | 20 | +0.09 [−0.02, +0.20] | +0.22 [+0.01, +0.42] | −2.96 [−3.54, −2.37] | −0.035 [−0.045, −0.025] | +0.15 [+0.09, +0.21] |
+| s250 | 0.8 | 20 | −0.01 [−0.13, +0.09] | +0.11 [−0.13, +0.35] | −2.27 [−2.97, −1.53] | −0.066 [−0.074, −0.058] | +0.11 [+0.05, +0.18] |
+| s1k | 1 | 20 | +0.06 [−0.05, +0.19] | +0.20 [−0.02, +0.40] | −3.09 [−3.71, −2.45] | +0.033 [+0.022, +0.044] | +0.13 [+0.08, +0.19] |
+| s250 | 1 | 20 | +0.00 [−0.12, +0.11] | +0.21 [−0.03, +0.44] | −2.83 [−3.53, −2.10] | +0.021 [+0.013, +0.029] | +0.13 [+0.07, +0.20] |
+
+**What the students do in the testbed.**
+
+- **No drops at any hold level.** Both students keep the hammer through all 160 of their episodes, 1261 strikes in
+  all. The zero base, by contrast, drops it in half of its episodes at 0.3 of its grip (35 % in the first strike) and
+  in 10 % at 0.5. With the zero base, the nail advances less at 0.3 (1.99 mm per strike) and the hits fall to 90 %.
+  The students hit with every strike and advance the nail as far as the full hold does, or slightly further:
+  2.52–2.60 mm against 2.46 mm.
+- **The full hold's slip from 0.3–0.5 of the grip, at half its current.** Against the zero residual at the full
+  hold:
+  - net rotation is equal within the intervals at 0.3 and 0.5;
+  - the rotational slip path is equal at 0.3 and 1.1–1.8° shorter at 0.5;
+  - net translation is +0.15–0.34 mm (+12–31 %);
+  - I²t is 44–52 % of the full hold's at 0.3 and 58–68 % at 0.5.
+
+  Against the zero base at the same hold, the students cut net slip by 18–27 % in translation and 36–41 % in
+  rotation, at 0.3 and 0.5.
+- **At and near the full hold they damp.** The rotational slip path is 2.3–3.1° shorter per strike (−17 to −23 %).
+  Net translation stays within 0.1 mm of the zero residual at the full hold. Net rotation is +0.1–0.2° (+7–14 %),
+  significant only for the 1 kHz student at 0.8. I²t is +5–8 % at the full hold and −8 to −16 % at 0.8. M4's
+  teachers did the same on the GPU.
+- **1 kHz against 250 Hz.** The two students are indistinguishable on the slip measures (the intervals overlap
+  everywhere). The 250 Hz student spends 8–16 % less I²t at the reduced holds (0.3–0.8) and 2 % less at the full
+  hold. Each rate has one seed.
+- **The runner was healthy**: no non-finite output in 1.22 M policy ticks. The stale-input count is 2–3 ticks per
+  episode at 1 kHz and 1 at 250 Hz. It is the same for the zero residual, so it comes from the episodes' first
+  ticks, not from the policy.
+
+### E6, first number: the students in the testbed against the GPU (`python -m tactile_rl.bench.transfer`)
+
+`transfer` sets the testbed's E1hold beside the GPU's evaluation, scored in the testbed's strike window (from the
+swing's start to the strike's end), for the same policies at the same hold levels. CPU / GPU in each cell.
+
+| policy | hold | lost per strike | first strikes lost | net slip mm | net slip deg | slip path mm | slip path deg | I²t (swing to end) | advance mm |
+|---|---|---|---|---|---|---|---|---|---|
+| zero | 0.3 | 9.5 / 59.0 % | 35 / 49 % | 1.674 / 4.973 | 3.036 / 9.600 | 8.93 / 16.47 | 24.49 / 38.64 | 0.044 / 0.055 | 1.99 / 1.63 |
+| s1k | 0.3 | 0.0 / 0.0 % | 0 / 0 % | 1.365 / 1.480 | 1.797 / 2.517 | 5.07 / 5.26 | 13.34 / 13.54 | 0.215 / 0.226 | 2.55 / 2.66 |
+| s250 | 0.3 | 0.0 / 0.0 % | 0 / 0 % | 1.230 / 1.222 | 1.947 / 2.856 | 5.59 / 5.26 | 13.59 / 13.55 | 0.180 / 0.188 | 2.52 / 2.62 |
+| zero | 0.5 | 1.2 / 11.3 % | 5 / 8 % | 1.473 / 3.184 | 2.839 / 6.849 | 8.45 / 11.79 | 21.71 / 30.46 | 0.119 / 0.137 | 2.27 / 2.20 |
+| s1k | 0.5 | 0.0 / 0.0 % | 0 / 0 % | 1.187 / 1.487 | 1.661 / 2.449 | 4.66 / 4.72 | 11.91 / 11.76 | 0.278 / 0.291 | 2.60 / 2.65 |
+| s250 | 0.5 | 0.0 / 0.0 % | 0 / 0 % | 1.172 / 1.313 | 1.690 / 2.521 | 4.97 / 4.73 | 12.53 / 11.64 | 0.239 / 0.250 | 2.54 / 2.63 |
+| zero | 0.8 | 0.0 / 0.0 % | 0 / 0 % | 1.206 / 1.226 | 1.911 / 2.506 | 6.76 / 7.11 | 16.10 / 17.90 | 0.281 / 0.290 | 2.43 / 2.68 |
+| s1k | 0.8 | 0.0 / 0.0 % | 0 / 0 % | 1.121 / 1.475 | 1.804 / 2.473 | 4.30 / 4.37 | 10.81 / 10.42 | 0.373 / 0.395 | 2.58 / 2.67 |
+| s250 | 0.8 | 0.0 / 0.0 % | 0 / 0 % | 1.005 / 1.386 | 1.675 / 2.474 | 4.47 / 4.48 | 11.48 / 10.52 | 0.344 / 0.355 | 2.56 / 2.65 |
+| zero | 1 | 0.0 / 0.0 % | 0 / 0 % | 1.042 / 1.136 | 1.602 / 2.185 | 5.92 / 5.95 | 13.62 / 14.25 | 0.411 / 0.421 | 2.46 / 2.68 |
+| s1k | 1 | 0.0 / 0.0 % | 0 / 0 % | 1.103 / 1.436 | 1.774 / 2.444 | 4.35 / 4.34 | 10.68 / 10.16 | 0.441 / 0.468 | 2.58 / 2.68 |
+| s250 | 1 | 0.0 / 0.0 % | 0 / 0 % | 1.025 / 1.368 | 1.746 / 2.492 | 4.58 / 4.45 | 10.95 / 10.25 | 0.431 / 0.437 | 2.58 / 2.66 |
+
+Each sim against its own zero residual, CPU / GPU, with the transfer ratio (the CPU's effect over the GPU's) in
+brackets:
+
+| policy | hold | net slip mm vs zero, same hold | net slip deg vs zero, same hold | net slip mm vs zero, full hold | net slip deg vs zero, full hold | slip path deg vs zero, full hold | I²t vs zero, full hold |
+|---|---|---|---|---|---|---|---|
+| s1k | 0.3 | 0.82 / 0.30 (2.74) | 0.59 / 0.26 (2.26) | 1.31 / 1.30 (1.00) | 1.12 / 1.15 (0.97) | 0.98 / 0.95 (1.03) | 0.52 / 0.54 (0.98) |
+| s250 | 0.3 | 0.73 / 0.25 (2.99) | 0.64 / 0.30 (2.16) | 1.18 / 1.08 (1.10) | 1.22 / 1.31 (0.93) | 1.00 / 0.95 (1.05) | 0.44 / 0.45 (0.98) |
+| s1k | 0.5 | 0.81 / 0.47 (1.72) | 0.59 / 0.36 (1.64) | 1.14 / 1.31 (0.87) | 1.04 / 1.12 (0.92) | 0.87 / 0.83 (1.06) | 0.68 / 0.69 (0.98) |
+| s250 | 0.5 | 0.80 / 0.41 (1.93) | 0.60 / 0.37 (1.62) | 1.12 / 1.16 (0.97) | 1.05 / 1.15 (0.91) | 0.92 / 0.82 (1.13) | 0.58 / 0.59 (0.98) |
+| s1k | 0.8 | 0.93 / 1.20 (0.77) | 0.94 / 0.99 (0.96) | 1.08 / 1.30 (0.83) | 1.13 / 1.13 (0.99) | 0.79 / 0.73 (1.09) | 0.91 / 0.94 (0.97) |
+| s250 | 0.8 | 0.83 / 1.13 (0.74) | 0.88 / 0.99 (0.89) | 0.96 / 1.22 (0.79) | 1.05 / 1.13 (0.92) | 0.84 / 0.74 (1.14) | 0.84 / 0.84 (0.99) |
+| s1k | 1 | 1.06 / 1.26 (0.84) | 1.11 / 1.12 (0.99) | 1.06 / 1.26 (0.84) | 1.11 / 1.12 (0.99) | 0.78 / 0.71 (1.10) | 1.07 / 1.11 (0.97) |
+| s250 | 1 | 0.98 / 1.20 (0.82) | 1.09 / 1.14 (0.96) | 0.98 / 1.20 (0.82) | 1.09 / 1.14 (0.96) | 0.80 / 0.72 (1.12) | 1.05 / 1.04 (1.01) |
+
+**What transfers.**
+
+- **The students' effect against the full hold transfers.** Both students keep every grasp in both sims. Measured
+  against each sim's own zero residual at the full hold, the effects transfer as follows:
+  - I²t: 0.97–1.01;
+  - net rotation: 0.91–0.99;
+  - the rotational slip path: 1.03–1.14. The students damp the path a little less in the testbed: −16 to −22 %
+    at 0.8–1.0, against −26 to −29 % on the GPU;
+  - net translation: 0.79–1.10. In the testbed the students translate up to 27 % less than on the GPU, while
+    the zero residual at the full hold translates 9 % less (1.04 against 1.14 mm). The testbed's ratio is
+    therefore mostly the lower one.
+- **The students' absolute numbers are close in both sims.** Slip paths agree within 9 %, and I²t within 6 % (the
+  testbed's is the lower). Net rotation is lower in the testbed (1.7–1.9° against 2.4–2.9°), as is the zero
+  residual's at the full hold (1.60 against 2.19°): the GPU's extra rotation slip seen in P3 (M3).
+- **The weak base does not transfer.** The zero residual at a reduced hold differs much more between the sims than
+  the students do:
+  - The GPU loses 59 % of the swings at 0.3 and 11 % at 0.5; the testbed loses 9.5 % and 1.2 % of its strikes.
+    Most of this gap is the protocol (see Known differences). At 0.3, every drop in the testbed comes within an
+    episode's first two strikes, and the later strikes come only from the episodes that kept the hammer. On the
+    first strikes the sims are closer: 35 against 49 % lost at 0.3, and 5 against 8 % at 0.5.
+  - The kept strikes' net slip at 0.3 is 1.67 mm on the CPU against 4.97 mm on the GPU. Survivorship and the GPU's
+    softer hold (M1's creep, M3's rotation slip) together account for it.
+  - So the students' gain over the zero residual at the same hold is 1.6–3 × larger on the GPU than in the
+    testbed.
+    Against the full hold, which is the plan's comparison, they agree.
+- **What this says for the plan's E6.** In-distribution, the testbed reproduces the GPU's result for both students:
+  no drops from a weak base, the full hold's slip at 44–69 % of its I²t, and damping at the full hold. The
+  held-out physics (E6 proper) is next. So is the contact recalibration, which would bring the GPU's weak-grip slip
+  down toward the testbed's.
+
+### The 12 V drill on the GPU (`python -m tactile_rl.parity.drill_plant`, `python -m tactile_rl.parity.drill_episodes`)
+
+**The plant's laws on recorded inputs.** A zero-residual drill episode on the CPU at the validator's physics records,
+before every physics step:
+- what `DrillPlant.pre_step` reads: the tool's rotation, the bit tip's position and velocity, the tool's angular
+  velocity, the trigger's travel, the time and its generator's draws;
+- what it wrote: the wrench, the screw's or the hole's state, depth, spindle speed and the clutch's clicks.
+
+`TorchDrillLaws` (the drivetrain included) replays those inputs and draws. The largest differences over each
+episode, at 8 kHz:
+
+| episode | steps | force | torque | depth | spindle speed | chuck torque | state / click / slip mismatches | outcome |
+|---|---|---|---|---|---|---|---|---|
+| screw, seed 0 | 28 001 | 3.6e-15 N | 1.3e-15 Nm | 0 | 0 | 2.2e-16 Nm | 0 / 0 / 0 | seated at 2.44 s, 41 clicks, 1.67 Nm peak |
+| screw, seed 1 | 28 201 | 3.6e-15 N | 6.7e-16 Nm | 0 | 0 | 4.4e-16 Nm | 0 / 0 / 0 | seated at 2.40 s, 49 clicks, 1.76 Nm |
+| hole, seed 0 | 122 841 | 7.1e-15 N | 7.2e-15 Nm | 0 | 7.1e-15 rad/s | 1.1e-16 Nm | 0 / 0 / 0 | through at 14.25 s, 0.58 Nm |
+| hole, seed 1 | 123 041 | 3.6e-15 N | 7.1e-15 Nm | 0 | 0 | 1.1e-16 Nm | 0 / 0 / 0 | through at 14.19 s, 0.51 Nm |
+
+At 4 kHz, the screw (14 081 steps) and the first 8.8 s of a hole (35 201 steps) agree to ≤ 7.1e-15 as well. The
+torch port is float64 and follows the CPU's arithmetic, so it is exact to rounding: every screw-state and hole-state
+transition lands on the same step, as do the clutch's clicks and its slipping.
+
+**The dyno on the batched drivetrain.** `drill_dyno`'s tests run on `TorchDrivetrain` with all parameter sets in one
+batch: the nominal drill and eight of the randomization's draws, each against the CPU dyno.
+
+| set | no-load speed (rad/s) | ISO 5393 soft / hard (Nm) | clutch mean / peak (Nm) | slip speed (rad/s) | clicks / s | brake stop (s) |
+|---|---|---|---|---|---|---|
+| nominal | 44.37 (424 rpm) | 14.99 / 29.94 | 0.839 / 1.497 | 41.89 | 50 | 0.160 |
+| draws 1–8 | 43.05–48.30 | 14.1–19.3 / 22.1–47.9 | 0.65–1.47 / 1.29–2.18 | 40.2–45.7 | 50–100 | 0.080–0.274 |
+
+The largest relative difference against the CPU over every rating and set is 2.4e-16.
+
+**The drill scene, the library and whole episodes.** The scene and the library:
+- `residual_training_config(task="drill")` builds the reduced scene with the pistol driver: the Vega U and the WUJI
+  hold it, and the index finger pulls the trigger part.
+- The trigger finger's pads keep the hand's randomized friction but are capped at 0.9; the trigger's face keeps its
+  own friction (0.05). These are `TrainingParts.skin_caps` and `fixed_friction_pairs`, which the GPU's
+  randomization honours.
+- `behaviors.drill_library` records DrillBase feeds on the CPU at the training physics with a zero residual, one
+  `residual_dr` draw per episode. Each episode records the arm's servo stream, the grip synergy's scalar, the
+  trigger finger's own level (`s_trig`), the base's trigger enable, the drill's draw and the CPU's outcome.
+- `BaseTrajectoryCommand` replays either library: the hammer's or the drill's.
+
+On the GPU, `TorchDrillPlant` reads the tool's kinematics after each substep and writes the wrench (bit tip,
+unbalance, housing torque) through `xfrc_applied` before the next. The CPU's `DrillPlant` reads them in its
+`pre_step`.
+
+Twenty episodes of each mode play open loop on the GPU at 0.25 ms, against the CPU recording of the same episode.
+The load noise and the Torx lobes' free turn are drawn independently on each side, so the comparison is in
+distribution.
+
+| | screws (20) | holes (20) |
+|---|---|---|
+| completed, GPU / CPU | 20 / 20 seated | 20 / 20 through |
+| completion time, GPU / CPU (mean abs. difference) | 2.500 / 2.507 s (16 ms) | 14.359 / 14.350 s (35 ms) |
+| clutch clicks | 37.7 / 36.4 | 0 / 0 |
+| peak chuck torque | 1.62 / 1.84 Nm | 0.53 / 0.55 Nm |
+| final depth | 22.24 / 22.35 mm | 38.0 / 38.0 mm |
+| depth trace, RMS difference | 0.15 mm | 0.08 mm |
+| spindle speed, RMS difference | 0.44 rad/s | 0.17 rad/s |
+| the tool's largest slip in the hand | 1.37 / 1.41 mm, 5.06 / 5.19° | 2.20 / 2.21 mm, 6.26 / 6.09° |
+| net slip at the end | 1.01 / 1.01 mm, 3.23 / 3.29° | 1.82 / 1.83 mm, 5.85 / 5.69° |
+
+`drill_env_cfg` is a minimal task:
+- terminations: time-out and the base's end;
+- reward: residual size only;
+- observations: the student's group.
+
+The drill's rewards come with its teacher.
+
+### The teachers' seeds 2 and 3 (E3)
+
+The seeds run on M4's budget and code: ce0e3d6's training code, unchanged by M5 for the teachers; 1000 iterations of
+4096 envs; KL 0.02. They are in `~/scratch/tactile-gpu-runs/m5/seeds/`, with progress in `seeds/status`.
+- **Order:** 1 kHz seed 2 (started 05:44), 250 Hz seed 2, 1 kHz seed 3, 250 Hz seed 3.
+- **Time:** about 3 h per seed at 1 kHz and 2.3 h at 250 Hz on an idle GPU.
+- **An earlier attempt:** a 250 Hz seed-2 run started before the students was stopped after 7 minutes to give them
+  the GPU (`seeds/stopped_250_s2`).
+
+Their curves and the evaluation at matched hold levels (`residual_eval`, as above) come when they finish.
 
 ## Milestone 4 results (desktop, RTX 5070 Ti, 2026-10-08/09)
 
@@ -908,6 +1288,26 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
 
 ## Known differences and open issues
 
+- **Two protocols at a reduced hold (E6, M5).** The two sims run the hold levels differently:
+  - The CPU's E1hold runs whole episodes with the base at the hold level from the start: the approach, then up to 10
+    strikes. A drop ends the episode, and a nail driven home ends it early.
+  - The GPU's evaluation plays each library swing alone. It starts from the CPU's full-hold state at the swing's
+    windup and lowers the base to the hold level from there.
+
+  So the CPU's later strikes come only from episodes that kept the tool (at 0.3, every drop comes in the first two
+  strikes), while every GPU swing starts fresh. Lost grasps per strike differ by construction. The first strikes
+  and the kept strikes' slip, I²t and advance are the comparable numbers.
+- **The testbed's drops in E1hold (fixed in M5).** A strike that a drop interrupts has no strike end, and therefore
+  no window. M5's first table counted such strikes as kept, which put the zero residual's lost grasps at 0 % at 0.3
+  of the hold. They now count as lost.
+- **The drill plant's inputs.** The two sides read the tool's kinematics at different points:
+  - the GPU plant reads them in the post-substep hook and writes the wrench in the next pre-substep hook;
+  - the CPU's `DrillPlant` reads them in its `pre_step`.
+
+  On the CPU's recorded inputs and draws, the laws agree to rounding. Whole episodes agree in distribution: the
+  load noise and the Torx lobes' free turn are drawn independently on each side, so seating times differ by
+  16 ms on average.
+
 - **Closed in M3: the nail without noslip and the contacts per pair.** The nail's friction constraint is hard
   (`NailPlantCfg.friction_solimp`, 51e7ca1), so noslip no longer changes it, and `residual_config` turns multi-contact
   off, so the validator makes one contact per convex pair as MuJoCo Warp does (P3 above; M2's analysis: the validator's
@@ -962,14 +1362,15 @@ hook 4 × 0.49 ms, the rest ~1.2 ms. The minimum buffers for the hold were `ncon
 
 ## What remains
 
-- **The drill** on the GPU (plant, pistol driver, trigger, the drill base; its rewards): the interlock is ready for
-  task "drill"; `TorchSynergy` needs WrapSynergy's `levels()` / `s_trigger` split first. The plant to port is the
-  12 V model (feat/residual-l2 2249c57, 59a5b1a): `plants/drivetrain.py` (a small ODE, written to vectorize) plus
-  the tip contact and screw/hole laws of `plants/drill.py`; parity against the CPU plant, and the dyno's ratings
-  (`model/plants/drill_dyno.py`), on the batched version. After M4.
+- **The drill's teacher**: the plant, scene, library and zero-residual parity are in (M5). Still missing:
+  - the drill's rewards: seating, cam-outs, the breakthrough lunge, trigger overshoot, the tool's slip;
+  - the drill in the curriculum, and its teacher and student;
+  - E1 and E6 on the drill in the validator.
+- **E6's held-out physics** (heavy head 0.8 kg, hand friction 0.5, the stiffer nail, an unseen clutch torque).
+  `residual_experiment --stage E6` has these conditions; the students have not run them yet.
+- **E7**: the ONNX student on an isolated core; p50, p99 and p99.9 over 10⁶ ticks.
 - **Curriculum C4**: latency extremes and VLA chunks (C3, the hammer mixed 70/30 with the load generator, is in M4).
-- **Teachers**: still improving at the end of M4's budget; ≥ 3 seeds per rate for E3, and 1 kHz against 250 Hz at
-  equal samples as well as equal simulated time; **contact recalibration** (static-hold creep, impulse slip, ripple,
-  the GPU's 13 % extra rotation slip); **DAgger** students with the auxiliary labels (`aux_labels`), their ONNX export
-  with the `aux` output, and the E7 latency benchmark.
+- **Teachers**: still improving at the end of M4's budget. Seeds 2 and 3 per rate run on M4's budget (M5, below);
+  E3 also needs 1 kHz against 250 Hz at equal samples, not only at equal simulated time.
+- **Contact recalibration**: static-hold creep, impulse slip, ripple, and the GPU's 13 % extra rotation slip.
 - **Speed:** CUDA graphs or Warp kernels for the hooks; dropping mjlab's per-step `forward()`.

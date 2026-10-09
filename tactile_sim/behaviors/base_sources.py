@@ -90,7 +90,8 @@ class SwingBase:
     def __call__(self, t: float) -> tuple[np.ndarray, np.ndarray, bool, np.ndarray]:
         hand = self.tb.world.hand
         q = self.tb.sensors["hand_q"].latest().value
-        base = np.stack(hand.synergy.mit_command(hand.s, q))
+        level = float(getattr(self.tb.cfg.residual, "hold_level", 1.0))  # the base's grip at its hold level
+        base = np.stack(hand.synergy.mit_command(level * hand.s, q))
         if t >= self.next_look - 1e-12:
             self._update_arm_lookahead(t)
             rate = getattr(self.tb.cfg.arm, "command_rate", 100.0)

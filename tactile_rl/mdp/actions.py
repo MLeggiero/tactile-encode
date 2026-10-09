@@ -118,7 +118,9 @@ class ResidualHandAction(ActionTerm):
     def base_command(self) -> torch.Tensor:
         """The base MIT command now (see the module doc)."""
         if self.base_cmd is not None:
-            return self.synergy.mit_command(self.base_cmd.s_now, self.rt.rb_q.value.float())
+            # a drill base also sets the trigger finger's own level (WrapSynergy.levels)
+            return self.synergy.mit_command(self.base_cmd.s_now, self.rt.rb_q.value.float(),
+                                            getattr(self.base_cmd, "s_trig_now", None))
         q = self._entity.data.joint_pos[:, self.hand_ids]
         return self.synergy.mit_command(self.s, q)
 
