@@ -1,4 +1,5 @@
-"""Held tools other than the hammer: a hand saw and an inline cordless driver.
+"""Held tools other than the hammer: a hand saw, an inline cordless driver and a pistol drill/driver (the Makita
+DF333D, tactile_sim.model.df333d, or a primitive one).
 
 Every held tool uses the hammer's names for the parts the rest of the testbed looks up (names.HAMMER_BODY for the
 tool body with its free joint "hammer_free", names.HAMMER_HANDLE_GEOM for the gripped handle the pads touch,
@@ -74,11 +75,20 @@ def add_driver(worldbody: ET.Element, dc: DrillCfg) -> str:
 
 
 def add_pistol_driver(worldbody: ET.Element, dc: DrillCfg) -> str:
-    """A pistol-grip drill/driver laid out like the hammer (tool_hammer): x along the grip away from the housing, y
-    along the bit with the tip at -y (where the hammer's face points), z completing the frame; the tool frame is
-    the grasp point on the grip's centreline. The grip is the contact geom (names.HAMMER_HANDLE_GEOM); the housing,
-    chuck, bit and battery are mass and drawing only (the plant applies the bit's loads)."""
+    """A pistol-grip drill/driver laid out like the hammer (tool_hammer): x down from the housing, y along the bit
+    with the tip at -y (where the hammer's face points), z completing the frame; the tool frame is the grasp point
+    on the grip's centreline. DrillCfg.pistol_body "df333d": the Makita DF333D, measured (model.df333d); "primitive":
+    a capsule grip along x (the contact geom, names.HAMMER_HANDLE_GEOM) under a cylinder housing, chuck, bit and a
+    battery box, mass and drawing only (the plant applies the bit's loads)."""
     b = _tool_body(worldbody)
+    if dc.pistol_body == "df333d":
+        from tactile_sim.model.df333d import add_df333d
+
+        add_df333d(b, dc)
+        _pistol_trigger(b, dc)
+        return "pistol_driver"
+    if dc.pistol_body != "primitive":
+        raise ValueError(f"unknown pistol_body {dc.pistol_body!r} (expected 'df333d' or 'primitive')")
     xh = -dc.pistol_grip_from_head
     rh = dc.pistol_housing_radius
     x_end = xh + rh + dc.pistol_grip_len
@@ -99,15 +109,24 @@ def add_pistol_driver(worldbody: ET.Element, dc: DrillCfg) -> str:
     sub(b, "site", name=BIT_TIP_SITE, pos=tip, size=0.002, group=4)
     sub(b, "site", name=names.HAMMER_FACE_SITE, pos=tip, size=0.003, group=4)
     sub(b, "site", name=names.HAMMER_IMU_SITE, pos=(xh, 0, 0), size=0.003, group=4)
+    _pistol_trigger(b, dc)
+    return "pistol_driver"
+
+
+def _pistol_trigger(b: ET.Element, dc: DrillCfg) -> None:
     if dc.trigger_mode == "finger":
         add_pistol_trigger(b, dc)
     elif dc.trigger_mode != "script":
         raise ValueError(f"unknown trigger_mode {dc.trigger_mode!r} (expected 'script' or 'finger')")
-    return "pistol_driver"
 
 
 def pistol_trigger_frame(dc: DrillCfg) -> tuple[np.ndarray, np.ndarray]:
     """The trigger's centre at rest and the direction it is pulled (radially into the grip), in the tool frame."""
+    if dc.pistol_body == "df333d":
+        from tactile_sim.model.df333d import trigger_frame
+
+        c, pull, _ = trigger_frame(dc)
+        return c, pull
     a = dc.trigger_angle
     out = np.array([0.0, -np.cos(a), np.sin(a)])  # from the grip's axis, the front (-y) turned toward +z
     x = -dc.pistol_grip_from_head + dc.pistol_housing_radius + dc.trigger_x
@@ -120,13 +139,18 @@ def add_pistol_trigger(tool_body: ET.Element, dc: DrillCfg) -> None:
     at rest, trigger_travel fully pulled. It collides only through explicit pairs with the hand."""
     c, pull = pistol_trigger_frame(dc)
     y_b = -pull  # the box's y: radial, outward
-    tb = sub(tool_body, "body", name=names.TRIGGER_BODY, pos=c, xyaxes=(1, 0, 0, *y_b))
+    x_b, half = (1.0, 0.0, 0.0), dc.trigger_half  # the box's x: along the grip
+    if dc.pistol_body == "df333d":
+        from tactile_sim.model.df333d import body, trigger_frame
+
+        x_b, half = tuple(trigger_frame(dc)[2]), tuple(1e-3 * v for v in body(dc).trigger_half)
+    tb = sub(tool_body, "body", name=names.TRIGGER_BODY, pos=c, xyaxes=(*x_b, *y_b))
     f0, f1 = dc.trigger_force
     k = (f1 - f0) / dc.trigger_travel
     sub(tb, "joint", name=names.TRIGGER_JOINT, type="slide", axis=(0, -1, 0), limited="true",
         range=(0, dc.trigger_travel), stiffness=k, springref=-f0 / k, damping=dc.trigger_damping, armature=0.01,
         solreflimit=(0.002, 1.0))  # hard stops (MuJoCo's default limit is soft for a part this light)
-    sub(tb, "geom", name=names.TRIGGER_GEOM, type="box", size=dc.trigger_half, mass=0.008, rgba=(0.85, 0.2, 0.1, 1),
+    sub(tb, "geom", name=names.TRIGGER_GEOM, type="box", size=half, mass=0.008, rgba=(0.85, 0.2, 0.1, 1),
         contype=0, conaffinity=0)
 
 
@@ -137,7 +161,20 @@ def trigger_level(dc: DrillCfg, travel: float) -> float:
 
 
 def pistol_tip_local(dc: DrillCfg) -> tuple[float, float, float]:
+    if dc.pistol_body == "df333d":
+        from tactile_sim.model.df333d import tip_local
+
+        return tip_local(dc)
     return (-dc.pistol_grip_from_head, -(dc.pistol_housing_front + dc.pistol_chuck_len + dc.bit_len), 0.0)
+
+
+def pistol_bit_out(dc: DrillCfg) -> float:
+    """The bit's length out of the chuck (m): the chuck is this far behind the tip."""
+    if dc.form == "pistol" and dc.pistol_body == "df333d":
+        from tactile_sim.model.df333d import bit_out
+
+        return bit_out(dc)
+    return dc.bit_len
 
 
 def saw_teeth_local(s: SawCfg) -> tuple[tuple[float, float, float], tuple[float, float, float]]:

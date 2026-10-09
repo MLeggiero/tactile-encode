@@ -159,15 +159,18 @@ tool.
     teeth resist the stroke with $\mu_c F_n$ plus drag; on the cutting stroke the kerf deepens at
     $\dot c = F_n|v_s|/k_c(c)$, with a knot raising $k_c$ over a depth range; once the kerf is started its walls push
     the blade back beyond the side clearance, adding binding friction.
-  \item \emph{Driver.} A 12\,V drill/driver on low gear, modelled at the chuck: a brushed motor
+  \item \emph{Driver.} The Makita DF333D 12\,V drill/driver, its body measured from the maker's data and renders (a
+    \SI{10.7}{\degree}-raked $30\times\SI{40}{\milli\metre}$ oval grip, a touchable motor housing, the battery
+    pack; \SI{1.15}{\kilogram}), on low gear, its drivetrain modelled at the chuck: a brushed motor
     $\tau_m = \tau_s(u - \omega/\omega_0)$ (a PWM trigger, a dynamic brake on release) on a reflected spindle inertia
     $J_s = J_r N^2 + J_c$, driving the chuck through a ball-detent clutch on the last planetary stage's ring gear. Below
     its breakaway the clutch is rigid; above it the chuck stops and the ring turns, each detent's torque climbing a
     ramp and dropping, so the ratchet's rate follows the motor's speed under the clutch's load. The housing carries the
     chuck torque plus the internals' angular-momentum change $J_a\dot\omega$, $J_a = J_r N + J_c \approx J_s/N$: a free
-    spin-up kicks the hand with about the motor shaft's torque. The nominal values reproduce a 12\,V drill's ratings in
-    simulated ISO~5393 tests (\SI{425}{rpm}; \SI{15}{\newton\metre} soft and \SI{30}{\newton\metre} hard joint, which
-    sets $J_s \approx \SI{6e-3}{\kilogram\metre\squared}$), and the randomization spans the 12\,V class.
+    spin-up kicks the hand with about the motor shaft's torque. Its values reproduce the DF333D's ratings in
+    simulated ISO~5393 tests (\SI{450}{rpm}; \SI{14}{\newton\metre} soft and \SI{30}{\newton\metre} hard joint, which
+    sets $J_s \approx \SI{5.5e-3}{\kilogram\metre\squared}$; the motor line's peak power, \SI{165}{\watt}, then
+    matches the rated \SI{170}{\watt}), and the randomization spans the 12\,V class.
   \item \emph{Driver and screw.} A Torx bit engages a pre-started wood screw when pressed within the recess, turns
     free until its lobes catch, and leaves the recess only when tilted or unpressed; the screw advances one pitch per
     turn against a torque growing with depth and rising steeply once the head is flush, until the clutch slips. A
@@ -239,8 +242,8 @@ the baselines the learned layers will be compared against.
     & Saw, crosscut & Driver, screw & Driver, hole \\
     \midrule
     Goal                  & \SI{20}{\milli\metre} cut & seated & \SI{38}{\milli\metre} through \\
-    Reached at (s)        & 23.1 (54 strokes) & 2.20 & 12.2 \\
-    Peak load             & \SI{49}{\newton} normal &  \SI{1.61}{\newton\metre}, \SI{82}{\newton} & \SI{0.57}{\newton\metre}, \SI{89}{\newton} \\
+    Reached at (s)        & 23.1 (54 strokes) & 2.12 & 11.6 \\
+    Peak load             & \SI{49}{\newton} normal &  \SI{1.57}{\newton\metre}, \SI{82}{\newton} & \SI{0.60}{\newton\metre}, \SI{89}{\newton} \\
     Net slip in grasp     & \SI{1.0}{\milli\metre}, \SI{4.8}{\degree} & \SI{0.04}{\milli\metre}, \SI{0.6}{\degree} & \SI{0.3}{\milli\metre}, \SI{0.5}{\degree} \\
     Untimed events        & binding (\SI{23}{\newton}) & 0 cam-outs & breakthrough \\
     Arm limits            & held & held & held \\

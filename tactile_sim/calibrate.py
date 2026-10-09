@@ -124,8 +124,8 @@ def _drill(fit_hard: float | None) -> int:
         J = drill_dyno.fit_spindle_inertia(p, fit_hard)
         print(f"spindle inertia for a {fit_hard:g} Nm hard joint: {J:.3e} kg m^2 (configured {p.spindle_inertia:.3e})")
         p = replace(p, spindle_inertia=J)
-    # the nominal tool's ratings: Bosch GSR 12V-15 (15 / 30 Nm soft / hard, 400 rpm), Makita DF333D (14 / 30, 450)
-    for row in drill_dyno.report(p, hard_spec=30.0, soft_spec=15.0):
+    # the nominal tool's ratings: the Makita DF333D, 14 / 30 Nm soft / hard joint, 450 rpm, 170 W
+    for row in drill_dyno.report(p, hard_spec=30.0, soft_spec=14.0):
         print(row)
     return 0
 

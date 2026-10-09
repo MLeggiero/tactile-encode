@@ -35,17 +35,20 @@ learned layers (L2 reactive, L3 World-Action-Model / VLA planner) will train aga
     bottom supports the blade, the teeth resist the stroke, and once the kerf is started its walls push back
     and bind. The hand holds the handle palm-sideways, fingers above and below it. Loads at the grip are
     periodic, with binding as the untimed event;
-  - **driver** (a 12 V drill/driver on low gear: a pre-started Torx wood screw, or a 4 mm hole through with
-    the clutch engaged): a drivetrain (`plants/drivetrain.py`) of a brushed motor on a reflected spindle
+  - **driver** (the Makita DF333D 12 V drill/driver on low gear, measured from Makita's data and renders,
+    `docs/drill_df333d.md`: a raked oval grip, a touchable motor housing, the BL1021B pack, 1.15 kg; a pre-started
+    Torx wood screw, or a 4 mm hole through with the clutch engaged): a drivetrain (`plants/drivetrain.py`) of a
+    brushed motor on a reflected spindle
     inertia and a ball-detent clutch that ratchets at a rate set by the motor's speed under its load, with the
     housing reaction from the internals' angular momentum; screw torque rising as the head seats, the Torx
     lobes catching, the wood stripping out or the screw twisting off under a clutch set too high (Phillips
     cam-out and stripping as an option); or drilling with a thrust-feed-torque law for a small bit, the bit
     catching at the exit and losing its support at breakthrough; the motor's unbalance, the bit's runout and
-    load noise as vibration. Its nominal values reproduce a 12 V drill's published ratings on a virtual dyno
-    (`python -m tactile_sim.calibrate drill`: 425 rpm, ISO 5393 15 Nm soft / 30 Nm hard joint); the
-    randomization spans the 12 V class. The previous model is kept as `DrillCfg.model = "v2"`
-    (`config.DRILL_V2_PRESET`). The driver is held along the hand's approach axis so the push runs through the
+    load noise as vibration. Its values reproduce the DF333D's ratings on a virtual dyno (`python -m
+    tactile_sim.calibrate drill`: 450 rpm, ISO 5393 14 Nm soft / 30 Nm hard joint, 165 W against the rated 170);
+    the randomization spans the 12 V class. The WUJI holds it in a wrap found by a grasp search (the index finger's
+    middle segment on the trigger, the thumb clear of the housing). The previous models are kept as
+    `DrillCfg.model = "v2"` (`config.DRILL_V2_PRESET`) and the primitive body (`DRILL_12V_GENERIC_PRESET`). The driver is held along the hand's approach axis so the push runs through the
     arm, not the wrist. A steady reaction torque with untimed jerks.
 - **Sensors:** wrist F/T at 4 kHz, accelerometers at 8 kHz (+-16 g) under the pads / the palm, pressure
   arrays at 1 kHz, joint encoders and torques at 1 kHz, and the momentum observer's external torque. Each
@@ -172,8 +175,8 @@ Saw and driver on the FR3 + Franka Hand (8 kHz, seed 0, scripted behaviors, grip
 | Metric | Saw, crosscut | Driver, screw | Driver, hole |
 |---|---|---|---|
 | Goal | 20 mm cut | screw seated | 38 mm through |
-| Reached at | 23.1 s (54 strokes) | 2.20 s | 12.2 s (4 mm bit, low gear) |
-| Peak load | 49 N normal, 23 N binding | 1.61 Nm (clutch breakaway), 82 N push | 0.57 Nm (exit catch), 89 N push |
+| Reached at | 23.1 s (54 strokes) | 2.12 s | 11.6 s (4 mm bit, low gear) |
+| Peak load | 49 N normal, 23 N binding | 1.57 Nm (clutch breakaway), 82 N push | 0.60 Nm (exit catch), 89 N push |
 | Net slip in the grasp | 1.0 mm, 4.8 deg (pads flex up to 9 deg per stroke) | 0.04 mm, 0.6 deg | 0.3 mm, 0.5 deg |
 | Untimed events | binding | the Torx lobes catching, the clutch (a Phillips bit cams out with a 35 N push) | breakthrough |
 | Arm limits | all held | all held | all held |

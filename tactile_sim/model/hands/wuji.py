@@ -104,11 +104,21 @@ def mount_quat(yaw: float) -> tuple[float, float, float, float]:
 
 
 def hand_tcp_rotation(cfg=None) -> np.ndarray:
-    """The tool (grasp) frame's axes in the hand frame for this configuration's wrap."""
-    if cfg is not None and cfg.plant.kind == "drill" and cfg.drill.form == "pistol" and \
-            cfg.drill.pistol_grasp == "pistol":
-        return R_HAND_TCP_PISTOL
-    return R_HAND_TCP
+    """The tool (grasp) frame's axes in the hand frame for this configuration's wrap. A raked pistol grip (the
+    DF333D's, model.df333d) lies across the palm as a straight one does: the wrap turns by the rake about the tool's
+    z, so the grip's axis, not the tool's x, runs along the hand's -x. DrillCfg.pistol_wrap_roll then rolls the
+    wrap about the grip, from the side wrap (0) toward the pistol one (-pi/2: the same as pistol_grasp "pistol")."""
+    if cfg is None or cfg.plant.kind != "drill" or cfg.drill.form != "pistol":
+        return R_HAND_TCP
+    R = R_HAND_TCP_PISTOL if cfg.drill.pistol_grasp == "pistol" else R_HAND_TCP
+    a = cfg.drill.pistol_wrap_roll  # about the grip: from the side wrap toward the pistol one (-pi/2)
+    R = R @ np.array([[1.0, 0.0, 0.0], [0.0, np.cos(a), -np.sin(a)], [0.0, np.sin(a), np.cos(a)]])
+    r = cfg.drill.pistol_wrap_tilt  # the hand tilted in the tool's side view, about its z
+    if cfg.drill.pistol_body == "df333d":
+        from tactile_sim.model.df333d import body
+
+        r += body(cfg.drill).rake
+    return R @ np.array([[np.cos(r), np.sin(r), 0.0], [-np.sin(r), np.cos(r), 0.0], [0.0, 0.0, 1.0]])
 
 
 def tcp_quat(R: np.ndarray | None = None) -> tuple[float, float, float, float]:

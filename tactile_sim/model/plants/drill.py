@@ -108,6 +108,9 @@ class DrillPlant(Plant):
         # across it (the runout's and the unbalance's plane)
         self.bit_local = np.array([0.0, -1.0, 0.0]) if self.cfg.drill.form == "pistol" else np.array([0.0, 0.0, 1.0])
         self.cross_local = (np.array([1.0, 0.0, 0.0]), np.cross(self.bit_local, [1.0, 0.0, 0.0]))
+        from tactile_sim.model.tools import pistol_bit_out
+
+        self.bit_out = pistol_bit_out(self.cfg.drill)  # the chuck, where the motor's unbalance acts, behind the tip
         self.reset()
 
     # ---- model ----
@@ -308,7 +311,7 @@ class DrillPlant(Plant):
         # the motor's unbalance: a lateral force at the chuck turning with the rotor
         phi = self.dtp.gear_ratio * self.drive.theta
         f_unb = dc.vib_unbalance * (self.dtp.gear_ratio * self.drive.w) ** 2
-        chuck = tip - a_t * dc.bit_len
+        chuck = tip - a_t * self.bit_out
         F_unb = f_unb * (np.cos(phi) * e1 + np.sin(phi) * e2)
         # the housing: the screw's (or the wood's) reaction through the gears plus the internals' angular momentum
         # change, J_am dw/dt along the bit and (gyroscopic) its turn with the housing

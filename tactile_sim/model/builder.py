@@ -120,6 +120,10 @@ def tool_contact_geoms(cfg: SimConfig) -> list[str]:
     """The held tool's geoms a wrap grasp touches: the hammer's handle slices, or the pistol driver's grip (its
     trigger, when it has one, gets its own pairs: trigger_contact_pairs)."""
     if cfg.plant.kind == "drill" and cfg.drill.form == "pistol":
+        if cfg.drill.pistol_body == "df333d":
+            from tactile_sim.model.df333d import contact_geoms
+
+            return contact_geoms()
         return [names.HAMMER_HANDLE_GEOM]
     if cfg.plant.kind != "nail":
         raise ValueError(f"the WUJI Hand 2 wraps the hammer or the pistol driver, not a {cfg.plant.kind!r} tool")

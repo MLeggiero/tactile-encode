@@ -87,6 +87,12 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
     else:  # the pistol driver: its whole geometry, nothing of the hammer (which randomization still varies)
         dc = cfg.to_dict()["drill"]
         key["tool"] = {k: v for k, v in dc.items() if k.startswith("pistol_")}
+        if dc["form"] == "pistol" and dc["pistol_body"] == "df333d":  # its measured shape (model.df333d)
+            from dataclasses import asdict
+
+            from tactile_sim.model.df333d import DF333D
+
+            key["body"] = asdict(DF333D)
         if dc["trigger_mode"] == "finger":  # and its trigger (keys without one keep their old values)
             key["trigger"] = {k: v for k, v in dc.items() if k.startswith("trigger_") and k not in
                               ("trigger_contact", "trigger_delay", "trigger_level", "trigger_slew",
@@ -110,7 +116,12 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
 
     if cfg.plant.kind == "drill":
         dd = DrillCfg()
-        nom = {k: getattr(dd, k) for k in ("pistol_housing_mass", "pistol_grip_mass", "pistol_battery_mass")}
+        nom = {k: getattr(dd, k) for k in ("pistol_housing_mass", "pistol_gearbox_mass", "pistol_chuck_mass",
+                                           "pistol_grip_mass", "pistol_base_mass", "pistol_battery_mass")}
+        if cfg.drill.pistol_body == "primitive":  # the primitive body's own (DRILL_V2_PRESET)
+            from tactile_sim.config import PRIMITIVE_PISTOL
+
+            nom.update({k: v for k, v in PRIMITIVE_PISTOL.items() if k.endswith("_mass")})
         from tactile_sim.config import GripperCfg
 
         gd = GripperCfg()

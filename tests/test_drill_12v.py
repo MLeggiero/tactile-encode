@@ -12,6 +12,7 @@ import pytest
 from tactile_sim.assets.fetch_hands import hand_available
 from tactile_sim.config import (
     DRILL_V2_PRESET,
+    PRIMITIVE_PISTOL_GRIPPER,
     VEGA_DRILL_OVERRIDES,
     VEGA_DRILL_V2_PRESET,
     DrillCfg,
@@ -83,12 +84,13 @@ def test_the_clutch_holds_then_ratchets_at_the_motors_pace():
 
 
 def test_the_dyno_reproduces_the_nominal_tools_ratings():
-    # Bosch GSR 12V-15: 400 rpm low gear, 15 / 30 Nm soft / hard (ISO 5393); Makita DF333D: 450 rpm, 14 / 30 Nm
+    # the Makita DF333D: 0-450 rpm in low gear, 14 / 30 Nm soft / hard joint (ISO 5393), 170 W
     rpm = drill_dyno.no_load_speed(P) * 60 / (2 * np.pi)
-    assert 400 < rpm < 450
-    assert drill_dyno.soft_torque(P) == pytest.approx(15.0, abs=1.0)
-    assert drill_dyno.hard_torque(P) == pytest.approx(30.0, abs=2.0)
-    assert drill_dyno.fit_spindle_inertia(P, 30.0) == pytest.approx(P.spindle_inertia, rel=0.05)
+    assert 440 < rpm < 452
+    assert drill_dyno.soft_torque(P) == pytest.approx(14.0, abs=0.5)
+    assert drill_dyno.hard_torque(P) == pytest.approx(30.0, abs=1.0)
+    assert drill_dyno.fit_spindle_inertia(P, 30.0) == pytest.approx(P.spindle_inertia, rel=0.03)
+    assert P.stall_torque * P.free_speed / 4 == pytest.approx(170.0, rel=0.05)  # the peak power
     assert 0.1 < drill_dyno.brake_stop_time(P) < 0.3
 
 
@@ -184,4 +186,4 @@ def test_the_v2_preset_reproduces_v2(name, over, t_max):
 
 @requires_wuji
 def test_the_v2_preset_reproduces_v2_on_the_vega():
-    _compare("vega_screw", vega_cfg(**VEGA_DRILL_V2_PRESET), 3.0)
+    _compare("vega_screw", vega_cfg(**VEGA_DRILL_V2_PRESET).replace(gripper=PRIMITIVE_PISTOL_GRIPPER), 3.0)

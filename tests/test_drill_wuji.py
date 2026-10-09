@@ -17,20 +17,45 @@ def drill_cfg(**drill):
 
 
 def test_pistol_geometry():
+    from tactile_sim.model.df333d import DF333D, grip_axis, grip_front
+
     dc = DrillCfg(form="pistol")
+    assert dc.pistol_body == "df333d"
     tip = pistol_tip_local(dc)
-    assert tip[0] == -dc.pistol_grip_from_head and tip[1] < -0.2 and tip[2] == 0.0
-    assert dc.pistol_housing_mass + dc.pistol_grip_mass + dc.pistol_battery_mass == pytest.approx(1.12)
+    # the bit 76 mm above the grasp point, its tip 0.16 m ahead (DF333D: 179 mm long, a 50 mm bit out of the chuck)
+    assert tip[0] == pytest.approx(-dc.pistol_grip_from_head) and -0.18 < tip[1] < -0.14
+    assert tip[2] == pytest.approx(dc.pistol_grasp_offset[1])  # the grasp point off the drill's mid-plane
+    masses = [dc.pistol_housing_mass, dc.pistol_gearbox_mass, dc.pistol_chuck_mass, dc.pistol_grip_mass,
+              dc.pistol_base_mass, dc.pistol_battery_mass]
+    assert sum(masses) == pytest.approx(1.15)  # 1.1-1.2 kg with a BL1021B
+    g, f = grip_axis(dc), grip_front(dc)
+    assert np.degrees(np.arctan2(g[1], g[0])) == pytest.approx(10.7, abs=0.1)  # raked back, away from the bit
+    assert g @ f == pytest.approx(0.0) and f[1] < 0  # the grip's front faces the bit's side
+    assert DF333D.grip_depth > DF333D.grip_width  # an oval, deeper than wide
+    prim = DrillCfg(form="pistol", pistol_body="primitive", pistol_grip_from_head=0.055, pistol_housing_mass=0.55,
+                    pistol_battery_mass=0.45)
+    tip = pistol_tip_local(prim)
+    assert tip[0] == -prim.pistol_grip_from_head and tip[1] < -0.2 and tip[2] == 0.0
+    assert prim.pistol_housing_mass + prim.pistol_grip_mass + prim.pistol_battery_mass == pytest.approx(1.12)
 
 
 def test_trigger_geometry_and_dead_band():
+    from tactile_sim.model.df333d import DF333D, _on_grip, grip_front
     from tactile_sim.model.tools import pistol_trigger_frame, trigger_level
 
     dc = DrillCfg(form="pistol", trigger_mode="finger")
     c, pull = pistol_trigger_frame(dc)
+    assert np.linalg.norm(pull) == pytest.approx(1.0) and pull[2] == 0.0
+    assert pull @ grip_front(dc) == pytest.approx(-1.0)  # pulled straight into the grip's front
+    # its centre on the grip's front, its face trigger_proud ahead of the grip at rest, 51 mm below the bit axis
+    face = (c - _on_grip(dc, DF333D.trigger_z)) @ grip_front(dc) + 1e-3 * DF333D.trigger_half[1]
+    assert face == pytest.approx(0.5e-3 * DF333D.grip_depth + 1e-3 * DF333D.trigger_proud)
+    assert c[0] - pistol_tip_local(dc)[0] == pytest.approx(1e-3 * (DF333D.trigger_z - DF333D.axis_z), abs=0.002)
+    prim = DrillCfg(form="pistol", trigger_mode="finger", pistol_body="primitive", pistol_grip_from_head=0.055)
+    c, pull = pistol_trigger_frame(prim)
     assert np.linalg.norm(pull) == pytest.approx(1.0) and pull[0] == 0.0
     r = np.hypot(c[1], c[2])  # the trigger stands off the grip's front, pulled radially in
-    assert r == pytest.approx(dc.pistol_grip_radius + dc.trigger_gap + dc.trigger_travel + dc.trigger_half[1])
+    assert r == pytest.approx(prim.pistol_grip_radius + prim.trigger_gap + prim.trigger_travel + prim.trigger_half[1])
     assert np.dot(pull, -np.array([0.0, c[1], c[2]]) / r) == pytest.approx(1.0)
     assert c[1] < 0  # on the bit's side of the grip
     T = dc.trigger_travel
@@ -85,7 +110,7 @@ def test_the_vega_drives_a_screw_and_drills_through(mode):
 
     tt = ToolTask(drill_cfg(mode=mode), seed=0, t_max=16.0)
     w = tt.tb.world
-    assert w.model.body_mass[w.hammer_body] == pytest.approx(1.12, abs=1e-6)
+    assert w.model.body_mass[w.hammer_body] == pytest.approx(1.15, abs=1e-6)  # the DF333D with a BL1021B
     res = tt.run()
     s = res.summary
     assert w.plant.done() and not s["lost"]

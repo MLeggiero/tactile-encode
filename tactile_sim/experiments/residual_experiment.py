@@ -57,9 +57,9 @@ SWEEPS = {
 # E6: held-out physics, outside the training ranges
 HELD_OUT = {"heavy_head": {"hammer": {"head_mass": 0.8}}, "slick_skin": {"gripper": {"hand_friction": 0.5}},
             "stiff_nail": {"plant": {"resistance_0": 250.0}}, "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
-# (the drill's: a heavier battery; a clutch set above the training range on a stronger 4.5 mm screw; a brushless
-# M12-class drill, stronger, faster and heavier-geared than the 12 V class trained on)
-HELD_OUT_DRILL = {"heavy_battery": {"drill": {"pistol_battery_mass": 0.75}},
+# (the drill's: the 4.0 Ah BL1041B pack, 0.35 kg; a clutch set above the training range on a stronger 4.5 mm screw;
+# a brushless M12-class drill, stronger, faster and heavier-geared than the 12 V class trained on)
+HELD_OUT_DRILL = {"heavy_battery": {"drill": {"pistol_battery_mass": 0.35}},
                   "slick_skin": {"gripper": {"hand_friction": 0.5}},
                   "strong_clutch": {"drill": {"clutch_torque": 2.4, "screw_twist_off": 3.8, "strip_torque": 5.0}},
                   "brushless_drill": {"drill": {"stall_torque": 24.0, "free_speed": 49.5, "spindle_inertia": 1.4e-2,

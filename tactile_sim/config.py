@@ -268,26 +268,52 @@ class DrillCfg:
     # the bit points where the hammer's face does (tactile_sim.model.tools.add_pistol_driver), so the WUJI Hand 2's
     # wrap grasp, contacts and slip metrics carry over
     form: str = "inline"
-    pistol_grip_radius: float = 0.016
-    pistol_grip_len: float = 0.11  # along the grip, from the housing's underside to the battery
-    pistol_grip_from_head: float = 0.055  # grasp centre to the housing (bit) axis, along the grip
-    pistol_housing_radius: float = 0.028
-    pistol_housing_back: float = 0.07  # housing behind the grip, away from the bit
-    pistol_housing_front: float = 0.09  # housing ahead of the grip, to the chuck
-    pistol_chuck_len: float = 0.045
-    pistol_housing_mass: float = 0.55  # motor, gearbox, clutch, chuck: 1.12 kg with the grip and battery
+    # the pistol's body: "df333d", the Makita DF333D 12V max CXT drill/driver measured from Makita's data and renders
+    # (tactile_sim.model.df333d: a raked oval grip, a touchable motor housing, the BL1021B pack); "primitive", a
+    # capsule grip under a cylinder housing and a battery box (DRILL_V2_PRESET, DRILL_12V_GENERIC_PRESET)
+    pistol_body: str = "df333d"
+    pistol_grip_radius: float = 0.016  # primitive
+    pistol_grip_len: float = 0.11  # primitive: along the grip, from the housing's underside to the battery
+    # where the hand holds: the grasp point (the tool frame) this far below the bit axis, on the grip's centreline
+    # (the DF333D: 66 mm, with the wrap below, so the WUJI's index finger crosses the trigger 51 mm below the axis)
+    pistol_grip_from_head: float = 0.066
+    pistol_housing_radius: float = 0.028  # primitive
+    pistol_housing_back: float = 0.07  # primitive: housing behind the grip, away from the bit
+    pistol_housing_front: float = 0.09  # primitive: housing ahead of the grip, to the chuck
+    pistol_chuck_len: float = 0.045  # primitive
+    # masses, 1.15 kg in all (the DF333D with a BL1021B, 1.1-1.2 kg): the motor and the head's shell, the gearbox
+    # and clutch, the chuck, the grip, the base, the pack (the primitive: housing, grip and battery only)
+    pistol_housing_mass: float = 0.34
+    pistol_gearbox_mass: float = 0.22
+    pistol_chuck_mass: float = 0.14
     pistol_grip_mass: float = 0.12
-    pistol_battery_mass: float = 0.45
-    pistol_battery_half: tuple[float, float, float] = (0.035, 0.05, 0.03)  # box beyond the grip's end
+    pistol_base_mass: float = 0.12
+    pistol_battery_mass: float = 0.21
+    pistol_battery_half: tuple[float, float, float] = (0.035, 0.05, 0.03)  # primitive: box beyond the grip's end
     # how the WUJI wraps the pistol's grip: "side" (as the hammer's handle: the palm along the grip's side, the bit
     # toward the fingertips) or "pistol" (as a person holds a drill: the palm behind the grip, the bit pointing out
     # from it, the push into the palm, the index finger round the grip's front where the trigger is)
     pistol_grasp: str = "side"
+    # the wrap rolled about the grip from pistol_grasp's (rad; -pi/2 takes "side" to "pistol"): on the DF333D the side
+    # wrap's thumb, which runs up a hammer's handle, would run into the motor housing; rolled by -35 deg (toward a
+    # person's pistol grip) it clears it, the index finger's middle segment crosses the trigger
+    # (the WUJI's fingertip joints, 0.3 Nm, cannot push a fingertip through the trigger's 8 N), and the palm takes
+    # the screw's push-back. Found by a grasp search scored on the full pull and release, the thumb off the trigger
+    # and the housing, and the turn under 60 N of push-back; then in the task world on repeated trigger pulls (the
+    # tool must not ratchet round in the hand) and randomized screw drives and holes (docs/drill_df333d.md)
+    pistol_wrap_roll: float = -0.6109
+    # and tilted in the tool's side view (about its z, rad) beyond following the grip's rake: positive turns the
+    # fingers' curl up toward the housing, where the trigger is
+    pistol_wrap_tilt: float = 0.0
+    # where the grip's centreline passes the grasp point, across the grip (tool y, z; m): the hand shifted round the
+    # grip, so the index finger's middle segment, not its weak tip, comes onto the DF333D's trigger
+    pistol_grasp_offset: tuple[float, float] = (0.0, 0.0)
     # the pistol's trigger. "script": the base sets the motor's trigger level itself (no trigger part). "finger": a
     # sprung slide trigger on the grip's front, where the WUJI wrap lays the index finger's proximal segment; the
     # index finger closes on it with its own level (trigger_rest / trigger_full below), and the motor runs on the
-    # trigger's travel past a dead band. The trigger sits trigger_x below the grip's top, trigger_angle around
-    # the grip from the front (-y) toward +z, and slides radially into the grip
+    # trigger's travel past a dead band. On the primitive body the trigger sits trigger_x below the grip's top,
+    # trigger_angle around the grip from the front (-y) toward +z (trigger_half its size), and slides radially into
+    # the grip; on the DF333D it is where and as large as on the tool (model.df333d), and slides the same way
     trigger_mode: str = "script"
     trigger_x: float = 0.002  # m
     trigger_angle: float = 0.32  # rad
@@ -303,7 +329,9 @@ class DrillCfg:
     trigger_dead: float = 0.2  # fraction of the travel before the motor runs
     # the index finger's closing level on the trigger (its share of the grip synergy's torque, apart from the grip
     # level): resting on it, and at a full pull
-    trigger_rest: float = 0.15
+    # (resting at 0.15 on the DF333D, a finger that has just let go can settle on the trigger 1.3 mm in, past the dead
+    # band: the motor creeps)
+    trigger_rest: float = 0.12
     trigger_full: float = 0.8
     trigger_pull_time: float = 0.15  # s for the base to go from resting to a full pull
     trigger_release_time: float = 0.25  # s the finger stays fully relaxed when the base lets go of a pull
@@ -317,15 +345,15 @@ class DrillCfg:
     # "12v": the 12 V drill/driver on low gear (plants/drill.py, its drivetrain in plants/drivetrain.py); "v2": the
     # previous model (plants/drill_v2.py, with DRILL_V2_PRESET)
     model: str = "12v"
-    # The drivetrain, at the chuck. Nominal: a brushed 12 V drill/driver with a mechanical clutch (Bosch GSR 12V-15,
-    # Makita DF333D class: 400-450 rpm in low gear, 14-15 Nm soft-joint and 30 Nm hard-joint torque by ISO 5393,
-    # 0.95-1.2 kg, ~20 clutch settings), on low gear for screws and holes alike. tau = stall (u - w / free_speed);
-    # stall_torque is the quasi-static (soft-joint) torque; the hard joint's extra comes from the spindle inertia,
-    # set so the virtual dyno's ISO 5393 hard joint gives 30 Nm (python -m tactile_sim.calibrate drill)
-    stall_torque: float = 15.0
-    free_speed: float = 44.5  # rad/s (425 rpm)
-    gear_ratio: float = 40.0  # motor (~17,000 rpm no-load) to chuck
-    spindle_inertia: float = 6.0e-3  # kg m^2 at the chuck, J_r N^2 + J_chuck (a ~5e-6 rotor through 35-40:1)
+    # The drivetrain, at the chuck: the Makita DF333D's, a brushed 12 V drill/driver with a mechanical clutch, on low
+    # gear for screws and holes alike (0-450 rpm; 14 / 30 Nm soft / hard joint by ISO 5393; 170 W). tau = stall
+    # (u - w / free_speed); stall_torque is the quasi-static (soft-joint) torque; the hard joint's extra comes from
+    # the spindle inertia, set so the virtual dyno's ISO 5393 hard joint gives 30 Nm (python -m tactile_sim.calibrate
+    # drill; its peak power, stall x free_speed / 4 = 165 W, then matches the rated 170 W)
+    stall_torque: float = 14.0
+    free_speed: float = 47.12  # rad/s (450 rpm)
+    gear_ratio: float = 40.0  # motor (~18,000 rpm no-load) to chuck
+    spindle_inertia: float = 5.5e-3  # kg m^2 at the chuck, J_r N^2 + J_chuck (a ~5e-6 rotor through 35-40:1)
     chuck_inertia: float = 3.0e-5  # kg m^2: the chuck and bit
     trigger_slew: float = 0.0  # per second: a soft start (0: none, a brushed drill's PWM trigger)
     brake_torque: float = 2.0  # Nm cap of the dynamic brake (the shorted motor) on release: stops in ~0.15 s
@@ -333,7 +361,8 @@ class DrillCfg:
     # the clutch: balls in ramps on the last stage's ring gear. Rigid below clutch_torque (clutch_overshoot more to
     # break away from rest); slipping, each ramp's torque climbs from clutch_low to 1 x clutch_torque over
     # clutch_duty of a detent, then drops; the ring turns clutch_ring_ratio x the spindle speed, clutch_detents
-    # ratchets a turn. clutch_torque is a low setting, where a 4 mm screw seats without twisting off
+    # ratchets a turn. clutch_torque is a low setting, where a 4 mm screw seats without twisting off (the DF333D's 20
+    # settings span 0.5-3.5 Nm: 1.5 Nm is about setting 7)
     clutch_torque: float = 1.5
     clutch_detents: int = 6
     clutch_ring_ratio: float = 1.25  # (R + S) / R of the last planetary stage
@@ -991,17 +1020,30 @@ VEGA_DRILL_OVERRIDES: dict[str, dict[str, Any]] = {
     "plant": {"kind": "drill"},
     "drill": {"form": "pistol", "mode": "screw", "clutch_torque": 1.5, "press_depth": 0.012, "trigger_mode": "finger"},
     "swing": {"arc_radius": 0.0},
+    # the thumb's CMC abduction held at -0.4 rad (the hammer's wrap: -0.8), so it closes round the DF333D's grip
+    # below the motor housing and off the trigger (DrillCfg.pistol_wrap_roll)
+    "gripper": {"thumb_preshape": (0.0, -0.4, 0.0, 0.0)},
 }
 
 # The previous drill model (plants/drill_v2.py) with its values, for results made before the 12 V drivetrain:
 # cfg.replace(drill=DRILL_V2_PRESET) on the FR3's inline driver, VEGA_DRILL_V2_PRESET after VEGA_DRILL_OVERRIDES
-# (and v2's scripted feed: backing out as the trigger is let go; and its hand contacts: no cap on the trigger
-# finger's friction)
+# (and v2's scripted feed: backing out as the trigger is let go; its hand contacts: no cap on the trigger finger's
+# friction; its primitive pistol body)
+PRIMITIVE_PISTOL: dict[str, Any] = {"pistol_body": "primitive", "pistol_grip_from_head": 0.055,
+                                     "pistol_housing_mass": 0.55, "pistol_battery_mass": 0.45, "pistol_wrap_roll": 0.0,
+                                     "pistol_wrap_tilt": 0.0, "pistol_grasp_offset": (0.0, 0.0), "trigger_rest": 0.15}
+# ... and the hand's thumb as it held the primitive body (cfg.replace(gripper=PRIMITIVE_PISTOL_GRIPPER))
+PRIMITIVE_PISTOL_GRIPPER: dict[str, Any] = {"thumb_preshape": (0.0, -0.8, 0.0, 0.0)}
 DRILL_V2_PRESET: dict[str, Any] = {"model": "v2", "drive": "phillips", "stall_torque": 8.0, "free_speed": 50.0,
                                    "trigger_slew": 6.0, "brake_torque": 0.4, "clutch_torque": 1.8,
-                                   "engage_radius": 0.003, "release_hold": 0.0, "trigger_finger_friction": 1e3}
+                                   "engage_radius": 0.003, "release_hold": 0.0, "trigger_finger_friction": 1e3,
+                                   **PRIMITIVE_PISTOL}
 VEGA_DRILL_V2_PRESET: dict[str, Any] = {**DRILL_V2_PRESET, "stall_torque": 3.0, "clutch_torque": 1.5,
                                         "drill_torque_per_feed": 1500.0}
+# The 12 V model before the DF333D (commits 2249c57, 59a5b1a; VLA dataset v3's drill half): a generic 12 V class
+# drivetrain (425 rpm, 15 Nm) on the primitive pistol body (with the hand's PRIMITIVE_PISTOL_GRIPPER thumb)
+DRILL_12V_GENERIC_PRESET: dict[str, Any] = {"free_speed": 44.5, "stall_torque": 15.0, "spindle_inertia": 6.0e-3,
+                                            **PRIMITIVE_PISTOL}
 
 
 def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,
