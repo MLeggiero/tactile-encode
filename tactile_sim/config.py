@@ -118,9 +118,10 @@ class GripperCfg:
     # rad: hold the four fingers' fingertip joints (DIP) at this angle instead of closing them, so the middle joints
     # close further and the fingertips' pads come down on the tool (None: they close with the rest)
     finger_dip: float | None = None
-    # the fingers collide with their neighbours (each finger's segments and fingertip pad with the next finger's), and
-    # the thumb with the index and middle fingertip pads too. The vendor model keeps these contacts; off, a tight wrap
-    # can put one finger through the next (the default, which grasps cached before 2026-10-09 were synthesized with)
+    # the fingers collide with their neighbours (each finger's segments and fingertip pad with the next finger's), the
+    # thumb with the index and middle fingertip pads, and its outer segments with the ring and little fingers'. The
+    # vendor model keeps these contacts; off, a tight wrap can put one finger through the next (the default, which
+    # grasps cached before 2026-10-09 were synthesized with)
     finger_self_contact: bool = False
     # "backdrivable": the joints are plain torque motors (the vendor model). "self_locking": WUJI's drives do
     # not backdrive: a joint closes under its motor but external load cannot open it (nor move a shaping
@@ -305,19 +306,20 @@ class DrillCfg:
     # from it, the push into the palm, the index finger round the grip's front where the trigger is)
     pistol_grasp: str = "side"
     # the wrap rolled about the grip from pistol_grasp's (rad; -pi/2 takes "side" to "pistol"): on the DF333D the side
-    # wrap's thumb, which runs up a hammer's handle, would run into the motor housing; rolled by -35 deg (toward a
+    # wrap's thumb, which runs up a hammer's handle, would run into the motor housing; rolled by -25 deg (toward a
     # person's pistol grip) it clears it, the index finger's middle segment crosses the trigger
     # (the WUJI's fingertip joints, 0.3 Nm, cannot push a fingertip through the trigger's 8 N), and the palm takes
     # the screw's push-back. Found by a grasp search scored on the full pull and release, the thumb off the trigger
-    # and the housing, and the turn under 60 N of push-back; then in the task world on repeated trigger pulls (the
-    # tool must not ratchet round in the hand) and randomized screw drives and holes (docs/drill_df333d.md)
-    pistol_wrap_roll: float = -0.6109
+    # and the housing, and the turn under 60 N of push-back; then, with the fingers colliding with each other, in
+    # the task world on repeated trigger pulls under the screw's push-back (the tool must not ratchet round in the
+    # hand, the trigger must pull fully and let go) and randomized screw drives and holes (docs/drill_df333d.md)
+    pistol_wrap_roll: float = -0.4363
     # and tilted in the tool's side view (about its z, rad) beyond following the grip's rake: positive turns the
     # fingers' curl up toward the housing, where the trigger is
     pistol_wrap_tilt: float = 0.0
     # where the grip's centreline passes the grasp point, across the grip (tool y, z; m): the hand shifted round the
     # grip, so the index finger's middle segment, not its weak tip, comes onto the DF333D's trigger
-    pistol_grasp_offset: tuple[float, float] = (0.0, 0.0)
+    pistol_grasp_offset: tuple[float, float] = (0.004, -0.004)
     # the pistol's trigger. "script": the base sets the motor's trigger level itself (no trigger part). "finger": a
     # sprung slide trigger on the grip's front, where the WUJI wrap lays the index finger's proximal segment; the
     # index finger closes on it with its own level (trigger_rest / trigger_full below), and the motor runs on the
@@ -342,7 +344,8 @@ class DrillCfg:
     # (resting at 0.15 on the DF333D, a finger that has just let go can settle on the trigger 1.3 mm in, past the dead
     # band: the motor creeps)
     trigger_rest: float = 0.12
-    trigger_full: float = 0.8
+    # (at 0.8 the index finger pulled the DF333D's trigger only 34-84 % of the way under the screw's push-back)
+    trigger_full: float = 1.0
     trigger_pull_time: float = 0.15  # s for the base to go from resting to a full pull
     trigger_release_time: float = 0.25  # s the finger stays fully relaxed when the base lets go of a pull
     handle_radius: float = 0.018
@@ -1059,9 +1062,10 @@ VEGA_DRILL_OVERRIDES: dict[str, dict[str, Any]] = {
     "plant": {"kind": "drill"},
     "drill": {"form": "pistol", "mode": "screw", "clutch_torque": 1.5, "press_depth": 0.012, "trigger_mode": "finger"},
     "swing": {"arc_radius": 0.0},
-    # the thumb's CMC abduction held at -0.4 rad (the hammer's wrap: -0.8), so it closes round the DF333D's grip
-    # below the motor housing and off the trigger (DrillCfg.pistol_wrap_roll)
-    "gripper": {"thumb_preshape": (0.0, -0.4, 0.0, 0.0)},
+    # the thumb's CMC abduction held at -0.6 rad (the hammer's wrap: -0.8), so it closes round the DF333D's grip
+    # below the motor housing and off the trigger (DrillCfg.pistol_wrap_roll); the fingers collide with each other
+    # (wrapped round the grip, the thumb met the ring finger 15 mm deep without)
+    "gripper": {"thumb_preshape": (0.0, -0.6, 0.0, 0.0), "finger_self_contact": True},
 }
 
 # The previous drill model (plants/drill_v2.py) with its values, for results made before the 12 V drivetrain:
@@ -1070,9 +1074,11 @@ VEGA_DRILL_OVERRIDES: dict[str, dict[str, Any]] = {
 # friction; its primitive pistol body)
 PRIMITIVE_PISTOL: dict[str, Any] = {"pistol_body": "primitive", "pistol_grip_from_head": 0.055,
                                      "pistol_housing_mass": 0.55, "pistol_battery_mass": 0.45, "pistol_wrap_roll": 0.0,
-                                     "pistol_wrap_tilt": 0.0, "pistol_grasp_offset": (0.0, 0.0), "trigger_rest": 0.15}
-# ... and the hand's thumb as it held the primitive body (cfg.replace(gripper=PRIMITIVE_PISTOL_GRIPPER))
-PRIMITIVE_PISTOL_GRIPPER: dict[str, Any] = {"thumb_preshape": (0.0, -0.8, 0.0, 0.0)}
+                                     "pistol_wrap_tilt": 0.0, "pistol_grasp_offset": (0.0, 0.0), "trigger_rest": 0.15,
+                                     "trigger_full": 0.8}
+# ... and the hand's thumb as it held the primitive body, the fingers passing through each other
+# (cfg.replace(gripper=PRIMITIVE_PISTOL_GRIPPER))
+PRIMITIVE_PISTOL_GRIPPER: dict[str, Any] = {"thumb_preshape": (0.0, -0.8, 0.0, 0.0), "finger_self_contact": False}
 DRILL_V2_PRESET: dict[str, Any] = {"model": "v2", "drive": "phillips", "stall_torque": 8.0, "free_speed": 50.0,
                                    "trigger_slew": 6.0, "brake_torque": 0.4, "clutch_torque": 1.8,
                                    "engage_radius": 0.003, "release_hold": 0.0, "trigger_finger_friction": 1e3,

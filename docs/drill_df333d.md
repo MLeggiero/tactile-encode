@@ -43,17 +43,17 @@ clutch 0.22, chuck 0.14, grip 0.12, base 0.12, pack 0.21.
 ## Collision geometry in the tool frame
 
 The tool frame is the grasp point: `pistol_grip_from_head` (66 mm) below the bit axis, `pistol_grasp_offset`
-(none: on the grip's centreline); x down (perpendicular to the bit), y back along the bit
+(the grip's centreline 4 mm behind it and 4 mm to its -z side); x down (perpendicular to the bit), y back along the bit
 (the tip at -y), z across. With the defaults (mm):
 
 | Geom | Type | Size | Centre | Axis |
 |---|---|---|---|---|
-| `hammer_handle` (grip, back) | capsule | r 15, half-length 36.64 | (8.07, 6.62, 0) | (-0.9825, -0.1864, 0) |
-| `drill_grip_front` | capsule | r 15, half-length 36.64 | (9.93, -3.21, 0) | same |
-| `drill_housing` | capsule | r 27.5, half-length 42.25 | (-66.0, -2.97, 0) | (0, 1, 0) |
-| `trigger_face` | box on a slide joint | half (9, 3, 6) | (-15.0, -33.38, 0) at rest | slides along (-0.1864, 0.9825, 0) |
+| `hammer_handle` (grip, back) | capsule | r 15, half-length 36.64 | (8.07, 10.62, -4.0) | (-0.9825, -0.1864, 0) |
+| `drill_grip_front` | capsule | r 15, half-length 36.64 | (9.93, 0.79, -4.0) | same |
+| `drill_housing` | capsule | r 27.5, half-length 42.25 | (-66.0, 1.03, -4.0) | (0, 1, 0) |
+| `trigger_face` | box on a slide joint | half (9, 3, 6) | (-15.0, -29.38, -4.0) at rest | slides along (-0.1864, 0.9825, 0) |
 
-The bit tip is at (-66.0, -162.2, 0); the tool's mass 1.15 kg, centre of mass (-14.3, -24.9, 0), principal
+The bit tip is at (-66.0, -158.2, -4.0); the tool's mass 1.15 kg, centre of mass (-14.3, -20.9, -4.0), principal
 inertia diag (7.56, 6.22, 1.75) x 1e-3 kg m^2 (the trigger body, 8 g, apart).
 
 ## Drivetrain
@@ -77,17 +77,27 @@ A real drill's shape forced a new hold:
 - With the thumb closing round the grip's front, its tip pressed the trigger's far side and the two clamped it.
 
 The hold was found by searching the wrap's roll about the grip (`pistol_wrap_roll`), the grasp height and offset,
-and the thumb's CMC abduction, each candidate scored after the grasp synthesis on: the trigger's travel at a full
-pull (>= 90 %) and after letting go (< 5 %), the thumb's force on the trigger (none) and its clearance of the
-housing (> 2 mm), and the tool's turn under 60 N of push-back along the bit (< 2-3 deg). Holds that passed all
-also seated 14/14 and 42/42 randomized screws, yet in the task world (the arm, the drives' MIT model, the full
-hold) every pull of the trigger turned the tool 1-5 deg further in the hand, pressing the trigger into the resting
-finger until the motor ran at rest. The survivors were therefore re-scored in the task world on four pull - let go
-- rest cycles; one held still. The result: roll -35 deg (toward a pistol grip), 66 mm below the bit axis, on the
-grip's centreline, the thumb's CMC abduction held at -0.4 rad (the hammer's wrap: -0.8;
-`VEGA_DRILL_OVERRIDES["gripper"]`), the index finger resting on the trigger at 0.12 (at 0.15 a finger that has just
-let go can settle 1.3 mm into the trigger, past the dead band). Over ten free-air cycles the tool turns 0.26 deg,
-then 0.06-0.11 deg more per cycle (0.97 after ten), the trigger releasing fully each time.
+and the thumb's CMC abduction, in three rounds:
+
+1. In the grasp-synthesis scene, scored on the trigger's travel at a full pull (>= 90 %) and after letting go
+   (< 5 %), the thumb's force on the trigger (none), its clearance of the housing (> 2 mm) and the tool's turn under
+   60 N of push-back along the bit (< 2-3 deg). Holds that passed also seated randomized screws, yet in the task
+   world (the arm, the drives' MIT model, the full hold) every pull of the trigger turned the tool 1-5 deg further in
+   the hand, pressing the trigger into the resting finger until the motor ran at rest.
+2. In the task world, on four pull - let go - rest cycles. One hold (roll -35 deg) held still. But the WUJI's
+   fingers did not collide with each other: wrapped round the grip, the thumb passed 15 mm through the ring finger.
+3. With the fingers colliding (`GripperCfg.finger_self_contact`, the thumb now meeting the ring and little fingers
+   too), in the task world, on three pull cycles under the screw's 60 N of push-back (243 holds; 40 the arm cannot
+   reach at the hover pose). The best seated randomized screws only slowly, the index finger pulling the trigger
+   34-84 % of the way under the push; pulling at the finger's full rated torque (`trigger_full` 1.0, was 0.8)
+   fixed it.
+
+The result: roll -25 deg (toward a pistol grip), 66 mm below the bit axis, the grip's centreline 4 mm behind and
+4 mm to the side of the grasp point, the thumb's CMC abduction held at -0.6 rad (the hammer's wrap: -0.8), the
+fingers colliding (`VEGA_DRILL_OVERRIDES["gripper"]`), the index finger resting on the trigger at 0.12 (at 0.15 a
+finger that has just let go can settle 1.3 mm into the trigger, past the dead band) and pulling at 1.0. Over ten
+free-air cycles the tool turns 0.06 deg, then ~0.04 deg more per cycle (0.41 after ten), the trigger releasing fully
+each time; the fingers overlap 0.14 mm at most.
 
 Randomized drives on the Vega U + WUJI (the residual experiments' randomization: hand friction 0.6-1.4, the tool's
 masses, the drill's class, the task shifted +-3 cm; the scripted feed; the trigger pulled by the index finger):
@@ -95,17 +105,16 @@ masses, the drill's class, the task shifted +-3 cm; the scripted feed; the trigg
 | | screws (42) | holes (10) |
 |---|---|---|
 | Done | 42 | 10 |
-| Trigger never ran | 0 | 0 |
+| Trigger pulled fully | 42 | 10 |
 | Cam-outs | 0 | 0 |
-| Median time | 2.43 s seated | 13.8 s through (feed-rate limited) |
-| Tool turn in the hand (max, incl. the pads' give) | 5.3-6.6 deg | 4.6-12.1 deg |
-| Tool slide in the hand (max) | 2.0 mm | 1.7 mm |
-| First contact off the screw's axis | <= 0.73 mm | <= 1.86 mm |
+| Median time | 2.51 s seated | 13.75 s through (feed-rate limited) |
+| Tool turn in the hand (max, incl. the pads' give) | 5.3-7.6 deg | 5.2-7.5 deg |
+| Tool slide in the hand (max) | 3.3 mm | 2.3 mm |
+| First contact off the screw's axis | <= 0.68 mm | <= 2.83 mm |
 
-Without the trigger finger's friction cap (`trigger_finger_friction`) it also seats 42/42: on the DF333D the index
-fingertip no longer reaches the grip below the trigger, where it used to lock. In the keyframe the thumb's and the
-ring and little fingers' base segments carry most of the grip (63, 45 and 54 N); the middle finger's knuckle rests
-at its stop (the stop carries its closing torque), so that finger cannot squeeze harder.
+In the keyframe the thumb's base carries most of the grip (56 N), then the little and ring fingers' base segments
+(28, 25 N); the middle finger's knuckle and the ring and little fingers' fingertip joints rest at their stops (the
+stop carries the closing torque), so those joints cannot squeeze harder.
 
 ## Limits
 
