@@ -158,5 +158,19 @@ GR00T's closed-loop hammer drops (dataset v3 model: 95-100 % of episodes) were t
     the nail, and from 0.20 m it started 0.25-0.27 m away. There the strike profile (its peak at most 1.25x the
     contact speed) has no solution at any speed, so the scripted swing fell back to 0.2 m/s taps: 5 of 16 full
     drives fell short and 1 dropped the hammer. Within ~0.26 m it plans 0.86-0.94 m/s.
+- **The arm's hold** (chosen with the user, 2026-10-09). The Vega U's default hover arched the arm over the table, the
+  elbow above the shoulder.
+  - The search varied the hammer's heading about the vertical strike axis (15° steps), the task's place (0.35-0.55 m
+    ahead, 0-0.30 m right) and height, and the arm's redundancy (IK from 24 seeds, the best solution kept per elbow
+    band: below, level with or above the shoulder).
+  - Each pose was scored on its holding torque against the joints' ratings, the joints' margins at the hover and
+    windup poses, and the strike speed the joint velocity limits allow along the arc.
+  - Holding torque hardly separates the poses (the most loaded joint at 13-18 % of its rating), and the cheapest
+    hold folds the elbow high. The blow is what loads this arm: 60-72 % of a joint's rating in every candidate tried.
+  - The hold now: the task 0.55 m ahead and centred, the grasp 0.90 m up, the handle 75° right of ahead. The arm
+    reaches forward with the elbow tucked in, 11 cm below the shoulder. Holding takes at most 17 % of a joint's
+    rating and a blow 70 %, at 0.99 m/s, 9 blows on the test seed.
+  - The alternatives shown were the arch (15 %, 67 %, 0.97 m/s), the head pointing forward (16 %, 72 %, 0.80 m/s,
+    12 blows) and the forearm level across the body (16 %, 72 %, 0.91-0.94 m/s).
 - **Viewer**: the wraps in 3D, with per-taxel loads, contact forces, twist and blow results:
   https://claude.ai/artifact/AdVgftZiaKXreB6dmNVYZo

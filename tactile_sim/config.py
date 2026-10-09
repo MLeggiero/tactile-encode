@@ -1045,6 +1045,13 @@ REAL_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
     # face then starts 0.25-0.27 m from the nail, where the swing's strike profile (its peak at most 1.25x the contact
     # speed) has no solution at any speed and the scripted swing taps at 0.2 m/s
     "swing": {"windup_height": 0.16},
+    # the arm's hold, chosen with the user from a search over the hammer's heading, the task's place and the arm's
+    # redundancy (2026-10-09, docs/vla_in_sim.md): the task 0.55 m ahead and centred, the grasp 0.90 m up, the handle
+    # 75 deg right of ahead (head to the left); the arm reaches forward with the elbow tucked in 11 cm below the
+    # shoulder, where the Vega U's default hold arched it over the table with the elbow above the shoulder. Holding
+    # takes at most 17 % of a joint's rating (the arch: 15 %); a blow, 70 % (67 %), at 0.99 m/s
+    "scene": {"hover_tcp": (0.55, 0.0, 0.90), "handle_dir": (0.258819, -0.965926, 0.0)},
+    "arm": {"q_seed": (-0.0261, -0.3078, -1.9054, -1.2693, 0.6368, -0.5107, 0.9174)},
     # the hold at 0.7 of the joints' ratings, as the light hammer's: grip_hold is in the patch bodies' summed force at
     # the keyframe (77 N at full grip in this wrap)
     "controller": {"grip_hold": 53.7},
