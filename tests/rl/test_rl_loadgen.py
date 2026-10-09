@@ -343,7 +343,7 @@ def test_c3_mixes_hammer_and_load_generator_episodes(library):
         act = env.action_manager.get_term("residual")
         zero = torch.zeros(64, env.action_manager.total_action_dim, device=env.device)
         total = torch.zeros(64, device=env.device)
-        assert bool(torch.isnan(cmd.ham.lib.fc_t_event).any())  # the library's "no event" (a last swing's tail)
+        assert bool(torch.isnan(cmd.ham.lib.fc_t_event).any())  # the library's "no event" (after each contact)
         for _ in range(1000):
             ham_now = cmd.is_hammer.clone()
             obs, rew, *_ = env.step(zero)

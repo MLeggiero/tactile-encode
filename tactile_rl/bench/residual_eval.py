@@ -237,7 +237,7 @@ def tables(rows: list[dict]) -> str:
         out.append(f"\n{task}\n\n| policy | hold | lost grasps | net slip per {unit} (mm / deg) | slip path per {unit} "
                    f"(mm / deg) | I2t per episode | RMS current / rated | peak current / rated | time at the limit"
                    f"{extra} |")
-        out.append("|---" * (10 if task == "hammer" else 9) + "|")
+        out.append("|---" * (11 if task == "hammer" else 10) + "|")
         for r in sorted(rs, key=lambda r: (r["hold"], r["policy"])):
             tail = (f" | {100 * r['hit']:.1f} % | {r['advance_mm']:.2f}" if task == "hammer"
                     else f" | {100 * r['within_target']:.1f} %")
