@@ -74,6 +74,7 @@ class Job:
     blend: float = 0.0
     smooth: int = 0
     hand_tables: str | None = None  # a LeRobot dataset (or its sidecar): the hand tables it was recorded under
+    hammer: str = "ycb"  # the hammer task's hammer (config.HAMMERS); models trained on datasets v1-v3 need "light"
 
     def path(self, root: Path) -> Path:
         safe = self.condition.name.replace(":", "_").replace("+", "__")
@@ -89,7 +90,7 @@ def run_job(job: Job, root: str) -> dict:
     if out.exists():
         return {"status": "skip", "path": str(out)}
     t0 = time.time()
-    cfg, draw = demo_config(job.task, job.seed)
+    cfg, draw = demo_config(job.task, job.seed, hammer=job.hammer)
     if job.condition.overrides:
         cfg = cfg.replace(**job.condition.overrides)
     residual = make_policy(job.condition.policy)
@@ -142,7 +143,7 @@ def run_all(jobs: list[Job], root: Path, workers: int) -> None:
     print(f"{len(jobs)} episodes, {len(jobs) - len(todo)} done, {len(todo)} to run on {workers} workers", flush=True)
     if not todo:
         return
-    prewarm([demo_config(j.task, j.seed)[0] for j in todo])
+    prewarm([demo_config(j.task, j.seed, hammer=j.hammer)[0] for j in todo])
     t0 = time.time()
     with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"), max_tasks_per_child=1) as ex:
         futs = {ex.submit(run_job, j, str(root)): j for j in todo}
@@ -210,13 +211,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hand-tables", default=None,
                     help="the VLA's training dataset (or its meta/vega_wuji.json): run its hands under the tables it "
                          "was recorded with (default: the task's own)")
+    ap.add_argument("--hammer", default="ycb", choices=("ycb", "light"),
+                    help="the hammer task's hammer: the real YCB claw hammer, or the light primitive one, which models "
+                         "trained on datasets v1-v3 saw")
     ap.add_argument("--policy", action="append", default=[], help="NAME=PATH of an exported residual policy")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     root = Path(a.out)
     conds = conditions(dict(p.split("=", 1) for p in a.policy))
-    jobs = [Job(a.task, c, a.seed0 + s, a.server, a.latency, a.exec_steps, a.blend, a.smooth, a.hand_tables)
-            for c in conds for s in range(a.seeds)]
+    jobs = [Job(a.task, c, a.seed0 + s, a.server, a.latency, a.exec_steps, a.blend, a.smooth, a.hand_tables,
+                a.hammer) for c in conds for s in range(a.seeds)]
     if a.cmd == "list":
         for j in jobs:
             print(j.condition.name, j.seed, "done" if j.path(root).exists() else "")

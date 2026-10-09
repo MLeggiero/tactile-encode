@@ -84,6 +84,8 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
            "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}
     if cfg.plant.kind != "drill":  # the hammer (its keys keep their old values)
         key.update(hammer=h.model, grip=h.grip_from_head, mass=(h.head_mass, h.handle_mass))
+        if g.wrap_yaw:
+            key["yaw"] = g.wrap_yaw
     else:  # the pistol driver: its whole geometry, nothing of the hammer (which randomization still varies)
         dc = cfg.to_dict()["drill"]
         key["tool"] = {k: v for k, v in dc.items() if k.startswith("pistol_")}
@@ -98,6 +100,8 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
                               ("trigger_contact", "trigger_delay", "trigger_level", "trigger_slew",
                                "trigger_full", "trigger_pull_time")}
             key["trigger"]["relaxed"] = 2  # keyframes with the index relaxed on the released trigger
+    if g.finger_dip is not None:  # fingertip joints held (keys without them keep their old values)
+        key["dip"] = g.finger_dip
     blob = json.dumps(key, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
@@ -205,7 +209,7 @@ def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_ti
     dadr = np.array([m.joint(j).dofadr[0] for j, _ in joints])
     act = np.array([m.actuator(f"m_{j}").id for j, _ in joints])
     syn = WrapSynergy.for_wuji(joints, cfg.gripper.thumb_close, cfg.gripper.thumb_preshape,
-                               cfg.gripper.finger_synergy)
+                               cfg.gripper.finger_synergy, cfg.gripper.finger_dip)
     dc = cfg.drill
     has_trigger = cfg.plant.kind == "drill" and dc.form == "pistol" and dc.trigger_mode == "finger"
     if has_trigger:

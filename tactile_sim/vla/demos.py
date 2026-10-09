@@ -157,19 +157,21 @@ class DemoJob:
     seed: int
     out: str
     fast: bool = False
+    hammer: str = "ycb"  # config.HAMMERS: the real YCB hammer, or "light" (datasets v1-v3)
 
     @property
     def stem(self) -> Path:
         return Path(self.out) / f"episode_{self.index:06d}"
 
 
-def demo_config(task: str, seed: int, fast: bool = False):
-    """One episode's configuration and what was drawn for it."""
+def demo_config(task: str, seed: int, fast: bool = False, hammer: str = "ycb"):
+    """One episode's configuration and what was drawn for it: the hammer task with `hammer` (config.HAMMERS; the
+    datasets before v4 used the "light" one)."""
     from tactile_sim.config import fast_config, residual_config
     from tactile_sim.sim.randomize import apply_residual_dr, residual_dr
     from tactile_sim.vla.camera import vla_config
 
-    cfg = vla_config(residual_config(task=task, base=fast_config() if fast else None))
+    cfg = vla_config(residual_config(task=task, base=fast_config() if fast else None, hammer=hammer))
     rng = np.random.default_rng(seed)
     dr = residual_dr(cfg, rng)
     cfg = apply_residual_dr(cfg, dr)
@@ -228,7 +230,7 @@ def run_demo(job: DemoJob) -> dict:
     if npz.exists():
         return {"status": "skip", "path": str(npz)}
     t_wall = time.time()
-    cfg, draw = demo_config(job.task, job.seed, job.fast)
+    cfg, draw = demo_config(job.task, job.seed, job.fast, job.hammer)
     tb, base, run = EPISODES[job.task](cfg, job.seed)
     tb.sensors.set_noise_scale(draw["dr"]["_runtime"]["sensor_noise_scale"])
     tb.residual.base_fn = base
@@ -293,7 +295,7 @@ def run_all(jobs: list[DemoJob], workers: int) -> None:
     print(f"{len(jobs)} demos, {len(jobs) - len(todo)} done, {len(todo)} to run on {workers} workers", flush=True)
     if not todo:
         return
-    prewarm([demo_config(j.task, j.seed, j.fast)[0] for j in todo])
+    prewarm([demo_config(j.task, j.seed, j.fast, j.hammer)[0] for j in todo])
     t0 = time.time()
     n_ok = 0
     with ProcessPoolExecutor(max_workers=workers, mp_context=mp.get_context("spawn"), max_tasks_per_child=1) as ex:
@@ -318,10 +320,13 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--seed0", type=int, default=100_000)
     ap.add_argument("--workers", type=int, default=14)
     ap.add_argument("--fast", action="store_true", help="the fast physics config (no noslip, 4 kHz)")
+    ap.add_argument("--hammer", default="ycb", choices=("ycb", "light"),
+                    help="the hammer task's hammer: the real YCB claw hammer, or the light primitive one "
+                         "(datasets v1-v3)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
     out = a.out or f"runs/vla_demos/{a.task}"
-    jobs = [DemoJob(a.task, i, a.seed0 + i, out, a.fast) for i in range(a.first, a.first + a.episodes)]
+    jobs = [DemoJob(a.task, i, a.seed0 + i, out, a.fast, a.hammer) for i in range(a.first, a.first + a.episodes)]
     run_all(jobs, a.workers)
 
 

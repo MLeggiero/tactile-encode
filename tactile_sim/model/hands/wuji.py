@@ -104,12 +104,16 @@ def mount_quat(yaw: float) -> tuple[float, float, float, float]:
 
 
 def hand_tcp_rotation(cfg=None) -> np.ndarray:
-    """The tool (grasp) frame's axes in the hand frame for this configuration's wrap. A raked pistol grip (the
-    DF333D's, model.df333d) lies across the palm as a straight one does: the wrap turns by the rake about the tool's
-    z, so the grip's axis, not the tool's x, runs along the hand's -x. DrillCfg.pistol_wrap_roll then rolls the
-    wrap about the grip, from the side wrap (0) toward the pistol one (-pi/2: the same as pistol_grasp "pistol")."""
+    """The tool (grasp) frame's axes in the hand frame for this configuration's wrap. The hammer's wrap turns in the
+    palm's plane by GripperCfg.wrap_yaw (about the palm normal, the hand's y). A raked pistol grip (the DF333D's,
+    model.df333d) lies across the palm as a straight one does: the wrap turns by the rake about the tool's z, so the
+    grip's axis, not the tool's x, runs along the hand's -x. DrillCfg.pistol_wrap_roll then rolls the wrap about the
+    grip, from the side wrap (0) toward the pistol one (-pi/2: the same as pistol_grasp "pistol")."""
     if cfg is None or cfg.plant.kind != "drill" or cfg.drill.form != "pistol":
-        return R_HAND_TCP
+        a = cfg.gripper.wrap_yaw if cfg is not None and cfg.plant.kind != "drill" else 0.0
+        if a == 0.0:
+            return R_HAND_TCP
+        return np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]]) @ R_HAND_TCP
     R = R_HAND_TCP_PISTOL if cfg.drill.pistol_grasp == "pistol" else R_HAND_TCP
     a = cfg.drill.pistol_wrap_roll  # about the grip: from the side wrap toward the pistol one (-pi/2)
     R = R @ np.array([[1.0, 0.0, 0.0], [0.0, np.cos(a), -np.sin(a)], [0.0, np.sin(a), np.cos(a)]])

@@ -62,12 +62,16 @@ class WrapSynergy:
     @classmethod
     def for_wuji(cls, joints: list[tuple[str, float]], thumb_close: tuple[int, int, int, int],
                  thumb_preshape: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
-                 synergy: str = "tendon") -> WrapSynergy:
+                 synergy: str = "tendon", finger_dip: float | None = None) -> WrapSynergy:
+        """`finger_dip` (rad) holds the four fingers' fingertip joints at that angle instead of closing them: the
+        middle joints then close further, and the fingertips' pads, not their ends, come down on the tool."""
         names = [j for j, _ in joints]
         tau_max = np.array([lim for _, lim in joints])
         thumb = dict(zip(THUMB_JOINTS, thumb_close, strict=True))
-        d = np.array([thumb[j] if j in thumb else (0 if j.endswith("_abd") else 1) for j in names], dtype=float)
-        pre = dict(zip(THUMB_JOINTS, thumb_preshape, strict=True))
+        held_dip = {j for j in names if finger_dip is not None and j.endswith("_dip") and j not in thumb}
+        d = np.array([thumb[j] if j in thumb else (0 if j.endswith("_abd") or j in held_dip else 1) for j in names],
+                     dtype=float)
+        pre = {**dict(zip(THUMB_JOINTS, thumb_preshape, strict=True)), **dict.fromkeys(held_dip, finger_dip)}
         q_hold = np.array([pre.get(j, 0.0) for j in names])
         if synergy not in ("tendon", "rated"):
             raise ValueError(f"unknown finger synergy {synergy!r}")
@@ -75,7 +79,7 @@ class WrapSynergy:
         coupled = None
         if synergy == "tendon":
             coupled = [(names.index(n), names.index(n[: -len("_dip")] + "_pip")) for n in names
-                       if n.endswith("_dip") and n[: -len("_dip")] + "_pip" in names]
+                       if n.endswith("_dip") and n not in held_dip and n[: -len("_dip")] + "_pip" in names]
         return cls(names, tau_max, d, q_hold, weight=w, coupled=coupled)
 
     def levels(self, s: float) -> np.ndarray:

@@ -41,6 +41,20 @@ def modality() -> dict:
             "annotation": {"human.task_description": {"original_key": "annotation.human.task_description"}}}
 
 
+def tool_of(cfg: dict) -> dict:
+    """The tool an episode's configuration (SimConfig.to_dict) held and the wrap it held it in, for the sidecar
+    (nothing the randomization draws per episode, such as the head's mass)."""
+    g = cfg["gripper"]
+    wrap = {"wrap_tcp": list(g["wrap_tcp"]), "wrap_yaw": g.get("wrap_yaw", 0.0),
+            "thumb_close": list(g["thumb_close"]), "thumb_preshape": list(g["thumb_preshape"]),
+            "finger_dip": g.get("finger_dip")}
+    if cfg["plant"]["kind"] == "drill":
+        d = cfg["drill"]
+        return {"drill": d.get("model"), "form": d.get("form"), "body": d.get("pistol_body", "primitive"), **wrap}
+    h = cfg["hammer"]
+    return {"hammer": h["model"], "grip_from_head": h["grip_from_head"], **wrap}
+
+
 def vector_stats(x: np.ndarray) -> dict:
     x = np.asarray(x, np.float64)
     return {"mean": x.mean(0).tolist(), "std": x.std(0).tolist(), "min": x.min(0).tolist(), "max": x.max(0).tolist(),
@@ -78,6 +92,7 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
     fps = shape = None
     first_meta = None
     tables: dict[str, dict] = {}  # the hand's MIT table, per task (the drill's trigger finger runs stiffer)
+    tools: dict[str, dict] = {}  # the tool and the wrap holding it, per task
     n_skipped = 0
     index = 0
     for f in files:
@@ -101,6 +116,9 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
         ti = tasks.setdefault(task, len(tasks))
         if tables.setdefault(task, meta["hand_table"]) != meta["hand_table"]:
             raise ValueError(f"{f}: its hand table differs from the rest of {task!r}")
+        tool = tool_of(meta["config"])
+        if tools.setdefault(task, tool) != tool:
+            raise ValueError(f"{f}: its tool ({tool}) differs from the rest of {task!r} ({tools[task]})")
         chunk = e // chunk_size
         cols = {"observation.state": state, "action": action,
                 "timestamp": (np.arange(T) / fps).astype(np.float32), "frame_index": np.arange(T, dtype=np.int64),
@@ -150,7 +168,7 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
     robot = {"state": "right arm joint angles (7, rad) then WUJI Hand 2 joint angles (20, rad), as the host reads",
              "action": "right arm joint position targets (7, rad, before the host's gravity-droop compensation) then "
                        "WUJI MIT position targets q* (20, rad) under the task's hand table below",
-             "hand_tables": tables, "head_pose": fm["head_pose"], "camera": fm["config"]["vla"],
+             "hand_tables": tables, "tools": tools, "head_pose": fm["head_pose"], "camera": fm["config"]["vla"],
              "arm_command_rate": fm["config"]["arm"]["command_rate"]}
     _dump(meta_dir / "info.json", info)
     _dump(meta_dir / "stats.json", stats)

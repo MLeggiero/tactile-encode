@@ -105,6 +105,9 @@ class GripperCfg:
     hand_rate: float = 1000.0  # joint control rate (WUJI Hand 2: 1 kHz MIT mode)
     mount_yaw: float = 0.0  # rad, hand about the flange z after the mount flip
     wrap_tcp: tuple[float, float, float] = (-0.004, 0.0315, -0.086)  # handle grasp point, hand frame
+    # the hammer's wrap turned in the palm's plane, about the palm normal (rad): > 0 runs the handle from the heel of
+    # the palm on the little finger's side toward the index finger's base, as a human power grip does
+    wrap_yaw: float = 0.0
     hand_joint_damping: float = 0.002  # Nms/rad, drive + gearbox viscous loss
     hand_joint_friction: float = 0.005  # Nm, drive friction
     hand_friction: float = 1.0  # skin on the handle
@@ -112,6 +115,9 @@ class GripperCfg:
     # thumb joints (CMC flex, CMC abd, MCP, IP): closing torque sign, 0 = held at thumb_preshape by PD
     thumb_close: tuple[int, int, int, int] = (1, -1, 1, 1)
     thumb_preshape: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0)
+    # rad: hold the four fingers' fingertip joints (DIP) at this angle instead of closing them, so the middle joints
+    # close further and the fingertips' pads come down on the tool (None: they close with the rest)
+    finger_dip: float | None = None
     # "backdrivable": the joints are plain torque motors (the vendor model). "self_locking": WUJI's drives do
     # not backdrive: a joint closes under its motor but external load cannot open it (nor move a shaping
     # joint); the gearbox then carries the load, reported as hand_stop_load.
@@ -1011,6 +1017,30 @@ LIGHT_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
     "plant": {"resistance_0": 80.0, "resistance_per_m": 5000.0},  # ~2 mm a blow, 20 mm in ~10 (hard nail)
 }
 
+# The real hammer: the YCB 048 claw hammer scan (a 16 oz steel head on a wooden handle, 665 g: HammerCfg's defaults),
+# held 22 cm from the head in a power grip searched for the WUJI Hand 2 on it (2026-10-09; model.hands.wrap_search,
+# docs/vla_in_sim.md): the handle lies on the palm, the four fingers curl over it with their fingertip joints held at
+# 0.7 rad (finger_dip) so the middle joints close on to ~80 deg and the fingertips' pads, not their ends, lie on the
+# handle, and the thumb lies on top of it over the fingers, its base joints held and its outer joints closing. At the
+# hold (s 0.7) the taxels feel it on the palm (15 of 128), the thumb's pad and all four fingertip pads (14-19 each);
+# ~110 N on the handle, 0.7-0.9 Nm about it before the hammer turns 5 deg. Under scripted blows the hammer settles
+# ~6-8 deg into the grip over the first two and then stays put, where wraps without the fingertip pads kept creeping
+# ~2.5 deg a blow. The knuckles rest on their 90 deg stops: WUJI's published MCP range ends there, and with the
+# knuckle axes 25 mm behind the palm no handle on the palm is wrapped short of them.
+REAL_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
+    "hammer": {**dataclasses.asdict(HammerCfg()), "model": "ycb", "grip_from_head": 0.22},
+    "gripper": {"wrap_tcp": (0.004, 0.0315, -0.090), "wrap_yaw": 0.0, "thumb_close": (0, 0, 1, 1),
+                "thumb_preshape": (0.5, -0.2, 0.0, 0.0), "finger_dip": 0.7},
+    # a blow puts ~0.32 J into the nail: 20 mm takes ~11 blows here, 6-15 across the randomized range
+    "plant": {"resistance_0": 100.0, "resistance_per_m": 7000.0},
+    # the hold at 0.7 of the joints' ratings, as the light hammer's: grip_hold is in the patch bodies' summed force at
+    # the keyframe (66 N at full grip in this wrap)
+    "controller": {"grip_hold": 46.2},
+    "residual_dr": {"head_mass": (0.38, 0.52), "nail_resistance_0": (60.0, 140.0),
+                    "nail_resistance_per_m": (4e3, 1e4)},
+}
+HAMMERS = {"light": LIGHT_HAMMER_OVERRIDES, "ycb": REAL_HAMMER_OVERRIDES}
+
 
 # The drill task on the Vega U + WUJI: a compact 12 V pistol drill/driver (1.12 kg; DrillCfg's drivetrain, on low
 # gear with the clutch at a low setting) driving a small Torx screw or drilling a pine board, fed straight down (no
@@ -1047,18 +1077,20 @@ DRILL_12V_GENERIC_PRESET: dict[str, Any] = {"free_speed": 44.5, "stall_torque": 
 
 
 def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,
-                    task: str = "hammer", **sections: dict[str, Any]) -> SimConfig:
+                    task: str = "hammer", hammer: str = "light", **sections: dict[str, Any]) -> SimConfig:
     """The residual experiments' configuration: WUJI Hand 2 with MIT-mode drives on the robot (default the Vega U),
-    the TaxelScan fast profile at its target 7.8 us per taxel, the tool for `task` ("hammer": the light hammer and
-    its nail; "drill": the pistol driver, VEGA_DRILL_OVERRIDES) with grasps cached at its nominal masses, and the
-    residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics.
+    the TaxelScan fast profile at its target 7.8 us per taxel, the tool for `task` ("hammer": the `hammer` of HAMMERS
+    with its nail and wrap, "light" or the real "ycb"; "drill": the pistol driver, VEGA_DRILL_OVERRIDES) with grasps
+    cached at its nominal masses, and the residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics.
 
     The base holds the tool the way a VLA's hand targets would: a constant grip, open loop (no grip law on the
     pads, no slip feedback from the simulator's truth), so whatever reacts to touch is the residual."""
     if task not in ("hammer", "drill"):
         raise ValueError(f"unknown task {task!r} (expected 'hammer' or 'drill')")
+    if hammer not in HAMMERS:
+        raise ValueError(f"unknown hammer {hammer!r} (expected one of {sorted(HAMMERS)})")
     cfg = hand_config("wuji2", base or SimConfig(), robot=robot)
-    cfg = cfg.replace(**(LIGHT_HAMMER_OVERRIDES if task == "hammer" else VEGA_DRILL_OVERRIDES)).replace(
+    cfg = cfg.replace(**(HAMMERS[hammer] if task == "hammer" else VEGA_DRILL_OVERRIDES)).replace(
         residual={"task": task}).replace(
         gripper={"hand_control": "mit", "grasp_mass": "nominal"},
         sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},

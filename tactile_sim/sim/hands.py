@@ -360,7 +360,7 @@ class WujiHandIO(HandIO):
         self.dofs = np.array([m.joint(j).dofadr[0] for j in self.joint_names])
         self.jids = np.array([m.joint(j).id for j in self.joint_names])
         self.act = np.array([m.actuator(f"m_{j}").id for j in self.joint_names])
-        self.synergy = WrapSynergy.for_wuji(joints, g.thumb_close, g.thumb_preshape, g.finger_synergy)
+        self.synergy = WrapSynergy.for_wuji(joints, g.thumb_close, g.thumb_preshape, g.finger_synergy, g.finger_dip)
         trigger_finger(self.synergy, world.cfg)
         self._grids = {}
         self.patches = []

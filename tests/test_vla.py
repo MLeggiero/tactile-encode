@@ -180,6 +180,8 @@ def test_lerobot_export_writes_the_groot_layout(tmp_path):
     assert len((out / "meta/episodes_stats.jsonl").read_text().splitlines()) == 2
     robot = json.loads((out / "meta/vega_wuji.json").read_text())
     assert list(robot["hand_tables"]) == ["hammer the nail into the board"]  # one table per task
+    tool = robot["tools"]["hammer the nail into the board"]  # and the hammer, and the wrap holding it
+    assert tool["hammer"] == "primitive" and tool["wrap_tcp"] == list(residual_config().gripper.wrap_tcp)
     assert export([raw], out, only_success=False, overwrite=True)["episodes"] == 3
     with pytest.raises(FileExistsError):
         export([raw], out)
@@ -361,6 +363,55 @@ def test_the_hand_table_holds_at_each_base_grip_and_the_vla_holds_until_its_firs
         a[HAND] = 1.0
         vla.chunks.append(Chunk(0.002, 0.002, 1 / 30, np.tile(a, (16, 1)), a))
         assert vla(0.002)[0] == pytest.approx(table.command(a[HAND]))  # and the first chunk takes over
+
+
+def test_the_hammer_task_holds_the_light_or_the_real_hammer():
+    from tactile_sim.config import REAL_HAMMER_OVERRIDES
+
+    light, real = residual_config(), residual_config(hammer="ycb")
+    assert light.hammer.model == "primitive" and real.hammer.model == "ycb"
+    assert real.hammer.head_mass == 0.45 and real.hammer.handle_mass == 0.215  # the YCB 048 hammer's 665 g
+    for k, v in REAL_HAMMER_OVERRIDES["gripper"].items():  # its own wrap
+        assert getattr(real.gripper, k) == v
+    for k in ("wrap_tcp", "thumb_close"):  # and the light hammer's unchanged
+        assert getattr(light.gripper, k) != getattr(real.gripper, k)
+    assert real.residual_dr.head_mass == REAL_HAMMER_OVERRIDES["residual_dr"]["head_mass"]
+    assert residual_config(task="drill", hammer="ycb") == residual_config(task="drill")  # the drill has no hammer
+    with pytest.raises(ValueError, match="unknown hammer"):
+        residual_config(hammer="claw")
+
+
+@requires_vega_wuji
+def test_the_vla_demos_and_evaluations_default_to_the_real_hammer():
+    import tactile_sim.vla.demos as demos
+    from tactile_sim.experiments.vla_experiment import Job
+
+    assert demos.demo_config("hammer", 1, fast=True)[0].hammer.model == "ycb"
+    assert demos.demo_config("hammer", 1, fast=True, hammer="light")[0].hammer.model == "primitive"
+    assert demos.DemoJob("hammer", 0, 1, "out").hammer == "ycb"
+    assert Job.__dataclass_fields__["hammer"].default == "ycb"
+
+
+@requires_vega_wuji
+def test_the_real_hammers_wrap_lays_the_palm_thumb_and_fingertip_pads_on_the_handle():
+    from tactile_sim.assets.fetch_hands import hand_xml
+    from tactile_sim.assets.ycb import ensure_hammer
+    from tactile_sim.model.hands.wuji_grasp import wrap_grasp
+
+    cfg = residual_config(hammer="ycb")
+    if ensure_hammer(cfg.hammer.grip_from_head) is None:
+        pytest.skip("YCB hammer not cached")
+    g = wrap_grasp(cfg, hand_xml("wuji2"))
+    f = g.contact_force
+    # the handle on the palm, the thumb's pad on it, and every fingertip's pad (the light hammer's wrap: the fingertips'
+    # ends alone)
+    assert f.get("r_wrist", 0.0) > 10.0 and f.get("r_thumb_tip_sensor_frame", 0.0) > 3.0
+    fingers = ("index_finger", "middle_finger", "ring_finger", "pinky")
+    assert min(f.get(f"r_{k}_tip_sensor_frame", 0.0) for k in fingers) > 3.0
+    # the fingertip joints held near finger_dip, the middle joints curled on past 70 deg (vendor order: the thumb's
+    # four joints, then each finger's MCP flexion, MCP abduction, PIP, DIP)
+    pip, dip = g.q[[4 + 4 * k + 2 for k in range(4)]], g.q[[4 + 4 * k + 3 for k in range(4)]]
+    assert np.all(np.abs(dip - cfg.gripper.finger_dip) < 0.15) and np.all(pip > np.radians(70.0))
 
 
 def test_e2_reads_a_datasets_hand_tables(tmp_path):

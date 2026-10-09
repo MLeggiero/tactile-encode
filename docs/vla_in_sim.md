@@ -99,3 +99,58 @@ On the 96 GB GPU: the same with `--profile full`, and π0.5 per the header of `f
 - **Desktop environment**: openpi in `~/scratch/openpi/.venv` (uv from `~/scratch/envs/uv`), with the Vega+WUJI
   policy module and config entry added and dataset v1 linked at `~/.cache/huggingface/lerobot/local/vega_wuji_hammer`.
   torchcodec in both the GR00T and openpi envs needs `LD_LIBRARY_PATH=~/scratch/envs/ffmpeg7/lib`.
+
+## The real hammer and its wrap (2026-10-09)
+
+GR00T's closed-loop hammer drops (dataset v3 model: 95-100 % of episodes) were traced partly to the grasp itself.
+
+- **The light hammer's wrap** held the handle with the four fingertips against the index finger's knuckle link.
+  Measured in the testbed 0.4 s into a VLA episode, at the hammer table's hold (s 0.7):
+  - palm and thumb carried 0 N;
+  - all four knuckles (MCP flexion) sat on their 90° stops, which took 1.29-1.57 of the 1.4 Nm each was commanded;
+  - so the squeeze came from the 0.3 Nm middle and tip joints alone: 5-12 N per fingertip;
+  - an external torque of 0.3 Nm about the handle started turning the hammer, 0.7-0.9 Nm turned it 5°.
+- **The real hammer**: the YCB 048 claw hammer, the repo's scan of a real 16 oz hammer (665 g), held 22 cm from the
+  head.
+- **The wrap** (`config.REAL_HAMMER_OVERRIDES`, chosen with the user from the 3D viewer below) is a power grip:
+  - the handle lies on the palm;
+  - the four fingers curl over it with their fingertip joints held at 0.7 rad (`GripperCfg.finger_dip`, new), so
+    the middle joints close on to ~80° and the fingertips' pads, not their ends, lie on the handle;
+  - the thumb lies on top of the handle over the fingers: its base joints are held (thumb_close (0, 0, 1, 1),
+    preshape flex 0.5, abduction -0.2) and its outer joints close.
+- **What the taxels feel** at the hold, testbed seed 200002:
+  - the palm on 15 of its 128 taxels (47 N), the thumb's pad on 4 (7 N), the fingertip pads on 14-19 each;
+  - 82 taxels loaded in all (the light hammer's wrap: 20);
+  - ~110 N on the handle; 0.7-0.9 Nm about it, 1.4-2.0 sideways, 2.1-2.7 head down or up, before it turns 5°.
+- **Under blows** (scripted swings, 8 seeds, 6 blows): no drops, contact at 1.03-1.21 m/s.
+  - The hammer settles 6-8° into the grip over the first two blows and then stays put.
+  - The other wraps tried kept creeping about 2.5° per blow: 13-18° after six.
+- **Constraints of this hand.**
+  - The knuckles rest on their 90° stops. WUJI publishes the MCP range as -60° to 90° (Hand 2.2 Beta manual,
+    matching the model files), and with the knuckle axes 25 mm behind the palm no handle on the palm is wrapped
+    short of them. The middle joints (PIP) reach 120°.
+  - The palm is rigid and the handle round, so the palm feels a band (14-22 taxels in every candidate), not an area.
+  - All four fingertip pads on the handle and the thumb pressing hard on top did not happen together in any
+    candidate. With the index finger wrapped under it, the thumb's 0.3 Nm outer joints only rest on top. The other
+    side of that trade ("thumb presses": the thumb's pad at 27 N, the index fingertip off the handle) kept creeping
+    under blows.
+- **Wraps tried on the way.** The viewer below shows these.
+  - Across the finger bases: the knuckles squeezing the handle against the side of the thumb, 350 N. Strong, but
+    the palm and the thumb's pad felt nothing, and the hammer crept ~4° per blow without springing back.
+  - The handle on the palm with the fingertips' ends on it (fingertip joints closing to their stops): the thumb's
+    pad and palm loaded, the fingertip pads not.
+- **The search** (`python -m tactile_sim.model.hands.wrap_search`):
+  - candidates are synthesized as the grasp cache does it, scored on the palm's load, the thumb's push direction and
+    the height of its tip over the fingers;
+  - the best are rerun in the testbed for the taxels' view (`hand.skin_taxels()`, loaded taxels per patch and
+    their spread) and then under scripted blows.
+- **Using it.**
+  - `residual_config(hammer="light" | "ycb")`: the default is "light", the GPU env's and the residual experiments'
+    hammer.
+  - `vla.demos` and `vla_experiment` default to `--hammer ycb`; models trained on datasets v1-v3 need
+    `--hammer light`.
+  - The LeRobot sidecar records each task's tool and wrap (`vega_wuji.json` "tools").
+  - The nail: a blow puts ~0.32 J into it, so 20 mm takes ~11 blows at the preset's 100 N + 7 kN/m. The demos
+    randomize it over 60-140 N and 4-10 kN/m (6-15 blows).
+- **Viewer**: the wraps in 3D, with per-taxel loads, contact forces, twist and blow results:
+  https://claude.ai/artifact/AdVgftZiaKXreB6dmNVYZo
