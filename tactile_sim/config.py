@@ -118,6 +118,10 @@ class GripperCfg:
     # rad: hold the four fingers' fingertip joints (DIP) at this angle instead of closing them, so the middle joints
     # close further and the fingertips' pads come down on the tool (None: they close with the rest)
     finger_dip: float | None = None
+    # the fingers collide with their neighbours (each finger's segments and fingertip pad with the next finger's), and
+    # the thumb with the index and middle fingertip pads too. The vendor model keeps these contacts; off, a tight wrap
+    # can put one finger through the next (the default, which grasps cached before 2026-10-09 were synthesized with)
+    finger_self_contact: bool = False
     # "backdrivable": the joints are plain torque motors (the vendor model). "self_locking": WUJI's drives do
     # not backdrive: a joint closes under its motor but external load cannot open it (nor move a shaping
     # joint); the gearbox then carries the load, reported as hand_stop_load.
@@ -1020,22 +1024,23 @@ LIGHT_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
 # The real hammer: the YCB 048 claw hammer scan (a 16 oz steel head on a wooden handle, 665 g: HammerCfg's defaults),
 # held 22 cm from the head in a power grip searched for the WUJI Hand 2 on it (2026-10-09; model.hands.wrap_search,
 # docs/vla_in_sim.md): the handle lies on the palm, the four fingers curl over it with their fingertip joints held at
-# 0.7 rad (finger_dip) so the middle joints close on to ~80 deg and the fingertips' pads, not their ends, lie on the
-# handle, and the thumb lies on top of it over the fingers, its base joints held and its outer joints closing. At the
-# hold (s 0.7) the taxels feel it on the palm (15 of 128), the thumb's pad and all four fingertip pads (14-19 each);
-# ~110 N on the handle, 0.7-0.9 Nm about it before the hammer turns 5 deg. Under scripted blows the hammer settles
-# ~6-8 deg into the grip over the first two and then stays put, where wraps without the fingertip pads kept creeping
-# ~2.5 deg a blow. The knuckles rest on their 90 deg stops: WUJI's published MCP range ends there, and with the
-# knuckle axes 25 mm behind the palm no handle on the palm is wrapped short of them.
+# 0.6 rad (finger_dip) so the middle joints close on to ~80 deg and the fingertips' pads, not their ends, lie on the
+# handle, and the thumb lies on top of it over the fingers, its base joints held and its outer joints closing. The
+# fingers collide with each other (finger_self_contact; without it the index finger closed 11 mm into the middle one).
+# At the hold (s 0.7) the taxels feel it on the palm (17 of 128), the thumb's pad and all four fingertip pads (10-14
+# each); ~115 N on the handle. Under scripted blows the hammer turns ~7-10 deg into the grip over six blows, the
+# later ones adding ~1 deg each, where wraps without the fingertip pads crept ~2.5 deg a blow. The knuckles rest on
+# their 90 deg stops: WUJI's published MCP range ends there, and with the knuckle axes 25 mm behind the palm no handle
+# on the palm is wrapped short of them.
 REAL_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
     "hammer": {**dataclasses.asdict(HammerCfg()), "model": "ycb", "grip_from_head": 0.22},
-    "gripper": {"wrap_tcp": (0.004, 0.0315, -0.090), "wrap_yaw": 0.0, "thumb_close": (0, 0, 1, 1),
-                "thumb_preshape": (0.5, -0.2, 0.0, 0.0), "finger_dip": 0.7},
+    "gripper": {"wrap_tcp": (-0.004, 0.0335, -0.090), "wrap_yaw": 0.0, "thumb_close": (0, 0, 1, 1),
+                "thumb_preshape": (0.5, -0.1, 0.0, 0.0), "finger_dip": 0.6, "finger_self_contact": True},
     # a blow puts ~0.32 J into the nail: 20 mm takes ~11 blows here, 6-15 across the randomized range
     "plant": {"resistance_0": 100.0, "resistance_per_m": 7000.0},
     # the hold at 0.7 of the joints' ratings, as the light hammer's: grip_hold is in the patch bodies' summed force at
-    # the keyframe (66 N at full grip in this wrap)
-    "controller": {"grip_hold": 46.2},
+    # the keyframe (77 N at full grip in this wrap)
+    "controller": {"grip_hold": 53.7},
     "residual_dr": {"head_mass": (0.38, 0.52), "nail_resistance_0": (60.0, 140.0),
                     "nail_resistance_per_m": (4e3, 1e4)},
 }

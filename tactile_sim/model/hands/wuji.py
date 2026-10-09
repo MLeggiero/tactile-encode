@@ -255,3 +255,23 @@ def contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], handle_g
     for a in tips:
         for b in palm:
             sub(contact, "pair", geom1=a, geom2=b, **self_contact)
+    if not g.finger_self_contact:
+        return
+    # neighbouring fingers: every segment and fingertip pad against the next finger's (no two overlap with the hand
+    # open), and the thumb against the index and middle fingertip pads
+    segs = ("proximal_abd", "middle", "distal", "tip_sensor_frame")
+
+    def links(finger, parts):
+        return [gm for b, gs in col_geoms.items() for p in parts if b.endswith(f"_{finger}_{p}") for gm in gs]
+
+    order = ("index_finger", "middle_finger", "ring_finger", "pinky")
+    for f1, f2 in zip(order, order[1:], strict=False):
+        for a in links(f1, segs):
+            for b in links(f2, segs):
+                sub(contact, "pair", geom1=a, geom2=b, **self_contact)
+    for a in links("thumb", ("middle", "distal", "tip_sensor_frame")):
+        for b in links("index_finger", ("tip_sensor_frame",)) + links("middle_finger", ("tip_sensor_frame",)):
+            sub(contact, "pair", geom1=a, geom2=b, **self_contact)
+    for a in links("thumb", ("tip_sensor_frame",)):
+        for b in links("index_finger", ("middle", "distal")) + links("middle_finger", ("middle", "distal")):
+            sub(contact, "pair", geom1=a, geom2=b, **self_contact)

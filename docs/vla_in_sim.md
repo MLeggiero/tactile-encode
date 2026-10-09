@@ -114,17 +114,19 @@ GR00T's closed-loop hammer drops (dataset v3 model: 95-100 % of episodes) were t
   head.
 - **The wrap** (`config.REAL_HAMMER_OVERRIDES`, chosen with the user from the 3D viewer below) is a power grip:
   - the handle lies on the palm;
-  - the four fingers curl over it with their fingertip joints held at 0.7 rad (`GripperCfg.finger_dip`, new), so
+  - the four fingers curl over it with their fingertip joints held at 0.6 rad (`GripperCfg.finger_dip`, new), so
     the middle joints close on to ~80° and the fingertips' pads, not their ends, lie on the handle;
   - the thumb lies on top of the handle over the fingers: its base joints are held (thumb_close (0, 0, 1, 1),
-    preshape flex 0.5, abduction -0.2) and its outer joints close.
+    preshape flex 0.5, abduction -0.1) and its outer joints close;
+  - the fingers collide with each other (`GripperCfg.finger_self_contact`, new, off by default). The hand had no
+    finger-to-finger contacts: in the first approved version of this grip the index finger closed 11 mm into the
+    middle one. With them on, the grip was searched again (1,080 candidates).
 - **What the taxels feel** at the hold, testbed seed 200002:
-  - the palm on 15 of its 128 taxels (47 N), the thumb's pad on 4 (7 N), the fingertip pads on 14-19 each;
-  - 82 taxels loaded in all (the light hammer's wrap: 20);
-  - ~110 N on the handle; 0.7-0.9 Nm about it, 1.4-2.0 sideways, 2.1-2.7 head down or up, before it turns 5°.
-- **Under blows** (scripted swings, 8 seeds, 6 blows): no drops, contact at 1.03-1.21 m/s.
-  - The hammer settles 6-8° into the grip over the first two blows and then stays put.
-  - The other wraps tried kept creeping about 2.5° per blow: 13-18° after six.
+  - the palm on 17 of its 128 taxels (53 N), the thumb's pad on 5 (5 N), the fingertip pads on 10-14 each;
+  - 69 taxels loaded in all (the light hammer's wrap: 20); ~115 N on the handle.
+- **Under blows** (scripted swings, 8 seeds, 6 blows): no drops, contact at 0.95-1.10 m/s, the nail 11-13 mm deep.
+  - The hammer turns 7-10° into the grip over the six blows, the later ones adding about 1° each.
+  - The wraps without the fingertip pads crept about 2.5° per blow: 13-18° after six.
 - **Constraints of this hand.**
   - The knuckles rest on their 90° stops. WUJI publishes the MCP range as -60° to 90° (Hand 2.2 Beta manual,
     matching the model files), and with the knuckle axes 25 mm behind the palm no handle on the palm is wrapped

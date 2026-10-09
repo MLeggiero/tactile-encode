@@ -102,6 +102,8 @@ def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
             key["trigger"]["relaxed"] = 2  # keyframes with the index relaxed on the released trigger
     if g.finger_dip is not None:  # fingertip joints held (keys without them keep their old values)
         key["dip"] = g.finger_dip
+    if g.finger_self_contact:  # and the fingers colliding with each other
+        key["fingers_collide"] = True
     blob = json.dumps(key, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 

@@ -45,9 +45,9 @@ T_MAX = 6.0  # s of ramp: 24 Nm
 STOP_DEG = 10.0
 S_HOLD = 0.7  # the hammer table's grip level
 
-BASE = {"hammer": "ycb", "grip_from_head": 0.22, "wrap_tcp_x": -0.004, "wrap_tcp_y": 0.0315, "wrap_tcp_z": -0.099,
-        "wrap_yaw_deg": 0.0, "thumb_close": [1, -1, 1, 1], "thumb_preshape": [0.0, -0.8, 0.0, 0.0],
-        "finger_synergy": "rated", "s_hold": S_HOLD}
+BASE = {"hammer": "ycb", "grip_from_head": 0.22, "wrap_tcp_x": -0.004, "wrap_tcp_y": 0.0335, "wrap_tcp_z": -0.090,
+        "wrap_yaw_deg": 0.0, "thumb_close": [0, 0, 1, 1], "thumb_preshape": [0.5, -0.1, 0.0, 0.0],
+        "finger_synergy": "rated", "finger_dip": 0.6, "finger_self_contact": True, "s_hold": S_HOLD}
 PALM = "r_wrist"
 
 
@@ -61,7 +61,8 @@ def candidate_config(p: dict):
         "wrap_tcp": (p["wrap_tcp_x"], p["wrap_tcp_y"], p["wrap_tcp_z"]),
         "wrap_yaw": float(np.radians(p["wrap_yaw_deg"])),
         "thumb_close": tuple(p["thumb_close"]), "thumb_preshape": tuple(p["thumb_preshape"]),
-        "finger_synergy": p["finger_synergy"]})
+        "finger_synergy": p["finger_synergy"], "finger_dip": p["finger_dip"],
+        "finger_self_contact": p["finger_self_contact"]})
 
 
 def _rel_angle(R0: np.ndarray, R1: np.ndarray) -> float:
@@ -103,6 +104,25 @@ def thumb_on_fingers(m, d) -> float:
     return tot
 
 
+FINGERS = ("thumb", "index_finger", "middle_finger", "ring_finger", "pinky")
+
+
+def finger_overlap(m, d) -> float:
+    """The deepest overlap between two fingers' collision shapes (m; 0 if none touch through)."""
+    def finger(g):
+        b = m.body(int(m.geom_bodyid[g])).name
+        return next((f for f in FINGERS if f in b), None)
+
+    geoms = [g for g in range(m.ngeom) if m.geom_group[g] == 3 and finger(g)]
+    ft = np.zeros(6)
+    deepest = 0.0
+    for i, a in enumerate(geoms):
+        for b in geoms[i + 1:]:
+            if finger(a) != finger(b):
+                deepest = max(deepest, -mujoco.mj_geomDistance(m, d, a, b, 0.01, ft))
+    return deepest
+
+
 def grasp_metrics(m, d, hb: int, hand: int) -> dict:
     con = hand_frame_contacts(m, d, hb, hand)
     by: dict[str, float] = {}
@@ -124,7 +144,8 @@ def grasp_metrics(m, d, hb: int, hand: int) -> dict:
             "thumb_N": round(t_n, 1), "thumb_push": np.round(push, 3).tolist(),
             "thumb_on_fingers_N": round(thumb_on_fingers(m, d), 1),
             "thumb_tip_above_fingers_mm": round(1e3 * float(tip[1] - max(p[1] for p in mids)), 1),
-            "thumb_tip": np.round(tip, 4).tolist(), "finger_mids": [np.round(p, 4).tolist() for p in mids]}
+            "thumb_tip": np.round(tip, 4).tolist(), "finger_mids": [np.round(p, 4).tolist() for p in mids],
+            "finger_overlap_mm": round(1e3 * finger_overlap(m, d), 1)}
 
 
 def evaluate(p: dict, breakaway: bool = False) -> dict:

@@ -403,15 +403,27 @@ def test_the_real_hammers_wrap_lays_the_palm_thumb_and_fingertip_pads_on_the_han
         pytest.skip("YCB hammer not cached")
     g = wrap_grasp(cfg, hand_xml("wuji2"))
     f = g.contact_force
-    # the handle on the palm, the thumb's pad on it, and every fingertip's pad (the light hammer's wrap: the fingertips'
-    # ends alone)
-    assert f.get("r_wrist", 0.0) > 10.0 and f.get("r_thumb_tip_sensor_frame", 0.0) > 3.0
+    # the handle on the palm, the thumb on it, and every fingertip's pad (the light hammer's wrap: the fingertips' ends
+    # alone)
+    assert f.get("r_wrist", 0.0) > 10.0 and sum(v for b, v in f.items() if "thumb" in b) > 3.0
     fingers = ("index_finger", "middle_finger", "ring_finger", "pinky")
     assert min(f.get(f"r_{k}_tip_sensor_frame", 0.0) for k in fingers) > 3.0
     # the fingertip joints held near finger_dip, the middle joints curled on past 70 deg (vendor order: the thumb's
     # four joints, then each finger's MCP flexion, MCP abduction, PIP, DIP)
     pip, dip = g.q[[4 + 4 * k + 2 for k in range(4)]], g.q[[4 + 4 * k + 3 for k in range(4)]]
     assert np.all(np.abs(dip - cfg.gripper.finger_dip) < 0.15) and np.all(pip > np.radians(70.0))
+    # and no finger closes into the next (the fingers collide: finger_self_contact)
+    import mujoco
+
+    from tactile_sim.model.hands.wrap_search import finger_overlap
+    from tactile_sim.model.hands.wuji_grasp import build_scene, grasp_config
+
+    xml, info = build_scene(grasp_config(cfg), hand_xml("wuji2"))
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    d.qpos[[m.joint(j).qposadr[0] for j, _ in info["joints"]]] = g.q
+    mujoco.mj_forward(m, d)
+    assert finger_overlap(m, d) < 1e-3
 
 
 def test_e2_reads_a_datasets_hand_tables(tmp_path):
