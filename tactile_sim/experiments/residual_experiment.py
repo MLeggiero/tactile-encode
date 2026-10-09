@@ -472,19 +472,23 @@ def hold_table(stage: str = "E1hold", root: Path = ROOT) -> tuple[str, list[dict
                      "net_mm": mean("slip_trans_mm"), "net_deg": mean("slip_rot_deg"), "path_mm": mean("path_mm"),
                      "path_deg": mean("path_deg"), "i2t_w": mean("i2t_w"), "advance_mm": mean("advance_mm"),
                      "hit": share([x["hit"] for x in st])})
-    ref = {r["policy"]: r for r in rows if r["hold"] == 1.0}
+    base = {r["hold"]: r for r in rows if r["policy"] == "base"}
     lines = ["| policy | hold | episodes / strikes | lost per strike | episodes ended by a drop | first strike lost | "
              "net slip mm / deg | slip path mm / deg | I2t (swing to end) | advance mm | hits | against zero at the "
-             "full hold: net mm, deg, I2t |",
-             "|---" * 12 + "|"]
-    z = ref.get("base")
+             "same hold: net mm, deg, I2t | against zero at the full hold: net mm, deg, I2t |",
+             "|---" * 13 + "|"]
+
+    def against(r, z):
+        if z is None:
+            return ""
+        return f"{r['net_mm'] / z['net_mm']:.2f}, {r['net_deg'] / z['net_deg']:.2f}, {r['i2t_w'] / z['i2t_w']:.2f}"
+
     for r in sorted(rows, key=lambda r: (r["hold"], r["policy"])):
-        cmp = (f"{r['net_mm'] / z['net_mm']:.2f}, {r['net_deg'] / z['net_deg']:.2f}, {r['i2t_w'] / z['i2t_w']:.2f}"
-               if z else "")
         lines.append(f"| {r['policy']} | {r['hold']:g} | {r['episodes']} / {r['strikes']} | {100 * r['lost']:.1f} % | "
                      f"{100 * r['episodes_dropped']:.0f} % | {100 * r['lost_first']:.0f} % | {r['net_mm']:.3f} / "
                      f"{r['net_deg']:.3f} | {r['path_mm']:.2f} / {r['path_deg']:.2f} | {r['i2t_w']:.3f} | "
-                     f"{r['advance_mm']:.2f} | {100 * r['hit']:.1f} % | {cmp} |")
+                     f"{r['advance_mm']:.2f} | {100 * r['hit']:.1f} % | {against(r, base.get(r['hold']))} | "
+                     f"{against(r, base.get(1.0))} |")
     return "\n".join(lines), rows
 
 

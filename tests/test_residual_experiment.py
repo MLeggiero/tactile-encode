@@ -100,6 +100,7 @@ def test_the_hold_stage_and_its_table_count_a_drop_as_a_lost_strike(tmp_path):
     assert low["episodes_dropped"] == 0.5 and low["lost_first"] == 0.5
     assert low["net_mm"] == pytest.approx(0.3) and low["advance_mm"] == pytest.approx(2.0)  # the kept strikes
     assert "| base | 1 | 2 / 6 | 0.0 % | 0 % | 0 % | 1.000 / 2.000 |" in text
+    assert "| 1.00, 1.00, 1.00 | 0.30, 1.00, 1.00 |" in text  # the zero at 0.3: against itself, against the full hold
 
 
 def test_drill_jobs_have_their_own_conditions_and_place():
