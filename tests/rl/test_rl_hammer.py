@@ -44,8 +44,8 @@ def test_hammer_tasks_register_at_every_rate():
         assert hammer_task_id(rate) in list_tasks()
         cfg = load_env_cfg(hammer_task_id(rate))
         assert cfg.decimation == decimation_for(rate, 0.00025)
-        assert set(cfg.observations) == {"student", "teacher", "critic"}
-        assert load_rl_cfg(hammer_task_id(rate)).obs_groups["actor"] == ("teacher",)
+        assert set(cfg.observations) == {"teacher"}  # the registered task trains the teacher
+        assert load_rl_cfg(hammer_task_id(rate)).obs_groups == {"actor": ("teacher",), "critic": ("teacher",)}
 
 
 @pytest.mark.parametrize("rate", [1000.0, 250.0])
@@ -120,6 +120,27 @@ def test_unperturbed_base_outputs_are_the_librarys(library):
         env.close()
 
 
+def test_the_base_grips_at_the_episodes_hold_level(library):
+    """The hand base is the synergy at the hold level times the library's scalar; a zero residual passes it on."""
+    from mjlab.envs import ManagerBasedRlEnv
+
+    env = ManagerBasedRlEnv(hammer_env_cfg(1000.0, library=library, num_envs=4, perturb=False, assign="sequential",
+                                           hold_level=(0.4, 0.4)), device="cuda:0")
+    try:
+        env.reset()
+        cmd = env.command_manager.get_term("base")
+        act = env.action_manager.get_term("residual")
+        zero = torch.zeros(4, 60, device=env.device)
+        for k in range(1, 50):
+            env.step(zero)
+            i = torch.full((4,), k, device=env.device)
+            torch.testing.assert_close(cmd.s_now, 0.4 * cmd.lib.s[cmd.entry, i])
+            torch.testing.assert_close(act.command, act.base)
+        assert torch.allclose(cmd.level, torch.full_like(cmd.level, 0.4))
+    finally:
+        env.close()
+
+
 def test_stale_inputs_decay_the_residual(library):
     env = make_env(library, 2, perturb=False, assign="sequential")
     try:
@@ -154,9 +175,13 @@ def test_the_gpu_replays_the_library_strikes(library):
         g = gpu[e]
         assert g["hit"] and bool(lib["e_hit"][e])
         assert abs(g["t_contact"] - lib["e_t_contact"][e]) < 0.003
-        assert g["advance"] == pytest.approx(lib["e_advance"][e], rel=0.15)
+        # the hard nail sticks or slips on a single step's force: a blow's advance differs by up to ~0.4 mm (P3's
+        # 90th percentile over 776 strikes; the means agree within 6 %)
+        assert abs(g["advance"] - lib["e_advance"][e]) < 0.0008
         assert g["peak2"] == pytest.approx(lib["e_peak2"][e], rel=0.15)
         assert g["v_face"] == pytest.approx(lib["e_v_face"][e], abs=0.05)
+    adv_gpu = np.mean([gpu[e]["advance"] for e in entries])
+    assert adv_gpu == pytest.approx(float(np.mean(lib["e_advance"][entries])), rel=0.25)
 
 
 def test_nail_plant_writes_its_fields_per_world(library):

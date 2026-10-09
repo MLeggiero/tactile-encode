@@ -7,6 +7,7 @@
 - privileged terms for the teacher and the critic (each scaled to O(1)): the tool in the hand (pose change since the
   episode's start and its twist relative to the hand), per-patch slip velocity and true normal force, the true event
   timing and regime, the nail, the drives' internals and the randomization the env runs with.
+- `load_truth`: the load generator's wrench on the tool (teacher, critic and the students' auxiliary labels).
 - `hand_joint_pos`, `hand_current`: milestone 1's placeholder terms (true angles, currents), kept for the hold tasks.
 """
 
@@ -104,7 +105,7 @@ def event_truth(env: ManagerBasedRlEnv) -> torch.Tensor:
     tr = cmd.truth
     t = rt.t
     valid = tr["valid"].float()
-    dt_ev = torch.clamp(tr["t_event"] - t, -1.0, 1.0).float() * valid
+    dt_ev = torch.where(tr["valid"], torch.clamp(tr["t_event"] - t, -1.0, 1.0), torch.zeros_like(t)).float()
     reg = torch.zeros(rt.N, len(REGIMES), device=rt.dev)
     reg.scatter_(1, tr["regime"][:, None], 1.0)
     reg = reg * valid[:, None]
@@ -136,11 +137,30 @@ def drive_internals(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def randomization(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """(N, 25): the randomization the env runs with (BaseTrajectoryCommand.param_vector)."""
+    """The randomization the env runs with: (N, 25) the library entry's (BaseTrajectoryCommand.param_vector), (N, 33)
+    the reset events' draws and the base's hold level (randomization.TactileDR.param_vector)."""
     cmd, _ = _parts(env)
     return cmd.param_vector()
 
 
-PRIVILEGED = {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "nail_state": 5, "drive_internals": 44,
-              "randomization": 25}
+def load_truth(env: ManagerBasedRlEnv) -> torch.Tensor:
+    """(N, 6): the load generator's wrench on the tool now, tool frame (force in 100 N, torque in Nm); zero without a
+    load generator."""
+    cmd, rt = _parts(env)
+    f = getattr(cmd, "f_now", None)
+    if f is None:
+        return torch.zeros(rt.N, 6, device=rt.dev)
+    return torch.cat([cmd.f_now / 100.0, cmd.tq_now], dim=1)
+
+
+# the privileged terms' widths per task (tactile_rl.tasks.common.observation_groups lays them out in this order)
+PRIVILEGED_BY_TASK = {
+    "hammer": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "nail_state": 5, "drive_internals": 44,
+               "randomization": 25},
+    "loadgen": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "load_truth": 6, "drive_internals": 44,
+                "randomization": 33},
+    "mixed": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "nail_state": 5, "load_truth": 6,
+              "drive_internals": 44, "randomization": 33},
+}
+PRIVILEGED = PRIVILEGED_BY_TASK["hammer"]
 assert math.isfinite(sum(PRIVILEGED.values()))

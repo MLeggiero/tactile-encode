@@ -97,6 +97,8 @@ class TorchTaxelScan:
         self.bridge_lo = torch.full((N,), float(s.ts_bridge_latency[0]), **f64)
         self.bridge_hi = torch.full((N,), float(s.ts_bridge_latency[1]), **f64)
         self.drop_prob = torch.full((N,), float(s.ts_drop_prob), **f64)
+        self.alive = torch.ones(N, T, **f64)  # dead taxels read no load
+        self.phase = torch.zeros(N, **f64)  # s: the boards' SYNC edges relative to the env's clock
         self.bridge_fn: DrawFn | None = None
         self.noise_fn: DrawFn | None = None
         self.drop_fn: DrawFn | None = None
@@ -150,9 +152,11 @@ class TorchTaxelScan:
 
     def set_params(self, env_ids=None, gain_mismatch=None, offset_lsb=None, f_half=None, enob=None,
                    oversample=None, bandwidth=None, bridge_latency=None, drop_prob=None, noise_scale=None,
-                   f_half_mismatch=None) -> None:
+                   f_half_mismatch=None, dead_frac=None, phase=None) -> None:
         """Per-environment readout parameters (scalars or (n,) per env). gain_mismatch / offset_lsb draw new per-taxel
-        errors (gain 1 + mismatch N(0, 1), offset offset_lsb N(0, 1) counts), like a new physical skin."""
+        errors (gain 1 + mismatch N(0, 1), offset offset_lsb N(0, 1) counts), like a new physical skin; dead_frac
+        draws which taxels are dead (each with that probability); phase (s) shifts the boards' SYNC edges (frame k
+        starts at phase + k / ts_rate; the residual loop's phase to SYNC)."""
         ids = slice(None) if env_ids is None else env_ids
         n = self.n_env if env_ids is None else len(env_ids)
         dev = self.dev
@@ -187,6 +191,11 @@ class TorchTaxelScan:
             self.drop_prob[ids] = col(drop_prob)
         if noise_scale is not None:
             self.noise_scale[ids] = col(noise_scale)
+        if dead_frac is not None:
+            u = torch.rand(n, self.T, dtype=torch.float64, device=dev, generator=self.generator)
+            self.alive[ids] = (u >= col(dead_frac)[:, None]).double()
+        if phase is not None:
+            self.phase[ids] = col(phase)
 
     # ------------------------------------------------------------------ one physics step
     def step(self, t: torch.Tensor, raw: torch.Tensor) -> None:
@@ -198,11 +207,12 @@ class TorchTaxelScan:
         xf = torch.where(fresh[:, None], raw, self.xf + self.a_skin[:, None] * (raw - self.xf))
         tp = torch.where(fresh, t - self.dt, self.t_prev)
         # which taxels the scan reached in (tp, t]: the newest frame each taxel was sampled for, now and before
-        k_now = torch.floor((t[:, None] - self.s_off[None]) / T_ + self.tol_k).long()
-        k_old = torch.floor((tp[:, None] - self.s_off[None]) / T_ + self.tol_k).long()
+        s_off = self.s_off[None] + self.phase[:, None]
+        k_now = torch.floor((t[:, None] - s_off) / T_ + self.tol_k).long()
+        k_old = torch.floor((tp[:, None] - s_off) / T_ + self.tol_k).long()
         k_old = torch.where(fresh[:, None], torch.full_like(k_old, -1), k_old)
         new = (k_now > k_old) & (k_now >= 0)
-        instant = k_now.double() * T_ + self.s_off[None]
+        instant = k_now.double() * T_ + s_off
         al = ((instant - tp[:, None]) / (t - tp)[:, None]).clamp(0.0, 1.0)
         val = xf_prev + al * (xf - xf_prev)
         par = (k_now % 2).clamp(min=0)
@@ -221,7 +231,8 @@ class TorchTaxelScan:
         f = self.buf.gather(1, par[:, None, :]).squeeze(1)  # (N, T)
         # divider, ADC, the firmware's calibration (sensors.taxelscan.TaxelScanSensor.adc / calibrate)
         f = f.clamp(min=0.0)
-        x = self.gain * f / (f + self.f_half_taxel)
+        f_read = f * self.alive  # a dead taxel reads no load
+        x = self.gain * f_read / (f_read + self.f_half_taxel)
         noise = self.noise_fn(complete, k_frame).double() if self.noise_fn is not None else \
             torch.randn(N, self.T, dtype=torch.float64, device=dev, generator=self.generator)
         c = x * self.full + self.offs + noise * self.noise_lsb[:, None] * self.noise_scale[:, None]  # numpy's order
@@ -239,7 +250,7 @@ class TorchTaxelScan:
         else:
             u = torch.rand(N, P, dtype=torch.float64, device=dev, generator=self.generator)
             bridge = self.bridge_lo[:, None] + u * (self.bridge_hi - self.bridge_lo)[:, None]
-        t0 = k_frame.double() * self.period
+        t0 = self.phase[:, None] + k_frame.double() * self.period
         avail = torch.maximum(t0 + self.period + self.slot[None] + bridge, self.last_avail)
         self.last_avail = torch.where(complete, avail, self.last_avail)
         u_drop = self.drop_fn(complete, k_frame).double() if self.drop_fn is not None else \
@@ -282,7 +293,7 @@ class TorchTaxelScan:
         sl = newest.clamp(min=0) % D
         self.features = torch.where(got[..., None], self.ring_feat[n_ar, sl, p_ar], self.features)
         self.t_avail = torch.where(got, self.ring_avail[n_ar, sl, p_ar], self.t_avail)
-        self.t_sample = torch.where(got, newest.double() * self.period, self.t_sample)
+        self.t_sample = torch.where(got, self.phase[:, None] + newest.double() * self.period, self.t_sample)
         self.sync_id = torch.where(got, newest & 0xFFFF, self.sync_id)
         sl_t = sl[:, self.patch]
         codes = self.ring_codes.gather(1, sl_t[:, None, :]).squeeze(1)

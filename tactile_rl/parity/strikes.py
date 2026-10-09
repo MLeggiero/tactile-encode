@@ -34,9 +34,11 @@ from tactile_sim.behaviors.base_library import (
 
 
 def gpu_replay(library: str, entries: list[int], device: str = "cuda:0", rate: float = 1000.0,
-               perturb: bool = False, copies: int = 1) -> dict:
-    """Replay `entries` on the GPU, `copies` worlds each (perturbed bases draw their own time warp, amplitude and
-    start delay); returns the outcome table (with each world's perturbation) and the capacity peaks."""
+               perturb: bool = False, copies: int = 1, timestep: float = 0.00025, hold_level: float = 1.0) -> dict:
+    """Replay `entries` on the GPU at physics `timestep`, `copies` worlds each (perturbed bases draw their own time
+    warp, amplitude and start delay), the hand base at `hold_level` of the library's grip, zero residual; returns the
+    outcome table (with each world's perturbation, and `lost`: the tool 2 cm or 30 degrees from its start in the hand
+    at some point) and the capacity peaks."""
     import torch
     from mjlab.envs import ManagerBasedRlEnv
 
@@ -48,8 +50,9 @@ def gpu_replay(library: str, entries: list[int], device: str = "cuda:0", rate: f
     n = n_e * copies
     lens_e = lib["e_len"][entries].astype(int)
     horizon = float(lens_e.max()) * 1e-3 / (0.8 if perturb else 1.0) + (0.1 if perturb else 0.0)
-    cfg = hammer_env_cfg(rate, library=library, num_envs=n, perturb=perturb, apply_params=True, entries=tuple(entries),
-                         assign="sequential", episode_s=horizon + 0.05, nconmax=64, njmax=192)
+    cfg = hammer_env_cfg(rate, library=library, timestep=timestep, num_envs=n, perturb=perturb, apply_params=True,
+                         entries=tuple(entries), assign="sequential", episode_s=horizon + 0.05, nconmax=64,
+                         njmax=192, hold_level=(hold_level, hold_level))
     cfg.terminations = {k: v for k, v in cfg.terminations.items() if k in ("time_out",)}
     env = ManagerBasedRlEnv(cfg, device=device)
     try:
@@ -105,7 +108,9 @@ def gpu_replay(library: str, entries: list[int], device: str = "cuda:0", rate: f
         t_c = float(t[on[0]]) if len(on) else float("nan")
         v_c = float(v_ax[j, on[0]]) if len(on) else float("nan")
         out = strike_outcome(t[:n_t], f[j, :n_t], depth[j, :n_t], (hih[j, i_sw], hih[j, lens[j]]), ts, v_c, t_c)
-        rows.append({"entry": e, "warp": warp[j], "amp": amp[j], "delay": delay[j], **out})
+        d = hih[j, :lens[j] + 1] - hih[j, :1]
+        lost = bool(((np.linalg.norm(d[:, :3], axis=1) > 0.02) | (np.linalg.norm(d[:, 3:], axis=1) > 0.5236)).any())
+        rows.append({"entry": e, "warp": warp[j], "amp": amp[j], "delay": delay[j], "lost": lost, **out})
     return {"rows": rows, "peaks": peaks.report(n), "wall_s": wall, "sim_s": steps * 1e-3}
 
 

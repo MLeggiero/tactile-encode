@@ -38,11 +38,12 @@ def base_done(env: ManagerBasedRlEnv) -> torch.Tensor:
     return base_command_term(env).done()
 
 
-def tool_left_hand(env: ManagerBasedRlEnv, max_shift: float = 0.02) -> torch.Tensor:
-    """The hammer's grasp frame moved more than `max_shift` (m) in the hand since the episode's start (the hammer
-    tasks: the start is the library entry's, not a bank state's)."""
+def tool_left_hand(env: ManagerBasedRlEnv, max_shift: float = 0.02, max_turn: float = 0.5236) -> torch.Tensor:
+    """The tool's grasp frame moved more than `max_shift` (m) or turned more than `max_turn` (rad, 30 degrees) in the
+    hand from the episode's reference pose (the base term's `ref_rel`: the library entry's start on the hammer, the
+    settled pose on the load generator): the grasp is lost."""
     from tactile_rl.mdp.actions import base_command_term
 
     cmd = base_command_term(env)
     d = cmd.rt.hammer_in_hand() - cmd.ref_rel
-    return torch.linalg.norm(d[:, :3], dim=1) > max_shift
+    return (torch.linalg.norm(d[:, :3], dim=1) > max_shift) | (torch.linalg.norm(d[:, 3:], dim=1) > max_turn)
