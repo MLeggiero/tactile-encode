@@ -69,3 +69,38 @@ def test_drill_laws_replay_a_cpu_episode_exactly(mode):
     assert r["steps"] > 1000
     assert r["max_abs_force"] < 1e-9 and r["max_abs_torque"] < 1e-9 and r["max_abs_depth"] < 1e-12
     assert r["max_abs_w"] < 1e-9 and r["state_mismatches"] == 0 and r["click_mismatches"] == 0
+
+
+needs_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+
+
+def test_training_parts_carry_the_drill_and_the_trigger_finger_cap():
+    pytest.importorskip("mujoco")
+    from tactile_sim.sim.training_parts import export_training_parts, residual_training_config
+
+    p = export_training_parts(residual_training_config(1000.0, task="drill"))
+    assert p.nail is None and p.drill is not None and p.drill.trigger_joint == "trigger_slide"
+    assert len(p.skin) == 11 and len(p.synergy.trigger) == 3
+    caps = dict(zip(p.skin_pairs, p.skin_caps, strict=True))
+    assert any(c == pytest.approx(0.9) for c in caps.values())  # the trigger finger's pairs
+    assert p.fixed_friction_pairs and set(p.fixed_friction_pairs) <= set(p.skin_pairs)  # the trigger's face
+
+
+@needs_gpu
+@pytest.mark.gpu
+@pytest.mark.slow
+def test_a_drill_episode_replays_on_the_gpu(tmp_path):
+    """One zero-residual screw on the CPU (the training physics), replayed open loop on the GPU: it seats within
+    50 ms of the CPU, at the same depth, with the clutch's clicks and the tool's slip close."""
+    pytest.importorskip("mjlab")
+    from tactile_rl.parity.drill_episodes import gpu_replay
+    from tactile_sim.behaviors.drill_library import assemble_drill, record_drill_episode
+
+    path = tmp_path / "drill.npz"
+    np.savez_compressed(path, **assemble_drill([record_drill_episode(0, "screw")], {"mode": "screw"}))
+    r = gpu_replay(str(path))["rows"][0]
+    assert r["done_gpu"] and r["done_cpu"]
+    assert abs(r["t_done_gpu"] - r["t_done_cpu"]) < 0.05
+    assert r["depth_gpu"] == pytest.approx(r["depth_cpu"], abs=2e-4)
+    assert abs(r["clicks_gpu"] - r["clicks_cpu"]) <= 8
+    assert r["net_slip_rot_gpu"] == pytest.approx(r["net_slip_rot_cpu"], abs=0.02)

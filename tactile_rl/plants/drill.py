@@ -304,3 +304,75 @@ class TorchDrillLaws:
                 "hand_torque": self.tau_hand, "drill_axial_force": self.F_axial, "drill_state": self.state.double(),
                 "cam_outs": self.cam_outs.double(), "clutch_slipping": self.drive.slipping.double(),
                 "clutch_phase": self.drive.phase, "bit_misalign": self.misalign}
+
+
+class TorchDrillPlant:
+    """The drill plant on MuJoCo Warp: TorchDrillLaws fed what DrillPlant.pre_step reads, its wrench into the tool's
+    xfrc_applied before every physics step.
+
+    The kinematics a CPU pre_step sees are those of the step before (MuJoCo's data after mj_step, positions and
+    velocities from before its integration): `post_step` takes them right after each MuJoCo Warp step, so mjlab's
+    per-env-step forward() does not shift them; an env just reset reads the live (forwarded) data once. The trigger
+    part's travel is read live (qpos, as the CPU reads it)."""
+
+    def __init__(self, parts, sim, num_envs: int, device: str | torch.device, prefix: str = "robot/", seed: int = 0):
+        dp = parts.drill
+        if dp is None:
+            raise ValueError("the scene has no drill plant")
+        m = sim.mj_model
+        self.sim = sim
+        self.n_env, self.dev = int(num_envs), torch.device(device)
+        self.dt = float(m.opt.timestep)
+        self.tool = m.body(prefix + parts.hammer_body).id
+        self.tool_root = int(m.body_rootid[self.tool])
+        self.tip_site = m.site(prefix + dp.tip_site).id
+        self.trig_qadr = int(m.joint(prefix + dp.trigger_joint).qposadr[0]) if dp.trigger_joint else -1
+        gen = torch.Generator(device=self.dev)
+        gen.manual_seed(int(seed))
+        self.laws = TorchDrillLaws(parts.cfg.drill, self.n_env, dp.axis, dp.head0, self.dev, generator=gen)
+        f64 = dict(dtype=torch.float64, device=self.dev)
+        N = self.n_env
+        self.R = torch.eye(3, **f64).expand(N, 3, 3).clone()
+        self.tip = torch.zeros(N, 3, **f64)
+        self.v = torch.zeros(N, 3, **f64)
+        self.omega = torch.zeros(N, 3, **f64)
+        self.com = torch.zeros(N, 3, **f64)
+        self.fresh = torch.ones(N, dtype=torch.bool, device=self.dev)
+        self.trigger_cmd = torch.zeros(N, **f64)  # the base's level when the tool has no trigger part
+
+    def _read(self, data) -> tuple[torch.Tensor, ...]:
+        N = self.n_env
+        R = data.xmat[:][:, self.tool].reshape(N, 3, 3).double()
+        tip = data.site_xpos[:][:, self.tip_site].double()
+        cvel = data.cvel[:][:, self.tool].double()
+        com_root = data.subtree_com[:][:, self.tool_root].double()
+        v = cvel[:, 3:] - torch.linalg.cross(tip - com_root, cvel[:, :3])
+        return R, tip, v, cvel[:, :3], data.xipos[:][:, self.tool].double()
+
+    def post_step(self, data) -> None:
+        self.R, self.tip, self.v, self.omega, self.com = self._read(data)
+        self.fresh = torch.zeros_like(self.fresh)
+
+    def pre_step(self, t: torch.Tensor) -> None:
+        d = self.sim.data
+        if bool(self.fresh.any()):
+            live = self._read(d)
+            f = self.fresh
+            self.R = torch.where(f[:, None, None], live[0], self.R)
+            self.tip, self.v, self.omega, self.com = (torch.where(f[:, None], a, b) for a, b in
+                                                      zip(live[1:], (self.tip, self.v, self.omega, self.com),
+                                                          strict=True))
+        kw = ({"trigger_travel": d.qpos[:][:, self.trig_qadr].double()} if self.trig_qadr >= 0
+              else {"trigger": self.trigger_cmd})
+        parts = self.laws.step(t, self.dt, self.R, self.tip, self.v, self.omega, **kw)
+        d.xfrc_applied[:, self.tool] = TorchDrillLaws.wrench_about(self.com, parts).float()
+
+    def reset(self, env_ids=None) -> None:
+        ids = slice(None) if env_ids is None else env_ids
+        self.laws.reset(env_ids)
+        self.fresh[ids] = True
+        self.trigger_cmd[ids] = 0.0
+        self.sim.data.xfrc_applied[ids, self.tool] = 0.0
+
+    def done(self) -> torch.Tensor:
+        return self.laws.completed

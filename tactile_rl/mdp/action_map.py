@@ -75,7 +75,7 @@ class TorchActionMap:
 
 
 class TorchSynergy:
-    """WrapSynergy.mit_command for every environment: (s (N,), q (N, J)) -> (N, 5, J)."""
+    """WrapSynergy.mit_command for every environment: (s (N,), q (N, J)[, s_trigger (N,)]) -> (N, 5, J)."""
 
     def __init__(self, syn: WrapSynergy, device: str | torch.device = "cpu"):
         f = dict(dtype=torch.float32, device=device)
@@ -94,10 +94,15 @@ class TorchSynergy:
         self.coupled_i = torch.as_tensor([i for i, _ in coupled], dtype=torch.long, device=device)
         self.coupled_j = torch.as_tensor([j for _, j in coupled], dtype=torch.long, device=device)
         self.ratio = float(syn.coupling_ratio)
+        # a trigger finger (WrapSynergy.trigger): its joints close at their own level (WrapSynergy.levels)
+        self.trigger = torch.as_tensor(list(getattr(syn, "trigger", ()) or ()), dtype=torch.long, device=device)
 
-    def mit_command(self, s: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-        s = torch.clamp(s, 0.0, 1.0)
-        tau = s[:, None] * self.tau_unit
+    def mit_command(self, s: torch.Tensor, q: torch.Tensor, s_trigger: torch.Tensor | None = None) -> torch.Tensor:
+        lv = torch.clamp(s, 0.0, 1.0)[:, None].expand(-1, self.tau_unit.shape[0])
+        if s_trigger is not None and self.trigger.numel():
+            lv = lv.clone()
+            lv[:, self.trigger] = torch.clamp(s_trigger, 0.0, 1.0).to(lv.dtype)[:, None]
+        tau = lv * self.tau_unit
         q_t = torch.where(self.shaping, self.q_hold, q)
         if self.coupled_i.numel():
             q_t = q_t.clone()

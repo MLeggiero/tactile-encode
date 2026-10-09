@@ -82,6 +82,10 @@ class BaseLibrary:
         self.fc_regime = stream("fc_regime", dtype=torch.long, device=dev)
         self.fc_f, self.fc_amp = stream("fc_f", **f64), stream("fc_amp", **f64)
         self.phase = stream("phase", dtype=torch.long, device=dev)
+        # a drill library (behaviors.drill_library): the trigger finger's own level and the base's trigger enable
+        self.s_trig = stream("s_trig", **f32) if "s_s_trig" in lib else None
+        self.trigger = stream("trigger", dtype=torch.bool, device=dev) if "s_trigger" in lib else None
+        self.task = json.loads(str(lib["meta"])).get("task", "hammer")
         self.t0 = torch.as_tensor(lib["e_t0"][idx], **f64)
         self.tick_ms = torch.as_tensor([arm_tick_phase_ms(float(t)) for t in lib["e_t0"][idx]], dtype=torch.long,
                                        device=dev)
@@ -101,8 +105,7 @@ class BaseLibrary:
         self.hih0 = torch.as_tensor(lib["e_hih0"][idx], **f32)
         self.t_swing = torch.as_tensor(lib["e_t_swing"][idx], **f64)
         self.t_c_pred = torch.as_tensor(lib["e_t_c_pred"][idx], **f64)
-        self.outcome = {k: lib[f"e_{k}"][idx] for k in ("hit", "drop", "advance", "peak", "width", "impulse",
-                                                       "v_face", "t_contact", "slip_trans", "slip_rot")}
+        self.outcome = {k[2:]: lib[k][idx] for k in lib if k.startswith("e_") and k[2:] in OUTCOME_KEYS}
         ep = lib["e_episode"][idx].astype(int)
         self.episode = ep
         meta_keys = [k[3:] for k in lib if k.startswith("ep_") and k not in ("ep_cfg", "ep_seed", "ep_wall_s")]
@@ -111,6 +114,11 @@ class BaseLibrary:
     def entry_cfg(self, e: int) -> str:
         """The SimConfig key of entry e's episode."""
         return str(load_library(self.path)["ep_cfg"][self.episode[e]])
+
+
+OUTCOME_KEYS = ("hit", "drop", "advance", "peak", "width", "impulse", "v_face", "t_contact", "slip_trans", "slip_rot",
+                "done", "t_done", "state", "clicks", "peak_torque", "cam_outs", "max_slip_trans", "max_slip_rot",
+                "net_slip_trans", "net_slip_rot", "lost", "depth")
 
 
 @dataclass(kw_only=True)
@@ -151,7 +159,12 @@ class BaseTrajectoryCommand(CommandTerm):
         self.hammer_dofs = torch.as_tensor(range(int(m.jnt_dofadr[m.joint(f"robot/{parts.hammer_joint}").id]),
                                                  int(m.jnt_dofadr[m.joint(f"robot/{parts.hammer_joint}").id]) + 6),
                                            device=dev)
-        self.skin_pairs = torch.as_tensor(parts.skin_pairs, dtype=torch.long, device=dev)
+        # the skin pairs that take the hand friction (not the trigger part's face), with their caps
+        fixed = set(getattr(parts, "fixed_friction_pairs", ()))
+        caps = list(getattr(parts, "skin_caps", ())) or [math.inf] * len(parts.skin_pairs)
+        keep = [k for k, i in enumerate(parts.skin_pairs) if i not in fixed]
+        self.skin_pairs = torch.as_tensor([parts.skin_pairs[k] for k in keep], dtype=torch.long, device=dev)
+        self.skin_caps = torch.as_tensor([caps[k] for k in keep], dtype=torch.float32, device=dev)
         self.soft_pairs = torch.as_tensor(parts.skin_pairs + parts.self_pairs, dtype=torch.long, device=dev)
         self.group = torch.as_tensor([JOINT_GROUPS.index(joint_group(j)) for j in parts.hand_joints], device=dev)
         self.synergy = TorchSynergy(parts.synergy, dev)
@@ -181,7 +194,9 @@ class BaseTrajectoryCommand(CommandTerm):
                       "phase": torch.zeros(N, dtype=torch.long, device=dev), "t_c_pred": z64}
         self.trigger = torch.zeros(N, dtype=torch.bool, device=dev)
         self.metrics["entry_hit_cpu"] = torch.zeros(N, device=dev)
-        self._hit_cpu = torch.as_tensor(self.lib.outcome["hit"].astype(float), dtype=torch.float32, device=dev)
+        hit = self.lib.outcome.get("hit", self.lib.outcome.get("done", np.zeros(self.lib.E)))
+        self._hit_cpu = torch.as_tensor(np.asarray(hit, float), dtype=torch.float32, device=dev)
+        self.s_trig_now = None if self.lib.s_trig is None else torch.zeros(N, device=dev)
 
     @property
     def command(self) -> torch.Tensor:
@@ -239,7 +254,11 @@ class BaseTrajectoryCommand(CommandTerm):
         tau = rt.t
         i = self.index(tau)
         self.s_now = self.level * lib.s[e, i]  # the hand base at the episode's hold level
-        self.base = self.synergy.mit_command(self.s_now, rt.rb_q.value.float())
+        if lib.s_trig is not None:  # the drill: the trigger finger at its own level
+            self.s_trig_now = lib.s_trig[e, i]
+        if lib.trigger is not None:
+            self.trigger = lib.trigger[e, i]
+        self.base = self.synergy.mit_command(self.s_now, rt.rb_q.value.float(), self.s_trig_now)
         # lookahead on the arm's ticks, re-sampled at the warped horizons and scaled
         started, _, u_j = self._tick(tau)
         il = torch.where(started, torch.floor(u_j * 1000.0 + 1e-6).long(), torch.zeros_like(i))
@@ -330,8 +349,9 @@ class BaseTrajectoryCommand(CommandTerm):
         mu = P["hand_friction"][e].float()
         sp = self.skin_pairs
         if len(sp):
-            model.pair_friction[ids[:, None], sp, 0] = mu[:, None].expand(-1, len(sp))
-            model.pair_friction[ids[:, None], sp, 1] = mu[:, None].expand(-1, len(sp))
+            mu_p = torch.minimum(mu[:, None], self.skin_caps[None])  # the trigger finger's cap
+            model.pair_friction[ids[:, None], sp, 0] = mu_p
+            model.pair_friction[ids[:, None], sp, 1] = mu_p
         so = self.soft_pairs
         if len(so):
             model.pair_solref[ids[:, None], so, 0] = P["hand_solref_tc"][e].float()[:, None].expand(-1, len(so))
@@ -346,6 +366,9 @@ class BaseTrajectoryCommand(CommandTerm):
             rt.nail.set_params(ids, resistance_0=P["nail_r0"][e], resistance_per_m=P["nail_r_per_m"][e],
                                vdr_zeta0=P["vdr_zeta0"][e], face_tc=P["face_tc"][e])
             rt.nail.reset(ids)
+        if getattr(rt, "drill", None) is not None:  # the drill's draw (drill_library.DRILL_PARAMS)
+            rt.drill.laws.set_params(ids, **{k[6:]: P[k][e] for k in P if k.startswith("drill_")})
+            rt.drill.reset(ids)
         lpf = P["sdk_lpf_hz"][e]
         i_rated = P["i_rated"][e][:, self.group]  # (n, J)
         rt.drive.set_params(ids, cmd_latency=P["cmd_latency"][e], sdk_lpf_hz=lpf, tau_i=P["tau_i"][e],

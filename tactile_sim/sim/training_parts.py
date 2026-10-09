@@ -23,6 +23,7 @@ returns a `TrainingParts`:
 from __future__ import annotations
 
 import json
+import math
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
@@ -46,12 +47,14 @@ def training_config(timestep: float = 0.00025, noslip_iterations: int = 0, **sec
 
 
 def residual_training_config(rate: float = 1000.0, timestep: float = 0.00025, noslip_iterations: int = 0,
-                             **sections) -> SimConfig:
+                             task: str = "hammer", **sections) -> SimConfig:
     """The residual experiments' configuration (config.residual_config: Vega U + WUJI Hand 2 with MIT drives, the
     TaxelScan fast profile, the light hammer and its small nail, the residual at `rate` Hz) on the reduced scene at
     the training physics: `timestep` (0.25 ms) and no noslip, as MuJoCo Warp runs it. The hammer training tasks
-    (tactile_rl) and the base library (tactile_sim.behaviors.base_library) are built from it."""
-    cfg = residual_config(rate, base=fast_config())
+    (tactile_rl) and the base library (tactile_sim.behaviors.base_library) are built from it; task "drill" puts the
+    pistol driver in the hand (residual_config's drill: the trigger pulled by the index finger, its friction capped).
+    """
+    cfg = residual_config(rate, base=fast_config(), task=task)
     cfg = cfg.replace(physics={"timestep": timestep, "noslip_iterations": noslip_iterations}, scene={"reduced": True})
     return cfg.replace(**sections) if sections else cfg
 
@@ -86,6 +89,17 @@ class NailParts:
     k_face: float  # direct-form stiffness of the face/nail pair
     face_zeta: float  # the configured face damping ratio (HammerCfg.face_solref[1])
     dmax: float  # pair_solimp[1] of the face/nail pair (k_face = 1 / (dmax tc zeta)^2)
+
+
+@dataclass
+class DrillParts:
+    """The drill plant's constants (model.plants.drill.DrillPlant, 12 V) for the GPU hooks; the DrillCfg is the
+    parts' cfg.drill."""
+
+    tip_site: str
+    trigger_joint: str  # the trigger part's slide joint (trigger_mode "finger"); "" when the base sets the level
+    axis: np.ndarray  # (3,) the work's axis, into the board
+    head0: np.ndarray  # (3,) the screw head (screw) or the board surface (hole) on the axis, world
 
 
 @dataclass
@@ -130,7 +144,12 @@ class TrainingParts:
     tool_geoms: tuple[str, ...] = ()  # every geom of the hammer body
     handle_geom: str = names.HAMMER_HANDLE_GEOM
     nail: NailParts | None = None
+    drill: DrillParts | None = None
     skin_pairs: tuple[int, ...] = ()  # hand/handle contact pairs: skin friction and hand_solref
+    # per skin pair, the most friction it takes (builder.hand_friction_caps: the pistol's trigger finger; inf: none)
+    skin_caps: tuple[float, ...] = ()
+    # skin pairs whose friction is not the hand's (the trigger's smooth face, DrillCfg.trigger_friction)
+    fixed_friction_pairs: tuple[int, ...] = ()
     self_pairs: tuple[int, ...] = ()  # hand self-contact pairs (hand_solref)
     arm_kp: np.ndarray | None = None  # (7,) arm servo gains in the model (ArmCfg servo gains x P multiplier)
     arm_kd: np.ndarray | None = None
@@ -172,10 +191,10 @@ def export_training_parts(cfg: SimConfig | None = None) -> TrainingParts:
     hand = w.hand
     hand_act = [m.actuator(int(a)).name for a in hand.act]
     ctrlrange = {n: m.actuator_ctrlrange[int(a)].copy() for n, a in zip(hand_act, hand.act, strict=True)}
-    pid = m.pair(PAIR_FACE_NAIL).id
-    face_solref = m.pair_solref[pid].copy()
+    has_face = PAIR_FACE_NAIL in {m.pair(i).name for i in range(m.npair)}  # the hammer's face/nail pair
+    face_solref = m.pair_solref[m.pair(PAIR_FACE_NAIL).id].copy() if has_face else np.zeros(2)
     train_xml = build_reduced_scene(cfg, sensors=False, markers=False).xml
-    train_xml = _patch_xml(train_xml, ctrlrange, {PAIR_FACE_NAIL: face_solref})
+    train_xml = _patch_xml(train_xml, ctrlrange, {PAIR_FACE_NAIL: face_solref} if has_face else {})
 
     w.reset_pose()
     qpos_start = d.qpos.copy()
@@ -186,20 +205,22 @@ def export_training_parts(cfg: SimConfig | None = None) -> TrainingParts:
     M = full_inertia(m, d, np.zeros((m.nv, m.nv)))
     i_eff = np.diag(M)[hand.dofs].copy()
     skin_pairs, self_pairs = _hand_pairs(m, hand)
+    skin_caps, fixed_friction = _skin_friction(m, hand, skin_pairs, cfg)
     return TrainingParts(
         cfg=cfg, xml=train_xml, dt=float(m.opt.timestep),
-        hammer_joint="hammer_free", nail_joint=names.NAIL_JOINT,
+        hammer_joint="hammer_free", nail_joint=names.NAIL_JOINT if has_face else "",
         arm_joints=tuple(w.arm_spec.joints), hand_joints=tuple(hand.joint_names),
         arm_actuators=tuple(w.arm_spec.motors), hand_actuators=tuple(hand_act), weld=names.GRASP_WELD,
         tcp_site=names.TCP_SITE, hammer_site=names.HAMMER_REF_SITE,
         hand_tau_rated=hand.tau_max.copy(), hand_ctrlrange=np.array([ctrlrange[n] for n in hand_act]),
-        face_pair=PAIR_FACE_NAIL, face_pair_solref=face_solref,
+        face_pair=PAIR_FACE_NAIL if has_face else "", face_pair_solref=face_solref,
         qpos_start=qpos_start, weld_eq_data=eq, settle_weld=settle_weld, settle_free=settle_free,
         grip_hold=float(cfg.controller.grip_hold), f_full=float(hand.f_full),
         q_hover=w.q_hover.copy(), arm_target=w.q_hover + w._hover_droop, synergy=hand.synergy,
         i_eff=i_eff, qpos_settled=d.qpos.copy(), qvel_settled=d.qvel.copy(), hammer_in_hand=w.hammer_in_hand(),
         skin=_skin_patches(w), tool_geoms=tuple(m.geom(int(g)).name for g in sorted(hand.tool_geoms)),
-        nail=_nail_parts(w), skin_pairs=skin_pairs, self_pairs=self_pairs,
+        nail=_nail_parts(w), drill=_drill_parts(w), skin_pairs=skin_pairs, self_pairs=self_pairs,
+        skin_caps=skin_caps, fixed_friction_pairs=fixed_friction,
         arm_kp=w.servo_kp.copy(), arm_kd=w.servo_kd.copy())
 
 
@@ -239,6 +260,36 @@ def _nail_parts(w) -> NailParts | None:
                      axis=np.asarray(p.axis, float).copy(), k_face=float(p.k_face),
                      face_zeta=float(w.cfg.hammer.face_solref[1]),
                      dmax=float(m.pair_solimp[m.pair(PAIR_FACE_NAIL).id, 1]))
+
+
+def _drill_parts(w) -> DrillParts | None:
+    from tactile_sim.model.plants.drill import DrillPlant
+    from tactile_sim.model.tools import BIT_TIP_SITE
+
+    p = w.plant
+    if not isinstance(p, DrillPlant):
+        return None
+    return DrillParts(tip_site=BIT_TIP_SITE, trigger_joint=names.TRIGGER_JOINT if p.trigger_qadr >= 0 else "",
+                      axis=np.asarray(p.a, float).copy(), head0=np.asarray(p.head0, float).copy())
+
+
+def _skin_friction(m: mujoco.MjModel, hand, skin_pairs, cfg: SimConfig) -> tuple[tuple[float, ...], tuple[int, ...]]:
+    """Per skin pair the hand friction's cap (builder.hand_friction_caps: a hand body whose name holds a cap's key
+    takes at most that friction) and the pairs with a friction of their own (the trigger part's face)."""
+    from tactile_sim.model.builder import hand_friction_caps
+
+    caps = hand_friction_caps(cfg) or {}
+    tool = set(int(g) for g in hand.tool_geoms)
+    trig = {m.geom(n).id for n in (names.TRIGGER_GEOM,) if n in {m.geom(i).name for i in range(m.ngeom)}}
+    out, fixed = [], []
+    for i in skin_pairs:
+        a, b = int(m.pair_geom1[i]), int(m.pair_geom2[i])
+        hand_g, tool_g = (b, a) if a in tool else (a, b)
+        if tool_g in trig:
+            fixed.append(i)
+        body = m.body(int(m.geom_bodyid[hand_g])).name
+        out.append(min([math.inf] + [c for k, c in caps.items() if k in body]))
+    return tuple(out), tuple(fixed)
 
 
 def _hand_pairs(m: mujoco.MjModel, hand) -> tuple[tuple[int, ...], tuple[int, ...]]:

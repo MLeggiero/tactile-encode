@@ -34,6 +34,7 @@ import torch
 from tactile_rl.mdp.actions import hand_drive, joint_ids
 from tactile_rl.mdp.kinematics import rotvec_from_matrix
 from tactile_rl.mdp.obs_builder import StudentObs
+from tactile_rl.plants.drill import TorchDrillPlant
 from tactile_rl.plants.nail import TorchNailPlant
 from tactile_rl.scene.entities import ENTITY
 from tactile_rl.sensors.hub import HUB
@@ -82,6 +83,8 @@ class TactileRuntime:
                                   2.0 * math.pi / 2**w.enc_bits, dev)
         self.rb_i = TorchReadback(N, len(parts.hand_joints), self.dt, every, w.fb_latency, w.i_noise, w.i_quant, dev)
         self.nail = TorchNailPlant(parts, sim, N, dev, PREFIX) if (parts.nail is not None and plant) else None
+        drill = getattr(parts, "drill", None)
+        self.drill = TorchDrillPlant(parts, sim, N, dev, PREFIX) if (drill is not None and plant) else None
         self.pre_hooks: list = []  # f(t_pre) before MuJoCo steps, after the plant (the load generator)
         self.rate = 1.0 / env.step_dt
         self.stack = stack_for(self.rate)
@@ -152,6 +155,8 @@ class TactileRuntime:
         self.rb_i.reset(env_ids)
         if self.nail is not None:
             self.nail.reset(env_ids)
+        if self.drill is not None:
+            self.drill.reset(env_ids)
         self.obs.reset(env_ids)
         self.t_onset[env_ids] = -math.inf
         self.t_touch[env_ids] = -math.inf
@@ -173,6 +178,8 @@ class TactileRuntime:
         t = self.t_pre
         if self.nail is not None:
             self.nail.pre_step(t)
+        if self.drill is not None:
+            self.drill.pre_step(t)
         for fn in self.pre_hooks:
             fn(t)
 
@@ -196,6 +203,8 @@ class TactileRuntime:
             self.t_touch = torch.where(touching, t, self.t_touch)
             self.n_blows += onset.long()
             self.f_peak = torch.maximum(self.f_peak, f)
+        if self.drill is not None:
+            self.drill.post_step(data)
         self._integrate(t)
         self.k += 1
         self._g += 1
