@@ -147,8 +147,8 @@ GR00T's closed-loop hammer drops (dataset v3 model: 95-100 % of episodes) were t
   - the best are rerun in the testbed for the taxels' view (`hand.skin_taxels()`, loaded taxels per patch and
     their spread) and then under scripted blows.
 - **Using it.**
-  - `residual_config(hammer="light" | "ycb")`: the default is "light", the GPU env's and the residual experiments'
-    hammer.
+  - `residual_config(hammer_kind="light" | "ycb")`: the default is "light", the GPU env's and the residual
+    experiments' hammer.
   - `vla.demos` and `vla_experiment` default to `--hammer ycb`; models trained on datasets v1-v3 need
     `--hammer light`.
   - The LeRobot sidecar records each task's tool and wrap (`vega_wuji.json` "tools").

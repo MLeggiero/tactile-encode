@@ -368,7 +368,7 @@ def test_the_hand_table_holds_at_each_base_grip_and_the_vla_holds_until_its_firs
 def test_the_hammer_task_holds_the_light_or_the_real_hammer():
     from tactile_sim.config import REAL_HAMMER_OVERRIDES
 
-    light, real = residual_config(), residual_config(hammer="ycb")
+    light, real = residual_config(), residual_config(hammer_kind="ycb")
     assert light.hammer.model == "primitive" and real.hammer.model == "ycb"
     assert real.hammer.head_mass == 0.45 and real.hammer.handle_mass == 0.215  # the YCB 048 hammer's 665 g
     for k, v in REAL_HAMMER_OVERRIDES["gripper"].items():  # its own wrap
@@ -376,9 +376,12 @@ def test_the_hammer_task_holds_the_light_or_the_real_hammer():
     for k in ("wrap_tcp", "thumb_close"):  # and the light hammer's unchanged
         assert getattr(light.gripper, k) != getattr(real.gripper, k)
     assert real.residual_dr.head_mass == REAL_HAMMER_OVERRIDES["residual_dr"]["head_mass"]
-    assert residual_config(task="drill", hammer="ycb") == residual_config(task="drill")  # the drill has no hammer
+    assert residual_config(task="drill", hammer_kind="ycb") == residual_config(task="drill")  # the drill has no hammer
     with pytest.raises(ValueError, match="unknown hammer"):
-        residual_config(hammer="claw")
+        residual_config(hammer_kind="claw")
+    # the kind picks the hammer; `hammer=` still overrides its section, as for every other section
+    heavy = residual_config(hammer_kind="ycb", hammer={"head_mass": 0.5})
+    assert heavy.hammer.model == "ycb" and heavy.hammer.head_mass == 0.5
 
 
 @requires_vega_wuji
@@ -398,7 +401,7 @@ def test_the_real_hammers_wrap_lays_the_palm_thumb_and_fingertip_pads_on_the_han
     from tactile_sim.assets.ycb import ensure_hammer
     from tactile_sim.model.hands.wuji_grasp import wrap_grasp
 
-    cfg = residual_config(hammer="ycb")
+    cfg = residual_config(hammer_kind="ycb")
     if ensure_hammer(cfg.hammer.grip_from_head) is None:
         pytest.skip("YCB hammer not cached")
     g = wrap_grasp(cfg, hand_xml("wuji2"))

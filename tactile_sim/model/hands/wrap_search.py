@@ -55,7 +55,7 @@ def candidate_config(p: dict):
     """The residual experiments' hammer configuration with a candidate's wrap."""
     from tactile_sim.config import residual_config
 
-    cfg = residual_config(hammer=p["hammer"])
+    cfg = residual_config(hammer_kind=p["hammer"])
     h = {**dataclasses.asdict(cfg.hammer), "grip_from_head": p["grip_from_head"]}
     return cfg.replace(hammer=h, gripper={
         "wrap_tcp": (p["wrap_tcp_x"], p["wrap_tcp_y"], p["wrap_tcp_z"]),

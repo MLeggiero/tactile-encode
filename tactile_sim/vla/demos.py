@@ -171,7 +171,7 @@ def demo_config(task: str, seed: int, fast: bool = False, hammer: str = "ycb"):
     from tactile_sim.sim.randomize import apply_residual_dr, residual_dr
     from tactile_sim.vla.camera import vla_config
 
-    cfg = vla_config(residual_config(task=task, base=fast_config() if fast else None, hammer=hammer))
+    cfg = vla_config(residual_config(task=task, base=fast_config() if fast else None, hammer_kind=hammer))
     rng = np.random.default_rng(seed)
     dr = residual_dr(cfg, rng)
     cfg = apply_residual_dr(cfg, dr)

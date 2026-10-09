@@ -1092,20 +1092,21 @@ DRILL_12V_GENERIC_PRESET: dict[str, Any] = {"free_speed": 44.5, "stall_torque": 
 
 
 def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,
-                    task: str = "hammer", hammer: str = "light", **sections: dict[str, Any]) -> SimConfig:
+                    task: str = "hammer", hammer_kind: str = "light", **sections: dict[str, Any]) -> SimConfig:
     """The residual experiments' configuration: WUJI Hand 2 with MIT-mode drives on the robot (default the Vega U),
-    the TaxelScan fast profile at its target 7.8 us per taxel, the tool for `task` ("hammer": the `hammer` of HAMMERS
-    with its nail and wrap, "light" or the real "ycb"; "drill": the pistol driver, VEGA_DRILL_OVERRIDES) with grasps
-    cached at its nominal masses, and the residual policy at `rate` Hz. `base` defaults to the 8 kHz validator physics.
+    the TaxelScan fast profile at its target 7.8 us per taxel, the tool for `task` ("hammer": the `hammer_kind` of
+    HAMMERS with its nail and wrap, "light" or the real "ycb"; "drill": the pistol driver, VEGA_DRILL_OVERRIDES) with
+    grasps cached at its nominal masses, and the residual policy at `rate` Hz. `base` defaults to the 8 kHz validator
+    physics; `sections` override the result's sections last, `hammer=` among them.
 
     The base holds the tool the way a VLA's hand targets would: a constant grip, open loop (no grip law on the
     pads, no slip feedback from the simulator's truth), so whatever reacts to touch is the residual."""
     if task not in ("hammer", "drill"):
         raise ValueError(f"unknown task {task!r} (expected 'hammer' or 'drill')")
-    if hammer not in HAMMERS:
-        raise ValueError(f"unknown hammer {hammer!r} (expected one of {sorted(HAMMERS)})")
+    if hammer_kind not in HAMMERS:
+        raise ValueError(f"unknown hammer {hammer_kind!r} (expected one of {sorted(HAMMERS)})")
     cfg = hand_config("wuji2", base or SimConfig(), robot=robot)
-    cfg = cfg.replace(**(HAMMERS[hammer] if task == "hammer" else VEGA_DRILL_OVERRIDES)).replace(
+    cfg = cfg.replace(**(HAMMERS[hammer_kind] if task == "hammer" else VEGA_DRILL_OVERRIDES)).replace(
         residual={"task": task}).replace(
         gripper={"hand_control": "mit", "grasp_mass": "nominal"},
         sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
