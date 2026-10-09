@@ -154,5 +154,9 @@ GR00T's closed-loop hammer drops (dataset v3 model: 95-100 % of episodes) were t
   - The LeRobot sidecar records each task's tool and wrap (`vega_wuji.json` "tools").
   - The nail: a blow puts ~0.32 J into it, so 20 mm takes ~11 blows at the preset's 100 N + 7 kN/m. The demos
     randomize it over 60-140 N and 4-10 kN/m (6-15 blows).
+  - The swing's windup is 0.16 m for this hammer (the Vega's 0.20 m otherwise). This grip seats the face higher above
+    the nail, and from 0.20 m it started 0.25-0.27 m away. There the strike profile (its peak at most 1.25x the
+    contact speed) has no solution at any speed, so the scripted swing fell back to 0.2 m/s taps: 5 of 16 full
+    drives fell short and 1 dropped the hammer. Within ~0.26 m it plans 0.86-0.94 m/s.
 - **Viewer**: the wraps in 3D, with per-taxel loads, contact forces, twist and blow results:
   https://claude.ai/artifact/AdVgftZiaKXreB6dmNVYZo

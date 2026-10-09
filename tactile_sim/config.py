@@ -1038,6 +1038,10 @@ REAL_HAMMER_OVERRIDES: dict[str, dict[str, Any]] = {
                 "thumb_preshape": (0.5, -0.1, 0.0, 0.0), "finger_dip": 0.6, "finger_self_contact": True},
     # a blow puts ~0.32 J into the nail: 20 mm takes ~11 blows here, 6-15 across the randomized range
     "plant": {"resistance_0": 100.0, "resistance_per_m": 7000.0},
+    # this grip seats the face ~5 cm higher above the nail than the light hammer's: from the Vega's 0.20 m windup the
+    # face then starts 0.25-0.27 m from the nail, where the swing's strike profile (its peak at most 1.25x the contact
+    # speed) has no solution at any speed and the scripted swing taps at 0.2 m/s
+    "swing": {"windup_height": 0.16},
     # the hold at 0.7 of the joints' ratings, as the light hammer's: grip_hold is in the patch bodies' summed force at
     # the keyframe (77 N at full grip in this wrap)
     "controller": {"grip_hold": 53.7},
