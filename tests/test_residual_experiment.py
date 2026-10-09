@@ -70,6 +70,38 @@ def test_later_stages_build_their_conditions():
     assert [c.name for c in stage_conditions("E4", {"t": tiny})] == ["residual:t"]
 
 
+def test_the_hold_stage_and_its_table_count_a_drop_as_a_lost_strike(tmp_path):
+    """E1hold: the base at each hold level (the policies beside it); in the table a strike a drop interrupted (no
+    window: the episode ended) is lost, the episode is not a success, and the kept strikes carry the slip."""
+    import json
+
+    from tactile_sim.experiments.residual_experiment import HOLDS, hold_table
+
+    jobs = [j for j in make_jobs("E1hold") if j.seed < 2]
+    assert {j.condition.name for j in jobs} == {f"base@hold={h:g}" for h in HOLDS}
+    cfg, _ = next(j for j in jobs if j.condition.name == "base@hold=0.3").config()
+    assert cfg.residual.hold_level == 0.3
+    nan = float("nan")
+    for j in jobs:
+        hold = j.config()[0].residual.hold_level
+        dropped = hold == 0.3 and j.seed == 0
+        strikes = [{"idx": k, "hit": True, "drop": False, "lost_w": False, "slip_trans_mm": hold, "slip_rot_deg": 2.0,
+                    "path_mm": 5.0, "path_deg": 10.0, "i2t_w": 0.1, "advance_mm": 2.0} for k in range(3)]
+        if dropped:  # interrupted in its first strike: no strike end, no window
+            strikes = [{"idx": 0, "hit": False, "drop": True, "lost_w": False, "slip_trans_mm": 0.0,
+                        "slip_rot_deg": 0.0, "path_mm": nan, "path_deg": nan, "i2t_w": nan, "advance_mm": 0.0}]
+        p = j.path(tmp_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({"job": {"condition": j.condition.name, "seed": j.seed}, "strikes": strikes,
+                                 "dropped": dropped}))
+    text, rows = hold_table("E1hold", tmp_path)
+    low = next(r for r in rows if r["hold"] == 0.3)
+    assert low["strikes"] == 4 and low["lost"] == pytest.approx(0.25)
+    assert low["episodes_dropped"] == 0.5 and low["lost_first"] == 0.5
+    assert low["net_mm"] == pytest.approx(0.3) and low["advance_mm"] == pytest.approx(2.0)  # the kept strikes
+    assert "| base | 1 | 2 / 6 | 0.0 % | 0 % | 0 % | 1.000 / 2.000 |" in text
+
+
 def test_drill_jobs_have_their_own_conditions_and_place():
     from pathlib import Path
 

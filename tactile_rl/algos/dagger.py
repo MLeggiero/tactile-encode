@@ -155,6 +155,7 @@ class DaggerTrainer:
         self.use_teacher = torch.ones(N, dtype=torch.bool, device=dev)
         self.ep_ret = torch.zeros(N, device=dev)
         self.it = 0
+        self.start_it = 0
 
     # ------------------------------------------------------------------ rollouts
     @torch.no_grad()
@@ -226,7 +227,7 @@ class DaggerTrainer:
                 torch.nn.utils.clip_grad_norm_(self.student.parameters(), cfg.max_grad_norm)
                 self.opt.step()
                 for k, v in zip(tot, (l_act, l_slip, l_reg, l_con), strict=True):
-                    tot[k] += float(v)
+                    tot[k] += float(v.detach())
                 n += 1
         return {k: v / n for k, v in tot.items()}
 
@@ -236,11 +237,20 @@ class DaggerTrainer:
                     "iter": self.it, "cfg": asdict(self.cfg), "stack": self.stack, "hidden": self.cfg.hidden,
                     "rate": self.cfg.rate, "teacher": self.teacher_ckpt}, path)
 
+    def resume(self, path: str) -> None:
+        """Continue a run from its checkpoint: the student (normalizer included) and the optimizer; the schedules go on
+        from the checkpoint's iteration (the env and the student's state start afresh)."""
+        ck = torch.load(path, map_location=self.device, weights_only=False)
+        self.student.load_state_dict(ck["student_state_dict"])
+        self.opt.load_state_dict(ck["optimizer"])
+        self.start_it = int(ck["iter"]) + 1
+
     def train(self) -> None:
         cfg = self.cfg
         obs, _ = self.env.reset()
         self.teacher.reset()
-        for it in range(cfg.iterations):
+        self.student.norm.frozen = self.start_it >= cfg.norm_until
+        for it in range(self.start_it, cfg.iterations):
             self.it = it
             if it == cfg.norm_until:
                 self.student.norm.frozen = True

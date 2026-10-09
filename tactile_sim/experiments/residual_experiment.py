@@ -440,40 +440,51 @@ def report(stage: str, root: Path = ROOT, ref: str = "base", task: str = "hammer
 
 
 def hold_table(stage: str = "E1hold", root: Path = ROOT) -> tuple[str, list[dict]]:
-    """E1hold's per condition (policy and hold level) over every strike of every seed: strikes, lost grasps (2 cm /
-    30 degrees from the swing's start; the testbed's own drop flag beside it), net slip and slip path per strike
-    (kept strikes), I^2 t from the swing's start to the strike's end (mean over the joints, as the GPU's), the
-    nail's advance; and each against the zero residual at the full hold."""
+    """E1hold's per condition (policy and hold level) over every strike of every seed: strikes; lost grasps per
+    strike (the testbed's drop, which interrupts the strike and ends the episode, or the tool 2 cm / 30 degrees from
+    its pose at the swing's start); the episodes a drop ended (the plan's episode success) and the first strikes lost
+    (the GPU evaluation's first swings); net slip and slip path per kept strike; I^2 t from the swing's start to the
+    strike's end (mean over the joints, as the GPU's); the nail's advance; and each against the zero residual at the
+    full hold."""
     rows = []
     by: dict[str, list[dict]] = {}
     for r in load_results(stage, root, "hammer"):
-        by.setdefault(r["job"]["condition"], []).extend(r["strikes"])
-    for cond, st in sorted(by.items()):
+        by.setdefault(r["job"]["condition"], []).append(r)
+
+    def share(xs) -> float:
+        return float(np.mean(xs)) if len(xs) else float("nan")
+
+    for cond, eps in sorted(by.items()):
         name, _, h = cond.rpartition("@hold=")
-        kept = [x for x in st if not x.get("lost_w", False)]
+        st = [x for r in eps for x in r["strikes"]]
+        for x in st:
+            x["lost"] = bool(x.get("lost_w", False) or x["drop"])
+        kept = [x for x in st if not x["lost"]]
 
         def mean(key, xs=kept):
             v = [x[key] for x in xs if x.get(key) is not None and np.isfinite(x[key])]
             return float(np.mean(v)) if v else float("nan")
 
-        rows.append({"policy": name, "hold": float(h), "strikes": len(st),
-                     "lost": float(np.mean([x.get("lost_w", False) for x in st])) if st else float("nan"),
-                     "drop_flag": float(np.mean([x["drop"] for x in st])) if st else float("nan"),
+        rows.append({"policy": name, "hold": float(h), "episodes": len(eps), "strikes": len(st),
+                     "lost": share([x["lost"] for x in st]),
+                     "episodes_dropped": share([bool(r["dropped"]) for r in eps]),
+                     "lost_first": share([x["lost"] for x in st if x["idx"] == 0]),
                      "net_mm": mean("slip_trans_mm"), "net_deg": mean("slip_rot_deg"), "path_mm": mean("path_mm"),
-                     "path_deg": mean("path_deg"), "i2t_w": mean("i2t_w", st), "advance_mm": mean("advance_mm"),
-                     "hit": float(np.mean([x["hit"] for x in st])) if st else float("nan")})
+                     "path_deg": mean("path_deg"), "i2t_w": mean("i2t_w"), "advance_mm": mean("advance_mm"),
+                     "hit": share([x["hit"] for x in st])})
     ref = {r["policy"]: r for r in rows if r["hold"] == 1.0}
-    lines = ["| policy | hold | strikes | lost (2 cm / 30 deg) | drop flag | net slip mm / deg | slip path mm / deg | "
-             "I2t (swing to end) | advance mm | hits | against zero at the full hold: net mm, deg, I2t |",
-             "|---" * 11 + "|"]
+    lines = ["| policy | hold | episodes / strikes | lost per strike | episodes ended by a drop | first strike lost | "
+             "net slip mm / deg | slip path mm / deg | I2t (swing to end) | advance mm | hits | against zero at the "
+             "full hold: net mm, deg, I2t |",
+             "|---" * 12 + "|"]
     z = ref.get("base")
     for r in sorted(rows, key=lambda r: (r["hold"], r["policy"])):
         cmp = (f"{r['net_mm'] / z['net_mm']:.2f}, {r['net_deg'] / z['net_deg']:.2f}, {r['i2t_w'] / z['i2t_w']:.2f}"
                if z else "")
-        lines.append(f"| {r['policy']} | {r['hold']:g} | {r['strikes']} | {100 * r['lost']:.1f} % | "
-                     f"{100 * r['drop_flag']:.1f} % | {r['net_mm']:.3f} / {r['net_deg']:.3f} | {r['path_mm']:.2f} / "
-                     f"{r['path_deg']:.2f} | {r['i2t_w']:.3f} | {r['advance_mm']:.2f} | {100 * r['hit']:.1f} % | "
-                     f"{cmp} |")
+        lines.append(f"| {r['policy']} | {r['hold']:g} | {r['episodes']} / {r['strikes']} | {100 * r['lost']:.1f} % | "
+                     f"{100 * r['episodes_dropped']:.0f} % | {100 * r['lost_first']:.0f} % | {r['net_mm']:.3f} / "
+                     f"{r['net_deg']:.3f} | {r['path_mm']:.2f} / {r['path_deg']:.2f} | {r['i2t_w']:.3f} | "
+                     f"{r['advance_mm']:.2f} | {100 * r['hit']:.1f} % | {cmp} |")
     return "\n".join(lines), rows
 
 

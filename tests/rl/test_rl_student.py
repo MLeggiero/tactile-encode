@@ -96,6 +96,29 @@ def test_student_export_parity_and_cpu_runner(tmp_path):
     assert a.shape == (60,) and np.all(np.abs(a) <= 1.0)
 
 
+def test_transfer_pairs_the_testbeds_base_with_the_gpus_zero():
+    """E6: the CPU's E1hold rows against residual_eval's strike window, each sim's effect and their ratio."""
+    from tactile_rl.bench.transfer import effects, pair, tables
+
+    def cpu(policy, hold, net, i2t):
+        return {"policy": policy, "hold": hold, "lost": 0.0, "lost_first": 0.0, "net_mm": net, "net_deg": 2 * net,
+                "path_mm": 5.0, "path_deg": 12.0, "i2t_w": i2t, "advance_mm": 2.4}
+
+    def gpu(policy, hold, net, i2t, task="hammer"):
+        return {"task": task, "policy": policy, "hold": hold, "lost_sw": 0.0, "lost_first": 0.0, "net_sw_mm": net,
+                "net_sw_deg": 2 * net, "path_sw_mm": 5.0, "path_sw_deg": 12.0, "i2t_sw": i2t, "advance_sw_mm": 2.6}
+
+    p = pair([cpu("base", 1.0, 1.0, 0.4), cpu("base", 0.5, 1.5, 0.12), cpu("residual:s1k", 0.5, 1.2, 0.2)],
+             [gpu("zero@1000", 1.0, 1.1, 0.42), gpu("zero@250", 1.0, 9.0, 9.0), gpu("zero@1000", 0.5, 4.0, 0.2),
+              gpu("s1k", 0.5, 1.32, 0.21), gpu("s1k", 0.5, 9.0, 9.0, task="loadgen")])
+    assert set(p) == {("zero", 1.0), ("zero", 0.5), ("s1k", 0.5)}
+    (e,) = effects(p)
+    assert e["net_mm_full_cpu"] == pytest.approx(1.2) and e["net_mm_full_gpu"] == pytest.approx(1.2)
+    assert e["net_mm_full_transfer"] == pytest.approx(1.0) and e["i2t_full_transfer"] == pytest.approx(1.0)
+    assert e["net_mm_same_cpu"] == pytest.approx(0.8) and e["net_mm_same_gpu"] == pytest.approx(0.33)
+    assert "| s1k | 0.5 | 0.0 / 0.0 % |" in tables(p, [e])
+
+
 @pytest.fixture(scope="module")
 def library(tmp_path_factory):
     from tactile_sim.behaviors.base_library import assemble, record_episode
@@ -131,9 +154,14 @@ def test_dagger_runs_a_few_iterations(library, tmp_path):
     tr = DaggerTrainer(cfg, str(tck), library, str(tmp_path / "run"), device="cuda:0")
     try:
         tr.train()
+        tr.cfg.iterations = 4  # the run continued from its checkpoint: one more iteration
+        tr.resume(str(tmp_path / "run" / "student_2.pt"))
+        assert tr.start_it == 3
+        tr.train()
     finally:
         tr.env.close()
-    assert tr.use_teacher.dtype == torch.bool
+    assert tr.use_teacher.dtype == torch.bool and tr.it == 3
     st = load_student(str(tmp_path / "run" / "student_2.pt"))
     assert all(torch.isfinite(p).all() for p in st.parameters())
     assert float(st.norm.count) > 0
+    assert (tmp_path / "run" / "student_3.pt").exists()

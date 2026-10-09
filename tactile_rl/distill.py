@@ -20,11 +20,14 @@ def main(argv: list[str] | None = None) -> int:  # pragma: no cover - training s
     ap.add_argument("--library", default=None)
     ap.add_argument("--log-dir", required=True)
     ap.add_argument("--device", default="cuda:0")
+    ap.add_argument("--resume", default=None, help="a student checkpoint to continue from (its iteration on)")
     for f in fields(DaggerCfg):
         ap.add_argument("--" + f.name.replace("_", "-"), type=type(f.default), default=f.default)
     a = ap.parse_args(argv)
     cfg = DaggerCfg(**{f.name: getattr(a, f.name) for f in fields(DaggerCfg)})
     trainer = DaggerTrainer(cfg, a.teacher, a.library, a.log_dir, a.device)
+    if a.resume:
+        trainer.resume(a.resume)
     try:
         trainer.train()
     finally:
