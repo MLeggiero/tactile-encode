@@ -129,28 +129,41 @@ def check_against_torch(onnx_path: str, checkpoint: str, obs_seq: np.ndarray, do
                         ) -> dict[str, float]:
     """obs_seq (T, B, D) recorded observations (dones (T, B): a new episode begins after that step); the actor in torch
     (rsl_rl's inference path: normalizer, GRU with its stored state, MLP, tanh) and the ONNX graph step by step, state
-    carried and reset alike. Returns the largest absolute differences of the action and of the state."""
+    carried and reset alike. Returns the largest absolute differences of the action and of the state, each runtime
+    carrying its own state (free running: float32 differences accumulate through the recurrence), and per step (the
+    graph fed torch's state: the graph's own error)."""
     import onnxruntime as ort
     from tensordict import TensorDict
 
     actor = load_actor(checkpoint)
     sess = ort.InferenceSession(onnx_path, providers=["CPUExecutionProvider"])
     T, B, _ = obs_seq.shape
-    h = np.zeros((B, actor.rnn.rnn.hidden_size), dtype=np.float32)
+    H = actor.rnn.rnn.hidden_size
+    h = np.zeros((B, H), dtype=np.float32)
     actor.reset()
-    err_a, err_h = 0.0, 0.0
+    err = {"max_abs_action": 0.0, "max_abs_state": 0.0, "step_max_abs_action": 0.0, "step_max_abs_state": 0.0}
+
+    def upd(k, x, y):
+        err[k] = max(err[k], float(np.abs(x - y).max()))
+
     with torch.inference_mode():
         for t in range(T):
+            hs = actor.get_hidden_state()
+            h_prev = np.zeros((B, H), dtype=np.float32) if hs is None else hs[0].numpy().copy()
             o = torch.as_tensor(obs_seq[t], dtype=torch.float32)
-            a_t = torch.tanh(actor(TensorDict({"teacher": o}, batch_size=[B])))
-            h_t = actor.get_hidden_state()[0]
-            a_o, h = sess.run(["action", "h_out"], {"obs": obs_seq[t].astype(np.float32), "h_in": h})
-            err_a = max(err_a, float(np.abs(a_o - a_t.numpy()).max()))
-            err_h = max(err_h, float(np.abs(h - h_t.numpy()).max()))
+            a_t = torch.tanh(actor(TensorDict({"teacher": o}, batch_size=[B]))).numpy()
+            h_t = actor.get_hidden_state()[0].numpy()
+            x = obs_seq[t].astype(np.float32)
+            a_o, h = sess.run(["action", "h_out"], {"obs": x, "h_in": h})
+            a_1, h_1 = sess.run(["action", "h_out"], {"obs": x, "h_in": h_prev})
+            upd("max_abs_action", a_o, a_t)
+            upd("max_abs_state", h, h_t)
+            upd("step_max_abs_action", a_1, a_t)
+            upd("step_max_abs_state", h_1, h_t)
             if dones is not None and dones[t].any():
                 actor.reset(torch.as_tensor(dones[t]))
                 h[dones[t].astype(bool)] = 0.0
-    return {"steps": T, "batch": B, "inputs": T * B, "max_abs_action": err_a, "max_abs_state": err_h}
+    return {"steps": T, "batch": B, "inputs": T * B, **err}
 
 
 def record_inputs(checkpoint: str, rate: float, num_envs: int = 64, steps: int = 160, library: str | None = None,

@@ -61,6 +61,7 @@ def test_teacher_export_matches_torch_and_runs_on_the_cpu_runner(tmp_path):
     dones[20, 1] = dones[40, 5] = dones[41, 0] = True
     err = check_against_torch(str(out), ckpt, obs, dones)
     assert err["max_abs_action"] < 1e-5 and err["max_abs_state"] < 1e-5
+    assert err["step_max_abs_action"] < 1e-5 and err["step_max_abs_state"] < 1e-5
     # the CPU runner (tactile_sim.control.policy_io) loads it and carries the state
     pol = OnnxPolicy(out)
     a1 = pol(obs[0, 0])
