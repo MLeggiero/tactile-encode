@@ -86,6 +86,8 @@ def tables(pairs: dict[tuple[str, float], dict], eff: list[dict]) -> str:
     out = ["| policy | hold | lost per strike | first strikes lost | net slip mm | net slip deg | slip path mm | "
            "slip path deg | I2t (swing to end) | advance mm |", "|---" * 10 + "|"]
     for (name, hold), p in sorted(pairs.items(), key=lambda kv: (kv[0][1], kv[0][0] != "zero", kv[0][0])):
+        if "cpu" not in p or "gpu" not in p:
+            continue  # a policy one sim did not run (a teacher has no CPU runner)
         out.append(f"| {name} | {hold:g} | {cell(p, 'lost', '.1f', 100)} % | {cell(p, 'lost_first', '.0f', 100)} % | "
                    f"{cell(p, 'net_mm', '.3f')} | {cell(p, 'net_deg', '.3f')} | {cell(p, 'path_mm', '.2f')} | "
                    f"{cell(p, 'path_deg', '.2f')} | {cell(p, 'i2t', '.3f')} | {cell(p, 'advance_mm', '.2f')} |")
