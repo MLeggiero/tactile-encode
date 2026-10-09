@@ -492,6 +492,42 @@ def hold_table(stage: str = "E1hold", root: Path = ROOT) -> tuple[str, list[dict
     return "\n".join(lines), rows
 
 
+HOLD_PAIRED = (("slip_trans_mm", "net slip mm"), ("slip_rot_deg", "net slip deg"), ("path_deg", "slip path deg"),
+               ("i2t_w", "I2t"), ("advance_mm", "advance mm"))
+
+
+def hold_pairs(stage: str = "E1hold", root: Path = ROOT, ref_hold: float = 1.0) -> str:
+    """E1hold paired by seed (each seed's randomization is shared across conditions): each condition against the
+    zero residual at `ref_hold`. A seed contributes the mean of its kept strikes; the cell is the mean difference
+    with its 95 % bootstrap interval (residual_experiment.paired_bootstrap), over the seeds where both are finite."""
+    per: dict[tuple[str, float], dict[int, dict[str, float]]] = {}
+    for r in load_results(stage, root, "hammer"):
+        name, _, h = r["job"]["condition"].rpartition("@hold=")
+        kept = [x for x in r["strikes"] if not (x.get("lost_w", False) or x["drop"])]
+        m = {}
+        for k, _ in HOLD_PAIRED:
+            v = [x[k] for x in kept if x.get(k) is not None and np.isfinite(x[k])]
+            m[k] = float(np.mean(v)) if v else float("nan")
+        per.setdefault((name, float(h)), {})[r["job"]["seed"]] = m
+    ref = per.get(("base", ref_hold), {})
+    lines = ["| policy | hold | seeds | " + " | ".join(f"{label}: difference [95 % CI]" for _, label in HOLD_PAIRED)
+             + " |", "|---" * (len(HOLD_PAIRED) + 3) + "|"]
+    for (name, h), seeds in sorted(per.items(), key=lambda kv: (kv[0][1], kv[0][0])):
+        if name == "base" and h == ref_hold:
+            continue
+        cells, n = [], 0
+        for k, _ in HOLD_PAIRED:
+            common = [s for s in sorted(set(seeds) & set(ref)) if np.isfinite(seeds[s][k]) and np.isfinite(ref[s][k])]
+            n = max(n, len(common))
+            if len(common) < 2:
+                cells.append("")
+                continue
+            d, lo, hi = paired_bootstrap([ref[s][k] for s in common], [seeds[s][k] for s in common])
+            cells.append(f"{d:+.3g} [{lo:+.3g}, {hi:+.3g}]")
+        lines.append(f"| {name} | {h:g} | {n} | " + " | ".join(cells) + " |")
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=("list", "run", "report"))
@@ -512,6 +548,8 @@ def main(argv: list[str] | None = None) -> int:
         run_all(jobs, root, a.workers)
     elif a.stage in ("E1hold", "hold_smoke"):
         print(hold_table(a.stage, root)[0])
+        print("\npaired by seed against the zero residual at the full hold (kept strikes)\n")
+        print(hold_pairs(a.stage, root))
     else:
         print(report(a.stage, root, task=a.task))
     return 0

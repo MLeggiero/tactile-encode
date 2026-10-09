@@ -75,7 +75,7 @@ def test_the_hold_stage_and_its_table_count_a_drop_as_a_lost_strike(tmp_path):
     window: the episode ended) is lost, the episode is not a success, and the kept strikes carry the slip."""
     import json
 
-    from tactile_sim.experiments.residual_experiment import HOLDS, hold_table
+    from tactile_sim.experiments.residual_experiment import HOLDS, hold_pairs, hold_table
 
     jobs = [j for j in make_jobs("E1hold") if j.seed < 2]
     assert {j.condition.name for j in jobs} == {f"base@hold={h:g}" for h in HOLDS}
@@ -101,6 +101,8 @@ def test_the_hold_stage_and_its_table_count_a_drop_as_a_lost_strike(tmp_path):
     assert low["net_mm"] == pytest.approx(0.3) and low["advance_mm"] == pytest.approx(2.0)  # the kept strikes
     assert "| base | 1 | 2 / 6 | 0.0 % | 0 % | 0 % | 1.000 / 2.000 |" in text
     assert "| 1.00, 1.00, 1.00 | 0.30, 1.00, 1.00 |" in text  # the zero at 0.3: against itself, against the full hold
+    pairs = hold_pairs("E1hold", tmp_path)  # per seed against the full hold: seed 0 at 0.3 kept no strike
+    assert "| base | 0.5 | 2 | -0.5 [-0.5, -0.5] |" in pairs and "| base | 0.3 | 1 |" in pairs
 
 
 def test_drill_jobs_have_their_own_conditions_and_place():
