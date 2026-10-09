@@ -38,7 +38,7 @@ GPU_KEYS = dict(zip(KEYS, ("lost_sw", "lost_first", "net_sw_mm", "net_sw_deg", "
 
 def pair(cpu_rows: list[dict], gpu_rows: list[dict], zero: str = "zero@1000") -> dict[tuple[str, float], dict]:
     """(policy, hold) -> {"cpu": metrics, "gpu": metrics} in KEYS. The CPU's base is the GPU's `zero`; a CPU policy
-    "residual:NAME" is the GPU's NAME."""
+    "residual:NAME" is the GPU's NAME@RATE."""
     out: dict[tuple[str, float], dict] = {}
     for r in cpu_rows:
         name = "zero" if r["policy"] == "base" else r["policy"].removeprefix("residual:")
@@ -46,9 +46,10 @@ def pair(cpu_rows: list[dict], gpu_rows: list[dict], zero: str = "zero@1000") ->
     for r in gpu_rows:
         if r.get("task") != "hammer" or "net_sw_mm" not in r:
             continue
-        name = "zero" if r["policy"] == zero else r["policy"]
-        if name.startswith("zero@"):
+        pol = r["policy"]  # residual_eval's NAME@RATE
+        if pol.startswith("zero@") and pol != zero:
             continue  # another rate's zero residual
+        name = "zero" if pol == zero else pol.rsplit("@", 1)[0]
         out.setdefault((name, float(r["hold"])), {})["gpu"] = {k: r.get(v, math.nan) for k, v in GPU_KEYS.items()}
     return out
 

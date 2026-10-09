@@ -110,7 +110,7 @@ def test_transfer_pairs_the_testbeds_base_with_the_gpus_zero():
 
     p = pair([cpu("base", 1.0, 1.0, 0.4), cpu("base", 0.5, 1.5, 0.12), cpu("residual:s1k", 0.5, 1.2, 0.2)],
              [gpu("zero@1000", 1.0, 1.1, 0.42), gpu("zero@250", 1.0, 9.0, 9.0), gpu("zero@1000", 0.5, 4.0, 0.2),
-              gpu("s1k", 0.5, 1.32, 0.21), gpu("s1k", 0.5, 9.0, 9.0, task="loadgen")])
+              gpu("s1k@1000", 0.5, 1.32, 0.21), gpu("s1k@1000", 0.5, 9.0, 9.0, task="loadgen")])
     assert set(p) == {("zero", 1.0), ("zero", 0.5), ("s1k", 0.5)}
     (e,) = effects(p)
     assert e["net_mm_full_cpu"] == pytest.approx(1.2) and e["net_mm_full_gpu"] == pytest.approx(1.2)
