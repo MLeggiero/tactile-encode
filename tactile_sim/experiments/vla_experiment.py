@@ -95,7 +95,8 @@ def run_job(job: Job, root: str) -> dict:
     residual = make_policy(job.condition.policy)
     r = run_vla_episode(cfg, make_vla_policy(job.server), job.seed, latency=job.latency, exec_steps=job.exec_steps,
                         max_time=MAX_TIME[job.task], residual_policy=residual, blend=job.blend,
-                        smooth=job.smooth, table=dataset_table(job.hand_tables, job.task))
+                        smooth=job.smooth, table=dataset_table(job.hand_tables, job.task),
+                        sensor_noise_scale=draw["dr"]["_runtime"]["sensor_noise_scale"])
     chunks = r.pop("chunks")
     payload = {"job": {"task": job.task, "condition": job.condition.name, "policy": job.condition.policy,
                        "seed": job.seed, "server": job.server, "latency": job.latency, "exec_steps": job.exec_steps,

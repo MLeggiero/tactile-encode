@@ -348,7 +348,8 @@ def strike_metrics(truth: dict, pre: float = 0.02, post: float = 0.1) -> list[di
 
 def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: int = 8, max_time: float = 30.0,
                     residual_policy=None, visual_seed: int | None = None, after_done: float = 1.0,
-                    blend: float = 0.0, smooth: int = 0, table: HandTable | None = None) -> dict:
+                    blend: float = 0.0, smooth: int = 0, table: HandTable | None = None,
+                    sensor_noise_scale: float | None = None) -> dict:
     """One episode with the VLA in charge, on the configured task (ResidualCfg.task): until the nail is home or the
     screw seated (then `after_done` more seconds, for the VLA to let go and back out), the tool drops, or max_time.
     The residual runs `residual_policy` (default: the configured one, zero unless set)."""
@@ -368,6 +369,8 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
         ep = Episode(cfg, seed=seed)
         tb = ep.tb
         step_cb = ep._step_cb  # noqa: SLF001 - the episode's truth recorder, without its scripted swing
+    if sensor_noise_scale is not None:  # the seed's draw, as the demos ran it (demo_config's dr["_runtime"])
+        tb.sensors.set_noise_scale(sensor_noise_scale)
     if residual_policy is not None:
         tb.residual.check_policy(residual_policy)
         tb.residual.policy = residual_policy
