@@ -15,7 +15,9 @@ episode (the hand's mean (i / i_rated)^2 integrated), the RMS current, the peak 
 largest |i| / i_rated over the joints, every substep; the reset state's opening transient excluded) and the share of
 joint-time at the current limit (|i| >= 0.99 rated). Hammer runs add hits (the face met the nail, any strike) and the
 nail's advance per strike.
-Slip and current are means over the kept episodes.
+Slip and current are means over the kept episodes. Hammer runs also score each strike as the CPU testbed's
+experiment does (tactile_sim.experiments.residual_experiment, E1hold): from the swing's start to the entry's end,
+net slip, slip path, I^2 t and a lost grasp (2 cm or 30 degrees from the pose at the swing's start).
 
     python -m tactile_rl.bench.residual_eval --library LIB --policies zero@1000,zero@250,t1k=CKPT@1000,t250=CKPT@250 \
         [--holds 0.3,0.5,0.8,1.0] [--tasks hammer,loadgen] [--envs 1024] [--out eval.json]
@@ -188,6 +190,15 @@ def run(env, policy, task: str, hold: float, seed: int = 0) -> dict:
             net = torch.zeros(N, 2, device=dev)
             adv = torch.zeros(N, device=dev)
             blows = torch.zeros(N, dtype=torch.long, device=dev)
+            # from the swing's start (the CPU testbed's strike window): its pose, then slip, path, I^2 t, a lost grasp
+            sw_on = torch.zeros(N, dtype=torch.bool, device=dev)
+            hih_sw = torch.zeros(N, 6, device=dev)
+            net_sw = torch.zeros(N, 2, device=dev)
+            path_sw = torch.zeros(N, 2, device=dev)
+            i2t_sw = torch.zeros(N, device=dev)
+            lost_sw = torch.zeros(N, dtype=torch.bool, device=dev)
+            if ham:
+                t_sw = torch.nan_to_num(cmd.ham.lib.t_swing[cmd.ham.entry], nan=0.0)
             depth0 = rt.nail.depth().double().clone() if rt.nail is not None else None
             t_end = LOADGEN_S - 0.01
             zero = torch.zeros(N, env.action_manager.total_action_dim, device=dev)
@@ -208,8 +219,20 @@ def run(env, policy, task: str, hold: float, seed: int = 0) -> dict:
                 alive &= ~gone
                 going &= ~gone
                 if ham:
+                    hih = rt.hammer_in_hand()
+                    on = going & (cmd.ham.u(rt.t) >= t_sw)
+                    hih_sw = torch.where((on & ~sw_on)[:, None], hih, hih_sw)
+                    path_sw += torch.where((on & sw_on)[:, None], torch.stack([rt.acc["slip_mm"], rt.acc["slip_deg"]],
+                                                                               1), torch.zeros_like(path_sw))
+                    i2t_sw += torch.where(on & sw_on, rt.acc["i2"], torch.zeros_like(i2t_sw))
+                    sw_on |= on
+                    dsw = hih - hih_sw
+                    nsw = torch.stack([torch.linalg.norm(dsw[:, :3], dim=1) * 1e3,
+                                       torch.rad2deg(torch.linalg.norm(dsw[:, 3:], dim=1))], 1)
+                    lost_sw |= sw_on & ((nsw[:, 0] > 20.0) | (nsw[:, 1] > 30.0))
                     fin = going & cmd.ham.done()
-                    d = rt.hammer_in_hand() - cmd.ham.ref_rel
+                    net_sw = torch.where(fin[:, None], nsw, net_sw)
+                    d = hih - cmd.ham.ref_rel
                     nn_ = torch.stack([torch.linalg.norm(d[:, :3], dim=1) * 1e3,
                                        torch.rad2deg(torch.linalg.norm(d[:, 3:], dim=1))], 1)
                     net = torch.where(fin[:, None], nn_, net)
@@ -232,9 +255,18 @@ def run(env, policy, task: str, hold: float, seed: int = 0) -> dict:
              "i_rms": km(torch.sqrt(i2t / t_ep.clamp(min=1e-6))), "duration_s": km(t_ep), "steps": k}
         if ham:
             unfinished = int((going & alive).sum())
+            ksw = kept & ~lost_sw
+
+            def kms(x):
+                return float(x[ksw].mean()) if bool(ksw.any()) else float("nan")
+
             r.update({"strikes": N, "unfinished": unfinished, "net_mm": km(net[:, 0]), "net_deg": km(net[:, 1]),
                       "path_mm": km(path[:, 0]), "path_deg": km(path[:, 1]), "advance_mm": km(adv),
-                      "hit": float((blows > 0).float().mean())})
+                      "hit": float((blows > 0).float().mean()),
+                      # the swing's window (swing start to the entry's end), as the CPU testbed scores a strike
+                      "lost_sw": float((lost_sw | lost).float().mean()), "net_sw_mm": kms(net_sw[:, 0]),
+                      "net_sw_deg": kms(net_sw[:, 1]), "path_sw_mm": kms(path_sw[:, 0]),
+                      "path_sw_deg": kms(path_sw[:, 1]), "i2t_sw": kms(i2t_sw), "advance_sw_mm": kms(adv)})
         else:
             e = cmd.lg.ep  # events, within target, net mm, net deg, path mm, path deg (the kept episodes' intact)
             ev = float(e[kept, 0].sum())

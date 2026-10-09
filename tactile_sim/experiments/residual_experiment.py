@@ -3,6 +3,7 @@
     python -m tactile_sim.experiments.residual_experiment list --stage E1
     python -m tactile_sim.experiments.residual_experiment run --stage E1 --workers 14 [--policy NAME=PATH ...]
     python -m tactile_sim.experiments.residual_experiment report --stage E1
+    python -m tactile_sim.experiments.residual_experiment run --stage E1hold --policy s1k=student_1k.onnx  # holds
 
 Every episode is the Vega U + WUJI under residual_config: MIT drives, the TaxelScan fast profile, a scripted base,
 and the residual loop. --task hammer (default): the light hammer, the scripted swing as the base (SwingBase:
@@ -37,6 +38,7 @@ from tactile_sim.config import SimConfig, fast_config, residual_config
 ROOT = Path("runs/residual")
 # seeds x strikes per episode; "fast" runs the 4 kHz physics (smoke tests only)
 STAGES = {"smoke": {"seeds": 2, "strikes": 3, "fast": True}, "E1": {"seeds": 20, "strikes": 10, "fast": False},
+          "E1hold": {"seeds": 20, "strikes": 10, "fast": False}, "hold_smoke": {"seeds": 1, "strikes": 2, "fast": True},
           "E3": {"seeds": 20, "strikes": 10, "fast": False}, "E4": {"seeds": 20, "strikes": 10, "fast": False},
           "E5": {"seeds": 10, "strikes": 10, "fast": False}, "E6": {"seeds": 20, "strikes": 10, "fast": False}}
 # E4: the observation blocks each sensing variant cannot see
@@ -64,6 +66,10 @@ HELD_OUT_DRILL = {"heavy_battery": {"drill": {"pistol_battery_mass": 0.75}},
                                                 "gear_ratio": 50.0}},
                   "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
 TASKS = ("hammer", "drill")
+# E1hold: the base at these fractions of its grip (the GPU curriculum's hold levels; ResidualCfg.hold_level)
+HOLDS = (0.3, 0.5, 0.8, 1.0)
+LOST_MM, LOST_DEG = 20.0, 30.0  # the GPU env's lost grasp (terminations.tool_left_hand), from the swing's start
+SLIP_LPF_HZ = 30.0  # the slip path's low-pass, as the GPU runtime's
 DRILL_T_MAX = 10.0  # s per screw
 
 
@@ -130,6 +136,10 @@ def stage_conditions(stage: str, policies: dict[str, str] | None = None, task: s
     and each policy under each held-out physics."""
     if stage in ("smoke", "E1", "E3"):
         return e1_conditions(policies, task)
+    if stage in ("E1hold", "hold_smoke"):  # the base and each policy with the base at each hold level
+        conds = [c for c in e1_conditions(policies, task) if c.name == "base" or c.name.startswith("residual:")]
+        return [Condition(f"{c.name}@hold={h:g}", _merge(c.overrides, {"residual": {"hold_level": h}}), c.policy)
+                for h in HOLDS for c in conds]
     pol = e1_conditions(policies, task)
     base = pol[0]
     pol = [c for c in pol if c.name.startswith("residual:")]
@@ -189,12 +199,30 @@ class Recorder:
         self.t, self.off = [], []
         self.i2t = 0.0
         self.i_peak = 0.0
+        # per millisecond: time, the tool's pose in the hand, the 30 Hz low-passed pose's step (mm, deg), the drives'
+        # mean (i / i_rated)^2 (the GPU runtime's I^2 t integrand)
+        self.ms_t, self.ms_pose, self.ms_path, self.ms_i2 = [], [], [], []
+        self._lp = None
+        self._a = 1.0 - math.exp(-2.0 * math.pi * SLIP_LPF_HZ * 1e-3)
 
     def __call__(self, t: float) -> None:
         d = self.hand.drive
         r = d.i / d.i_rated
         self.i2t += float(np.sum(r * r)) * 1e-3
         self.i_peak = max(self.i_peak, float(np.max(np.abs(r))))
+        p, rv = self.tb.world.hammer_in_hand()
+        x = np.concatenate([p, rv])
+        if self._lp is None:
+            self._lp, step = x.copy(), (0.0, 0.0)
+        else:
+            lp = self._lp + self._a * (x - self._lp)
+            dx = lp - self._lp
+            step = (1e3 * float(np.linalg.norm(dx[:3])), math.degrees(float(np.linalg.norm(dx[3:]))))
+            self._lp = lp
+        self.ms_t.append(t)
+        self.ms_pose.append(x)
+        self.ms_path.append(step)
+        self.ms_i2.append(float(np.mean(r * r)) * 1e-3)
         res = self.tb.residual
         if res is not None:
             sp, jp = res.spec, res.jp
@@ -217,12 +245,29 @@ class Recorder:
         ks = np.flatnonzero(moved & (t[k0:] <= t_contact + window))
         return float(1e3 * (t[k0 + ks[0]] - t_contact)) if len(ks) else float("nan")
 
+    def window(self, t0: float, t1: float) -> dict:
+        """From the swing's start t0 to the strike's end t1: the slip path (mm, deg), I^2 t (mean over the joints),
+        and whether the tool moved 2 cm or 30 degrees from its pose at t0 (the GPU env's lost grasp)."""
+        t = np.asarray(self.ms_t)
+        m = (t > t0) & (t <= t1)
+        if not m.any() or not np.isfinite(t1):
+            return {"path_mm": float("nan"), "path_deg": float("nan"), "i2t_w": float("nan"), "lost_w": False}
+        path = np.asarray(self.ms_path)[m]
+        pose = np.asarray(self.ms_pose)
+        k0 = max(int(np.searchsorted(t, t0)) - 1, 0)
+        dp = np.linalg.norm(pose[m, :3] - pose[k0, :3], axis=1) * 1e3
+        dr = np.degrees(np.linalg.norm(pose[m, 3:] - pose[k0, 3:], axis=1))
+        return {"path_mm": float(path[:, 0].sum()), "path_deg": float(path[:, 1].sum()),
+                "i2t_w": float(np.asarray(self.ms_i2)[m].sum()),
+                "lost_w": bool((dp > LOST_MM).any() or (dr > LOST_DEG).any())}
 
-def _strike_row(r, rec: Recorder) -> dict:
+
+def _strike_row(r, rec: Recorder, t_end: float = float("nan")) -> dict:
     return {"idx": r.idx, "hit": bool(r.hit), "drop": bool(r.drop), "slip_rot_deg": math.degrees(r.slip_rot),
             "slip_trans_mm": 1e3 * r.slip_trans, "advance_mm": 1e3 * r.depth_inc, "peak_force": r.peak_force_truth,
             "pulse_width_ms": 1e3 * r.pulse_width, "v_face": r.v_strike_actual, "t_contact": r.t_contact_truth,
-            "reaction_ms": rec.reaction_ms(r.t_contact_truth)}
+            "reaction_ms": rec.reaction_ms(r.t_contact_truth), "t_swing_start": r.t_swing_start, "t_end": t_end,
+            **rec.window(r.t_swing_start, t_end)}
 
 
 def _hammer_episode(cfg: SimConfig, job: Job):
@@ -235,7 +280,9 @@ def _hammer_episode(cfg: SimConfig, job: Job):
 
     def run(rec: Recorder) -> dict:
         res = ep.run(STAGES[job.stage]["strikes"])
-        return {"summary": res.summary, "strikes": [_strike_row(r, rec) for r in res.strikes]}
+        ends = {name: t for name, t in ep.events if name.startswith("strike_end_")}
+        return {"summary": res.summary,
+                "strikes": [_strike_row(r, rec, ends.get(f"strike_end_{r.idx}", float("nan"))) for r in res.strikes]}
 
     return ep.tb, run
 
@@ -392,6 +439,44 @@ def report(stage: str, root: Path = ROOT, ref: str = "base", task: str = "hammer
     return "\n".join(lines)
 
 
+def hold_table(stage: str = "E1hold", root: Path = ROOT) -> tuple[str, list[dict]]:
+    """E1hold's per condition (policy and hold level) over every strike of every seed: strikes, lost grasps (2 cm /
+    30 degrees from the swing's start; the testbed's own drop flag beside it), net slip and slip path per strike
+    (kept strikes), I^2 t from the swing's start to the strike's end (mean over the joints, as the GPU's), the
+    nail's advance; and each against the zero residual at the full hold."""
+    rows = []
+    by: dict[str, list[dict]] = {}
+    for r in load_results(stage, root, "hammer"):
+        by.setdefault(r["job"]["condition"], []).extend(r["strikes"])
+    for cond, st in sorted(by.items()):
+        name, _, h = cond.rpartition("@hold=")
+        kept = [x for x in st if not x.get("lost_w", False)]
+
+        def mean(key, xs=kept):
+            v = [x[key] for x in xs if x.get(key) is not None and np.isfinite(x[key])]
+            return float(np.mean(v)) if v else float("nan")
+
+        rows.append({"policy": name, "hold": float(h), "strikes": len(st),
+                     "lost": float(np.mean([x.get("lost_w", False) for x in st])) if st else float("nan"),
+                     "drop_flag": float(np.mean([x["drop"] for x in st])) if st else float("nan"),
+                     "net_mm": mean("slip_trans_mm"), "net_deg": mean("slip_rot_deg"), "path_mm": mean("path_mm"),
+                     "path_deg": mean("path_deg"), "i2t_w": mean("i2t_w", st), "advance_mm": mean("advance_mm"),
+                     "hit": float(np.mean([x["hit"] for x in st])) if st else float("nan")})
+    ref = {r["policy"]: r for r in rows if r["hold"] == 1.0}
+    lines = ["| policy | hold | strikes | lost (2 cm / 30 deg) | drop flag | net slip mm / deg | slip path mm / deg | "
+             "I2t (swing to end) | advance mm | hits | against zero at the full hold: net mm, deg, I2t |",
+             "|---" * 11 + "|"]
+    z = ref.get("base")
+    for r in sorted(rows, key=lambda r: (r["hold"], r["policy"])):
+        cmp = (f"{r['net_mm'] / z['net_mm']:.2f}, {r['net_deg'] / z['net_deg']:.2f}, {r['i2t_w'] / z['i2t_w']:.2f}"
+               if z else "")
+        lines.append(f"| {r['policy']} | {r['hold']:g} | {r['strikes']} | {100 * r['lost']:.1f} % | "
+                     f"{100 * r['drop_flag']:.1f} % | {r['net_mm']:.3f} / {r['net_deg']:.3f} | {r['path_mm']:.2f} / "
+                     f"{r['path_deg']:.2f} | {r['i2t_w']:.3f} | {r['advance_mm']:.2f} | {100 * r['hit']:.1f} % | "
+                     f"{cmp} |")
+    return "\n".join(lines), rows
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("cmd", choices=("list", "run", "report"))
@@ -410,6 +495,8 @@ def main(argv: list[str] | None = None) -> int:
             print(j.condition.name, j.seed, "done" if j.path(root).exists() else "")
     elif a.cmd == "run":
         run_all(jobs, root, a.workers)
+    elif a.stage in ("E1hold", "hold_smoke"):
+        print(hold_table(a.stage, root)[0])
     else:
         print(report(a.stage, root, task=a.task))
     return 0

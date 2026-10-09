@@ -660,6 +660,9 @@ class ResidualCfg:
     trigger_tau: tuple[float, float] = (-0.1, 0.05)  # Nm, along the closing direction
     # observation blocks (obs_spec.OBS_BLOCKS names) seen as zeros: the sensing ablation's students
     mask_blocks: tuple[str, ...] = ()
+    # the base's grip as a fraction of its own: the swing base sends the synergy at hold_level x the swing's scalar
+    # (the GPU curriculum's base hold level; 1 is the base as scripted)
+    hold_level: float = 1.0
 
 
 @dataclass
