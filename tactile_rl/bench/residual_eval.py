@@ -4,8 +4,9 @@ Each policy plays in Tactile-Residual at its own rate under C3's settings (the f
 sometimes masked forecast, the load generator's full band), the base fixed at one hold level per run, one episode per
 env and no resets: every hammer env plays one library swing (entries in order, perturbed) to its end, every
 load-generator env 3 s of loads. Every run starts from the same seed, so the policies meet the same entries, draws and
-schedules. A trained policy plays its mean action; "grip" is the strongest constant residual toward closing (the
-authority bound: every joint's offset, stiffness and feedforward at their limits).
+schedules. A trained policy plays its mean action (a teacher reads the privileged group, a DAgger student what the
+robot senses); "grip" is the strongest constant residual toward closing (the authority bound: every joint's offset,
+stiffness and feedforward at their limits).
 
 Per run: lost grasps (the tool 2 cm or 30 degrees from its reference, the training's drop), net slip (hammer: the
 tool's pose in the hand at the entry's end against its start, per strike; load generator: per event, and the share
@@ -63,6 +64,54 @@ class ConstantGrip:
         return self.a
 
 
+class TeacherPolicy:
+    """A teacher's actor (rsl_rl RNNModel) on the teacher group, its mean action."""
+
+    def __init__(self, actor):
+        self.actor = actor
+
+    def reset(self) -> None:
+        self.actor.reset()
+
+    def __call__(self, obs) -> torch.Tensor:
+        from tensordict import TensorDict
+
+        o = obs["teacher"]
+        return self.actor(TensorDict({"teacher": o}, batch_size=[o.shape[0]]))
+
+
+class StudentPolicy:
+    """A DAgger student (tactile_rl.algos.dagger) on the student group: what the robot senses."""
+
+    def __init__(self, net):
+        self.net = net
+        self.h = None
+
+    def reset(self) -> None:
+        self.h = None
+
+    def __call__(self, obs) -> torch.Tensor:
+        o = obs["student"]
+        if self.h is None:
+            self.h = self.net.initial_state(o.shape[0], o.device)
+        mu, self.h, _ = self.net.step(o, self.h)
+        return mu
+
+
+def load_policy(spec: dict, env, device: str):
+    """None (zero), ConstantGrip, a teacher or a student, from parse_policies' entry."""
+    if spec["checkpoint"] is None:
+        return ConstantGrip(env) if spec["name"].startswith("grip@") else None
+    ck = torch.load(spec["checkpoint"], map_location="cpu", weights_only=False)
+    if "student_state_dict" in ck:
+        from tactile_rl.algos.dagger import load_student
+
+        return StudentPolicy(load_student(spec["checkpoint"], device=device))
+    from tactile_rl.export.onnx_export import load_actor
+
+    return TeacherPolicy(load_actor(spec["checkpoint"], device=device).to(device))
+
+
 def _horizon(library: str) -> float:
     """The longest entry as perturbed (the slowest time warp, the longest start delay), s."""
     from tactile_rl.mdp.commands import BaseTrajectoryCommandCfg
@@ -75,11 +124,10 @@ def _horizon(library: str) -> float:
 def make_env(rate: float, library: str, num_envs: int, episode_s: float, device: str = "cuda:0"):
     from mjlab.envs import ManagerBasedRlEnv
 
-    from tactile_rl.tasks.common import TEACHER_GROUPS
     from tactile_rl.tasks.residual import residual_env_cfg
 
     cfg = residual_env_cfg(rate, library=library, num_envs=num_envs, start_stage=3, max_stage=3,
-                           obs_groups=TEACHER_GROUPS, episode_s=episode_s)
+                           obs_groups=("student", "teacher"), episode_s=episode_s)
     cfg.terminations = {k: v for k, v in cfg.terminations.items() if k == "time_out"}  # one episode, no resets
     cfg.curriculum = {}  # C3's settings are set here
     cfg.metrics = {}  # (the training's read the terminations)
@@ -89,10 +137,8 @@ def make_env(rate: float, library: str, num_envs: int, episode_s: float, device:
 
 
 def run(env, policy, task: str, hold: float, seed: int = 0) -> dict:
-    """One episode per env of `task` ("hammer" or "loadgen") with the base at `hold`; `policy`: None (zero) or an
-    actor (rsl_rl RNNModel)."""
-    from tensordict import TensorDict
-
+    """One episode per env of `task` ("hammer" or "loadgen") with the base at `hold`; `policy`: None (zero) or one of
+    load_policy's (pre-tanh actions from the env's observation groups)."""
     from tactile_rl.mdp.curriculum import STAGES
     from tactile_rl.mdp.randomization import tactile_dr
     from tactile_rl.mdp.terminations import tool_left_hand
@@ -149,7 +195,7 @@ def run(env, policy, task: str, hold: float, seed: int = 0) -> dict:
             max_steps = int(math.ceil(env.max_episode_length_s / env.step_dt)) - 2
             while k < max_steps and bool(going.any()):
                 active.copy_(going)
-                a = zero if policy is None else policy(TensorDict({"teacher": obs["teacher"]}, batch_size=[N]))
+                a = zero if policy is None else policy(obs)
                 obs, *_ = env.step(a)
                 k += 1
                 i2t += torch.where(going, rt.acc["i2"], torch.zeros_like(i2t))
@@ -202,18 +248,13 @@ def run(env, policy, task: str, hold: float, seed: int = 0) -> dict:
 
 def evaluate(library: str, policies: list[dict], holds=HOLDS, tasks=("hammer", "loadgen"), num_envs: int = 1024,
              seed: int = 0, device: str = "cuda:0", log=print) -> list[dict]:
-    from tactile_rl.export.onnx_export import load_actor
-
     rows = []
     episode_s = max(LOADGEN_S, _horizon(library)) + 0.05
     for rate in sorted({p["rate"] for p in policies}, reverse=True):
         env = make_env(rate, library, num_envs, episode_s, device)
         try:
             for p in [p for p in policies if p["rate"] == rate]:
-                if p["checkpoint"] is not None:
-                    actor = load_actor(p["checkpoint"], device=device).to(device)
-                else:
-                    actor = ConstantGrip(env) if p["name"].startswith("grip@") else None
+                actor = load_policy(p, env, device)
                 for task in tasks:
                     for h in holds:
                         t0 = time.time()
