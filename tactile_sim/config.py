@@ -110,7 +110,7 @@ class GripperCfg:
     wrap_yaw: float = 0.0
     hand_joint_damping: float = 0.002  # Nms/rad, drive + gearbox viscous loss
     hand_joint_friction: float = 0.005  # Nm, drive friction
-    hand_friction: float = 1.0  # skin on the handle
+    hand_friction: float = 1.0  # skin on the handle (bare; residual_config: the WUJI's grippy coverings)
     hand_solref: tuple[float, float] = (0.002, 1.0)
     # thumb joints (CMC flex, CMC abd, MCP, IP): closing torque sign, 0 = held at thumb_preshape by PD
     thumb_close: tuple[int, int, int, int] = (1, -1, 1, 1)
@@ -764,7 +764,7 @@ class ResidualDRCfg:
     unless noted."""
 
     head_mass: tuple[float, float] = (0.25, 0.70)  # kg
-    hand_friction: tuple[float, float] = (0.6, 1.4)
+    hand_friction: tuple[float, float] = (1.1, 2.0)  # the grippy coverings (GripperCfg.hand_friction)
     hand_solref_tc: tuple[float, float] = (0.0015, 0.004)  # s, hand-tool contact time constant
     nail_resistance_0: tuple[float, float] = (50.0, 150.0)  # N, around the light hammer's 80 N nail
     nail_resistance_per_m: tuple[float, float] = (2.5e3, 7.5e3)  # N/m
@@ -840,6 +840,11 @@ class VlaCfg:
     # the head joints (head_j1, head_j2, head_j3) while the VLA works; None = aimed at the tool's working point
     # (vla.camera.aim_head), the way an operator would point the head before a task
     head_pose: tuple[float, float, float] | None = None
+    # where aim_head puts the task's look point in the image, as a fraction of its height from the top (0.5: the
+    # centre, datasets up to v4). Lower in the frame pitches the head less: at 0.7 the hammer task's head pitch is 25
+    # deg (44 at 0.5) and the robot's own body fills 13 % of the image (26 %), the drill's 2 % (9 %), the workpiece
+    # still well inside the frame (2026-10-12)
+    aim_v: float = 0.7
     # per-episode visual randomization (vla.camera.VisualDR); off = the nominal scene
     visual_dr: bool = True
     cam_pos_jitter: float = 0.01  # m, each axis
@@ -1098,6 +1103,9 @@ DRILL_12V_GENERIC_PRESET: dict[str, Any] = {"free_speed": 44.5, "stall_torque": 
                                             **PRIMITIVE_PISTOL}
 
 
+WUJI_COVERED_FRICTION = 1.5  # the hand coverings on the tool (ResidualDRCfg draws 1.1-2.0)
+
+
 def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,
                     task: str = "hammer", hammer_kind: str = "light", **sections: dict[str, Any]) -> SimConfig:
     """The residual experiments' configuration: WUJI Hand 2 with MIT-mode drives on the robot (default the Vega U),
@@ -1115,7 +1123,9 @@ def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfi
     cfg = hand_config("wuji2", base or SimConfig(), robot=robot)
     cfg = cfg.replace(**(HAMMERS[hammer_kind] if task == "hammer" else VEGA_DRILL_OVERRIDES)).replace(
         residual={"task": task}).replace(
-        gripper={"hand_control": "mit", "grasp_mass": "nominal"},
+        # the WUJI hands wear grippy (rubber/silicone) coverings (2026-10-12; before: bare skin, 1.0, drawn 0.6-1.4).
+        # Keyframes are still synthesized at bare skin (wuji_grasp.GRASP_FRICTION)
+        gripper={"hand_control": "mit", "grasp_mass": "nominal", "hand_friction": WUJI_COVERED_FRICTION},
         sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
         residual={"enabled": True, "rate": rate},
         # the base has no impact flag: the arm switches to its post-impact reference on the clock
