@@ -1,10 +1,11 @@
 """Action terms of the tactile residual env.
 
-- `ResidualHandAction` (60-D), once per policy step, as the testbed's ResidualHandL2.tick: a non-finite action vector
-  counts as zero; the actions are squashed by tanh (the exported policy carries the tanh) and become the residual's
-  offsets (obs_spec.offsets); on the drill task the trigger interlock caps the index finger's offsets (only opening
-  while the base disables the trigger; no interlock elsewhere: residual_l2.trigger_indices); if any input is stale
-  (the TaxelScan boards' newest frames older than stale_taxel, the joint readback older than stale_joint) the offsets
+- `ResidualHandAction` (40-D: a set-point offset and a feedforward offset per joint), once per policy step, as the
+  testbed's ResidualHandL2.tick: a non-finite action vector counts as zero; the actions are squashed by tanh (the
+  exported policy carries the tanh) and become the residual's offsets (obs_spec.offsets); on the drill task the
+  trigger interlock caps the index finger's offsets (only opening while the base disables the trigger; no interlock
+  elsewhere: residual_l2.trigger_indices); if any input is stale (the TaxelScan boards' newest frames older than
+  stale_taxel, the joint readback older than stale_joint) the offsets
   decay toward zero with decay_tau instead; the offsets' slew is limited per second over the policy period
   (obs_spec.slew); the result is composed with the base hand command (obs_spec.compose) into the MIT command the host
   sends the WUJI drives. The base: with a base-trajectory command (the hammer tasks), the grip synergy at the
@@ -99,7 +100,7 @@ class ResidualHandAction(ActionTerm):
         self.trigger = torch.zeros(n, dtype=torch.bool, device=dev)
         self._raw = torch.zeros(n, self.action_dim, device=dev)
         self.a_sq = torch.zeros(n, self.action_dim, device=dev)  # the squashed action the policy took (last_action)
-        self.off = torch.zeros(n, 3, N_JOINTS, device=dev)
+        self.off = torch.zeros(n, 2, N_JOINTS, device=dev)
         self.base = torch.zeros(n, 5, N_JOINTS, device=dev)
         self.command = torch.zeros(n, 5, N_JOINTS, device=dev)
         self.n_nonfinite = torch.zeros(n, dtype=torch.long, device=dev)

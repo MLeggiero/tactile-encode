@@ -7,7 +7,8 @@ while the patch reads no load), area / taxels, peak / 1000, rate / 100; per boar
 units (1 before any) and the frames received since the previous sample; the hand's encoder angles; the motor currents
 over the rated currents. A ring keeps the newest `stack` rows (newest first). `observe` lays them out by block (each
 fast block holds its `stack` samples, newest first), then the policy-rate blocks (last action, the base's hand target
-now, the lookahead, the forecast, the task, trigger_enable) and zeroes the masked blocks.
+and its feedforward over the rated torques now, the arm's lookahead, the forecast, the task, trigger_enable) and
+zeroes the masked blocks.
 """
 
 from __future__ import annotations
@@ -23,8 +24,12 @@ FAST_DIM = sum(d for _, d in FAST_BLOCKS)
 
 class StudentObs:
     def __init__(self, num_envs: int, stack: int, grids: list[tuple[int, int]], levels: int,
-                 mask_blocks: tuple[str, ...] = (), task: str = "hammer", device: str | torch.device = "cpu"):
+                 mask_blocks: tuple[str, ...] = (), task: str = "hammer", device: str | torch.device = "cpu",
+                 tau_rated=None):
         self.n_env, self.stack, self.dev = int(num_envs), int(stack), torch.device(device)
+        # the hand joints' rated torques (the base_hand_tau block's scale; obs_spec.base_tau_obs)
+        self.tau_rated = torch.as_tensor(np.ones(N_JOINTS) if tau_rated is None else np.asarray(tau_rated, float),
+                                         dtype=torch.float32, device=self.dev)
         self.levels = int(levels)
         self.rows = torch.as_tensor([g[0] for g in grids], dtype=torch.float64, device=self.dev)
         self.cols = torch.as_tensor([g[1] for g in grids], dtype=torch.float64, device=self.dev)
@@ -84,12 +89,14 @@ class StudentObs:
         rolled = torch.cat([row[:, None], self.ring[:, :-1]], dim=1)
         self.ring = rolled if mask is None else torch.where(mask[:, None, None], rolled, self.ring)
 
-    def observe(self, last_action: torch.Tensor, base_q: torch.Tensor, lookahead: torch.Tensor,
+    def observe(self, last_action: torch.Tensor, base: torch.Tensor, lookahead: torch.Tensor,
                 forecast: torch.Tensor, trigger: torch.Tensor) -> torch.Tensor:
-        """The student's observation (N, obs_dim(stack)), obs_spec order."""
+        """The student's observation (N, obs_dim(stack)), obs_spec order, from the base's MIT command (N, 5, J) and the
+        arm's lookahead (N, 7 x len(LOOKAHEAD))."""
         parts = [self.ring[:, :, sl].reshape(self.n_env, -1) for sl in self.fast_slices]
-        obs = torch.cat(parts + [last_action.float(), base_q.float(), lookahead.float(), forecast.float(),
-                                 self._eye[self.task_idx], trigger.float().reshape(-1, 1)], dim=1)
+        base_tau = base[:, 4].float() / self.tau_rated
+        obs = torch.cat(parts + [last_action.float(), base[:, 0].float(), base_tau, lookahead.float(),
+                                 forecast.float(), self._eye[self.task_idx], trigger.float().reshape(-1, 1)], dim=1)
         if obs.shape[1] != self.dim:
             raise ValueError(f"observation has {obs.shape[1]} entries, the spec {self.dim}")
         for sl in self.masked:

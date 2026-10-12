@@ -34,8 +34,8 @@ from tactile_rl.tasks.hold import decimation_for
 from tactile_sim.sim.training_parts import config_key, residual_training_config
 
 # MuJoCo Warp's buffers for the held light hammer under loads (tactile_rl.bench.throughput reports the peaks)
-NCONMAX = 64
-NJMAX = 160
+NCONMAX = 128
+NJMAX = 512
 
 
 def _dropped(env) -> torch.Tensor:

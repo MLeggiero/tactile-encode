@@ -25,6 +25,8 @@ The library: `library`, else $TACTILE_BASE_LIBRARY, else runs/base_library/hamme
 
 from __future__ import annotations
 
+import os
+
 import torch
 from mjlab.envs import ManagerBasedRlEnvCfg
 from mjlab.managers.curriculum_manager import CurriculumTermCfg
@@ -47,8 +49,8 @@ from tactile_rl.tasks.loadgen import _dropped, _i2t, _slip_deg, _slip_mm, loadge
 from tactile_sim.sim.training_parts import residual_training_config
 
 # MuJoCo Warp's buffers: the hammer's strikes and the load generator's holds (each task's peaks, with room)
-NCONMAX = 64
-NJMAX = 192
+NCONMAX = 128  # the YCB hammer (12 handle slices, the fingers colliding): see tactile_rl.bench.throughput
+NJMAX = 512
 STAGE_CAP_S = 120_000.0  # simulated s (all envs) a gated stage may take
 
 
@@ -93,10 +95,12 @@ def _hammer_net_deg(env):
 
 
 def residual_env_cfg(rate: float = 1000.0, library: str | None = None, timestep: float = 0.00025,
-                     num_envs: int = 4096, episode_s: float = 3.0, start_stage: int = 0, max_stage: int = 3,
+                     num_envs: int = 4096, episode_s: float = 3.0, start_stage: int | None = None, max_stage: int = 3,
                      min_episodes: int = 2000, min_events: int = 2000, obs_groups: tuple[str, ...] = ALL_GROUPS,
                      nconmax: int | None = NCONMAX, njmax: int | None = NJMAX,
                      stage_cap_s: float | None = STAGE_CAP_S, nan_policy: str = "warn") -> ManagerBasedRlEnvCfg:
+    if start_stage is None:  # $TACTILE_START_STAGE: a resumed teacher continues in its stage (the registered task's)
+        start_stage = int(os.environ.get("TACTILE_START_STAGE", "0"))
     key = loadgen_scene_key(rate, timestep)
     events = {"tactile_fields": EventTermCfg(func=tactile_model_fields, mode="startup"),
               "state_bank": EventTermCfg(func=build_state_bank, mode="startup", params={"scene_key": key}),

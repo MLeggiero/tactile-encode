@@ -3,7 +3,7 @@
 - `student_obs`: the student's observation exactly as obs_spec lays it out (ResidualHandL2.observe): the 1 kHz fast
   blocks from the robot's sensors (TaxelScan codes, patch features and board status, the readback's angles and
   currents), stacked `stack` deep for a policy slower than 1 kHz, then the last squashed action, the base's hand target
-  now, its lookahead, the forecast, the task and trigger_enable; masked blocks read zero.
+  and feedforward now, the arm's lookahead, the forecast, the task and trigger_enable; masked blocks read zero.
 - privileged terms for the teacher and the critic (each scaled to O(1)): the tool in the hand (pose change since the
   episode's start and its twist relative to the hand), per-patch slip velocity and true normal force, the true event
   timing and regime, the nail, the drives' internals and the randomization the env runs with.
@@ -57,7 +57,7 @@ def student_obs(env: ManagerBasedRlEnv, action_name: str = "residual") -> torch.
     """obs_spec's student observation (N, obs_dim(stack))."""
     cmd, rt = _parts(env)
     act = env.action_manager.get_term(action_name)
-    return rt.obs.observe(act.a_sq, cmd.base[:, 0], cmd.lookahead, cmd.forecast, cmd.trigger)
+    return rt.obs.observe(act.a_sq, cmd.base, cmd.lookahead, cmd.forecast, cmd.trigger)
 
 
 def tool_in_hand(env: ManagerBasedRlEnv) -> torch.Tensor:

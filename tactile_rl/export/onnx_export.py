@@ -2,7 +2,7 @@
 
 The graph is the CPU's policy convention (tactile_sim.control.policy_io): inputs `obs` [B, D] (the teacher's
 observation: obs_spec's student layout followed by the privileged blocks) and `h_in` [B, H] (the GRU's state), outputs
-`action` [B, 60] (squashed: tanh of the policy's mean, as the env applies it) and `h_out` [B, H]. The robust
+`action` [B, 40] (squashed: tanh of the policy's mean, as the env applies it) and `h_out` [B, H]. The robust
 normalizer (scale floor, clip) is folded in; opset 17; the batch axis is dynamic.
 
 The sidecar JSON (PolicyMeta) records obs_spec's hash for the student part and its stack, the rate, the GRU's size and

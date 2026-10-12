@@ -171,6 +171,10 @@ class WujiDriveCfg:
     kp_nom: tuple[float, ...] = (0.37, 0.43, 0.22, 0.55, 0.22)  # Nm/rad, nominal Kp: the vendor MJCF gains (assumed)
     zeta: float = 0.8  # damping ratio when Kd is derived from Kp: Kd = 2 zeta sqrt(Kp I)
     i_rated: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0)  # A at each joint's rated torque (assumed)
+    # the motors' true torque constant over the nominal one the SDK converts torque commands with (tau_rated /
+    # i_rated): the joint delivers kt_scale x the commanded torque below the current ceiling, and the ceiling's torque
+    # moves with it, while the current the host reads back does not (ResidualDRCfg.kt_scale draws it)
+    kt_scale: float = 1.0
     i_peak_ratio: float = 2.0  # the driver's peak current / rated (assumed)
     effort_limit_ratio: float = 1.0  # SDK effort_limit (the current ceiling) / rated current
     r_wind: float = 2.0  # ohm, winding resistance (assumed)
@@ -715,7 +719,10 @@ class ForecastCfg:
     dropout: float = 0.05  # updates lost within an episode
     bias_sigma: float = 0.015  # s, per-episode bias of the predicted event time
     jitter_sigma: float = 0.010  # s, per-update noise on the predicted event time
-    class_confusion: float = 0.1  # up to this much probability moved off the true regime, per episode
+    horizon_err: float = 0.05  # per-update noise on the event time grows by this fraction of the lead time
+    # up to this much probability moved off the true regime onto one wrong regime, per episode (above 0.5 the
+    # forecast names the wrong regime)
+    class_confusion: float = 0.6
     freq_err: float = 0.1  # log-normal sigma of the predicted dominant frequency
     amp_err: float = 0.25  # log-normal sigma of the predicted amplitude
     update_rate: float = 10.0  # Hz the forecast is refreshed at
@@ -774,7 +781,7 @@ class ResidualDRCfg:
     sdk_lpf_hz: tuple[float, float] = (50.0, 300.0)  # used with probability sdk_lpf_prob, else off
     sdk_lpf_prob: float = 0.5
     tau_i: tuple[float, float] = (0.0001, 0.0005)  # s
-    kt_scale: tuple[float, float] = (0.85, 1.15)  # rated current scale (Kt error)
+    kt_scale: tuple[float, float] = (0.85, 1.15)  # the motors' true torque constant / nominal (WujiDriveCfg.kt_scale)
     effort_limit_ratio: tuple[float, float] = (0.9, 1.1)
     t_amb: tuple[float, float] = (20.0, 35.0)  # degC
     ts_gain_mismatch: tuple[float, float] = (0.05, 0.15)

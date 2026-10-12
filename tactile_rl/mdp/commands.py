@@ -13,8 +13,8 @@ drives, the TaxelScan readout; `apply_params`). It then plays the entry, optiona
   servo target is q0 + a (q - q0) + droop + kd / kp a w qd (World.set_arm_position), held until the next tick;
 - the hand base: the grip synergy at the library's scalar s(u) from the joint angles the host last read
   (WrapSynergy.mit_command), recomputed at every policy tick;
-- the lookahead (arm part; the hand's targets do not move ahead under this base), refreshed on the arm's ticks: the
-  library's displacements at the LOOKAHEAD horizons, re-sampled at the warped horizons and scaled by a;
+- the lookahead (the arm's: obs_spec's base_lookahead), refreshed on the arm's ticks: the library's displacements at
+  the LOOKAHEAD horizons, re-sampled at the warped horizons and scaled by a;
 - the forecast: the library's truth (event time mapped to env time, amplitude scaled by a w) through the torch
   ForecastModel.
 
@@ -186,7 +186,7 @@ class BaseTrajectoryCommand(CommandTerm):
         self.level = torch.ones(N, device=dev)
         self.active = torch.ones(N, dtype=torch.bool, device=dev)  # the envs this term drives (the C3 mix: hammer envs)
         self.base = torch.zeros(N, 5, N_JOINTS, device=dev)
-        self.lookahead = torch.zeros(N, (N_JOINTS + N_ARM) * len(LOOKAHEAD), device=dev)
+        self.lookahead = torch.zeros(N, N_ARM * len(LOOKAHEAD), device=dev)
         self.forecast = torch.zeros(N, 13, device=dev)
         z64 = torch.zeros(N, **f64)
         self.truth = {"valid": torch.zeros(N, dtype=torch.bool, device=dev), "t_event": z64, "f": z64, "amp": z64,
@@ -272,8 +272,7 @@ class BaseTrajectoryCommand(CommandTerm):
         v1 = vals.gather(1, (seg + 1)[..., None].expand(-1, -1, N_ARM))
         arm = v0 + ((x - x0) / (x1 - x0))[..., None] * (v1 - v0)
         arm = arm * self.amp[:, None, None]
-        look = torch.cat([torch.zeros(self.num_envs, len(LOOKAHEAD), N_JOINTS, device=self.device), arm.float()], 2)
-        self.lookahead = look.reshape(self.num_envs, -1)
+        self.lookahead = arm.float().reshape(self.num_envs, -1)
         # forecast truth in env time, then the forecast model
         valid = lib.fc_valid[e, i]
         # the library stores no event as NaN: 0 where none is planned, as the load generator's truth
@@ -372,8 +371,8 @@ class BaseTrajectoryCommand(CommandTerm):
         lpf = P["sdk_lpf_hz"][e]
         i_rated = P["i_rated"][e][:, self.group]  # (n, J)
         rt.drive.set_params(ids, cmd_latency=P["cmd_latency"][e], sdk_lpf_hz=lpf, tau_i=P["tau_i"][e],
-                            i_rated=i_rated, effort_limit_ratio=P["effort_limit_ratio"][e][:, None],
-                            t_amb=P["t_amb"][e])
+                            i_rated=i_rated, kt_scale=self._kt_scale(e)[:, None],
+                            effort_limit_ratio=P["effort_limit_ratio"][e][:, None], t_amb=P["t_amb"][e])
         rt.scan.set_params(ids, gain_mismatch=P["ts_gain_mismatch"][e], offset_lsb=P["ts_offset_lsb"][e],
                            f_half=P["ts_f_half"][e], bandwidth=P["ts_bandwidth"][e],
                            bridge_latency=(P["ts_bridge_lo"][e], P["ts_bridge_hi"][e]),
@@ -402,9 +401,12 @@ class BaseTrajectoryCommand(CommandTerm):
             if k_lib in P:
                 dr.v[k_dr][ids] = P[k_lib][e].double()
         dr.v["arm_kd_scale"][ids] = 1.0
-        if dr.i_rated0 is not None:
-            dr.v["kt_scale"][ids] = (P["i_rated"][e][:, self.group].double().mean(1)
-                                     / dr.i_rated0.double().mean())
+        dr.v["kt_scale"][ids] = self._kt_scale(e).double()
+
+    def _kt_scale(self, e: torch.Tensor) -> torch.Tensor:
+        """The entries' Kt error (a library before version 2 has none: 1)."""
+        P = self.lib.params
+        return P["kt_scale"][e] if "kt_scale" in P else torch.ones_like(P["head_mass"][e])
 
     def param_vector(self) -> torch.Tensor:
         """The randomization each env runs with, scaled to O(1) (teacher / critic observation)."""
@@ -412,7 +414,7 @@ class BaseTrajectoryCommand(CommandTerm):
         cols = [P["head_mass"][e] / 0.5, P["hand_friction"][e], P["hand_solref_tc"][e] / 0.003,
                 P["nail_r0"][e] / 300.0, P["nail_r_per_m"][e] / 1e4, P["vdr_zeta0"][e], P["face_tc"][e] / 0.003,
                 P["cmd_latency"][e] / 0.003, P["sdk_lpf_hz"][e] / 300.0, P["tau_i"][e] / 0.0005,
-                P["i_rated"][e][:, 0], P["effort_limit_ratio"][e], (P["t_amb"][e] - 25.0) / 10.0,
+                self._kt_scale(e), P["effort_limit_ratio"][e], (P["t_amb"][e] - 25.0) / 10.0,
                 P["ts_gain_mismatch"][e] / 0.15, P["ts_offset_lsb"][e] / 6.0, P["ts_f_half"][e] / 8.0,
                 P["ts_bandwidth"][e] / 500.0, P["ts_skin_depth"][e] / 0.003, P["ts_drop_prob"][e] / 0.01,
                 P["ts_bridge_hi"][e] / 0.001, P["servo_p_mult"][e], torch.log(P["noise_scale"][e]),

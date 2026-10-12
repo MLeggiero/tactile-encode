@@ -43,8 +43,8 @@ from tactile_sim.sim.training_parts import config_key, residual_training_config
 DEFAULT_LIBRARY = "runs/base_library/hammer_v1.npz"
 # MuJoCo Warp's buffers for the hammer scene (the light hammer's capsule handle makes one pair per hand link): above
 # the peaks of the library's swings (tactile_rl.parity.strikes reports them)
-NCONMAX = 40
-NJMAX = 128
+NCONMAX = 128  # the YCB hammer: 12 handle slices x the hand links, and the fingers colliding
+NJMAX = 512
 
 
 def library_path(library: str | None = None) -> str:

@@ -13,7 +13,7 @@ torch = pytest.importorskip("torch")
 
 from tactile_rl.plants.loadgen import TorchLoadGen  # noqa: E402
 from tactile_sim.config import LoadGenCfg  # noqa: E402
-from tactile_sim.control.obs_spec import REGIMES  # noqa: E402
+from tactile_sim.control.obs_spec import ACTION_DIM, REGIMES  # noqa: E402
 from tactile_sim.model.loadgen import KINDS, forecast_truth, sample_schedule, wrench  # noqa: E402
 
 needs_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
@@ -93,11 +93,12 @@ def test_zero_initialized_gru_actor_and_the_entropy_schedule():
     from tactile_rl.tasks.rl_cfg import discount, teacher_runner_cfg
 
     obs = TensorDict({"teacher": torch.randn(5, 888)}, batch_size=[5])
-    m = ZeroInitRNNModel(obs, {"actor": ["teacher"]}, "actor", 60, hidden_dims=(256, 128), obs_normalization=True,
+    m = ZeroInitRNNModel(obs, {"actor": ["teacher"]}, "actor", ACTION_DIM, hidden_dims=(256, 128),
+                         obs_normalization=True,
                          rnn_type="gru", rnn_hidden_dim=256,
                          distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.3})
     assert m.is_recurrent and isinstance(m.rnn.rnn, torch.nn.GRU) and m.rnn.rnn.hidden_size == 256
-    assert torch.equal(m(obs), torch.zeros(5, 60))  # a = 0: the base
+    assert torch.equal(m(obs), torch.zeros(5, ACTION_DIM))  # a = 0: the base
     # the normalizer: a feature that never moved is not blown up when it does
     from tactile_rl.algos.models import RobustNormalization
 
@@ -333,13 +334,13 @@ def test_c3_mixes_hammer_and_load_generator_episodes(library):
         cmd = env.command_manager.get_term("base")
         ham = cmd.is_hammer
         assert 0.4 < float(ham.float().mean()) < 0.95  # 70 % hammer
-        assert cmd.hold_level == (0.3, 0.8) and env._tactile_dr.scale == 1.0
+        assert cmd.hold_level == (0.3, 1.2) and env._tactile_dr.scale == 1.0
         # the task block says which, a hammer env has no loads, its hold level is drawn
         task = obs["student"][:, obs_slices(1)["task"]]
         assert torch.equal(task.argmax(1), torch.where(ham, TASKS.index("hammer"), TASKS.index("loadgen")))
         assert not bool(cmd.lg.gen.valid[ham].any())
         lv = torch.where(ham, cmd.ham.level, cmd.lg.level)
-        assert float(lv.min()) >= 0.3 - 1e-6 and float(lv.max()) <= 0.8 + 1e-6
+        assert float(lv.min()) >= 0.3 - 1e-6 and float(lv.max()) <= 1.2 + 1e-6
         act = env.action_manager.get_term("residual")
         zero = torch.zeros(64, env.action_manager.total_action_dim, device=env.device)
         total = torch.zeros(64, device=env.device)
@@ -380,6 +381,6 @@ def test_the_curriculum_reaches_c3(library):
         cur.win = torch.tensor([100.0, 0.0, 200.0, 150.0], dtype=torch.float64, device=env.device)
         cur._evaluate()
         assert cur.stage == 3 and cur.capped == 1 and cur.history[-1]["how"] == "capped"
-        assert cmd.hammer_frac == pytest.approx(0.7) and cmd.hold_level == (0.3, 0.8)
+        assert cmd.hammer_frac == pytest.approx(0.7) and cmd.hold_level == (0.3, 1.2)
     finally:
         env.close()

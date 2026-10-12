@@ -304,6 +304,7 @@ class DrawLog:
 FORECAST_ENVS = [
     {"mask_prob": 0.0},
     {"mask_prob": 0.0, "dropout": 0.3, "bias_sigma": 0.02, "jitter_sigma": 0.01, "class_confusion": 0.2},
+    {"mask_prob": 0.0, "horizon_err": 0.2, "class_confusion": 0.6, "jitter_sigma": 0.0},
     {"mask_prob": 0.0, "freq_err": 0.2, "amp_err": 0.4, "latency": 0.05, "update_rate": 5.0},
     {"mask_prob": 1.0},
     {"mask_prob": 0.0, "latency": 0.0, "update_rate": 10.0, "dropout": 0.0},
@@ -336,10 +337,11 @@ def test_forecast_matches_the_forecast_model(tick):
     # the same draws, in the same order, for the torch model
     queues = [list(lg.log) for lg in logs]
     gpu = TorchForecastModel(n, None, DEV)
-    for k in ("mask_prob", "dropout", "bias_sigma", "jitter_sigma", "class_confusion", "freq_err", "amp_err",
-              "update_rate", "latency"):
+    for k in ("mask_prob", "dropout", "bias_sigma", "jitter_sigma", "horizon_err", "class_confusion", "freq_err",
+              "amp_err", "update_rate", "latency"):
         gpu.set_params(**{k: torch.tensor([getattr(c.cfg, k) for c in cpu], dtype=torch.float64)})
-    kinds = {"mask": "u", "bias": "n", "confusion": "u", "dropout": "u", "freq": "n", "amp": "n", "jitter": "n"}
+    kinds = {"mask": "u", "bias": "n", "confusion": "u", "wrong": "u", "dropout": "u", "freq": "n", "amp": "n",
+             "jitter": "n"}
 
     def draw_fn(name, mask):
         out = torch.zeros(n, dtype=torch.float64)
@@ -364,7 +366,7 @@ def test_forecast_matches_the_forecast_model(tick):
             assert out[e] == pytest.approx(ref[i][e], abs=1e-12), (i, e)
     assert all(not q for q in queues)  # every draw the testbed made was used, in order
     shown = np.array([[r[e][0] for e in range(n)] for r in ref])
-    assert shown[:, 0].any() and not shown[:, 3].any()  # forecasts were seen; the masked env saw none
+    assert shown[:, 0].any() and not shown[:, 4].any()  # forecasts were seen; the masked env saw none
 
 
 # ------------------------------------------------------------------------------------------------ student obs
@@ -377,7 +379,7 @@ def test_student_observation_matches_residual_l2(stack, mask):
     from collections import deque
 
     from tactile_rl.mdp.obs_builder import StudentObs
-    from tactile_sim.control.obs_spec import BOARDS, TASKS, obs_slices
+    from tactile_sim.control.obs_spec import ACTION_DIM, BOARDS, TASKS, obs_slices
     from tactile_sim.control.residual_l2 import ResidualHandL2
     from tactile_sim.sensors.base import SensorSample
 
@@ -385,6 +387,7 @@ def test_student_observation_matches_residual_l2(stack, mask):
     board_first = [0, 1, 5, 9]
     codec = CodecSpec()
     i_rated = rng.uniform(0.8, 1.2, (n_env, 20))
+    tau_rated = rng.uniform(0.2, 2.0, 20)
     fakes = []
     for e in range(n_env):
         patches = [types.SimpleNamespace(codes=np.zeros(g[0] * g[1], np.uint8), features=np.zeros(6, np.int64),
@@ -398,10 +401,11 @@ def test_student_observation_matches_residual_l2(stack, mask):
         fakes.append(types.SimpleNamespace(
             patch_sensors=patches, board_sensors=[patches[b] for b in board_first], q_sensor=q, i_sensor=cur,
             i_rated=i_rated[e], last_seq=[-1] * BOARDS, stack=stack, fast_dim=562,
-            ring=deque([np.zeros(562)] * stack, maxlen=stack), last_a=np.zeros(60),
+            ring=deque([np.zeros(562)] * stack, maxlen=stack), last_a=np.zeros(ACTION_DIM),
+            jp=types.SimpleNamespace(tau_rated=tau_rated),
             task_vec=np.eye(len(TASKS))[0], masked=[obs_slices(stack)[b] for b in mask]))
         fakes[-1].fast_sample = (lambda t, f=fakes[-1]: ResidualHandL2.fast_sample(f, t))
-    gpu = StudentObs(n_env, stack, GRIDS, codec.levels, mask, "hammer", DEV)
+    gpu = StudentObs(n_env, stack, GRIDS, codec.levels, mask, "hammer", DEV, tau_rated=tau_rated)
     starts = np.concatenate([[0], np.cumsum([g[0] * g[1] for g in GRIDS])[:-1]])
     seq = np.full((n_env, len(GRIDS)), -1)
     for k in range(steps):
@@ -412,8 +416,9 @@ def test_student_observation_matches_residual_l2(stack, mask):
         seq = seq + rng.integers(0, 2, seq.shape) * (k > 2)
         avail = t - rng.uniform(0.0, 0.006, seq.shape)
         qv, cv = rng.normal(0, 1, (n_env, 20)), rng.normal(0, 1, (n_env, 20))
-        last_a, base_q = rng.uniform(-1, 1, (n_env, 60)), rng.normal(0, 1, (n_env, 20))
+        last_a, base = rng.uniform(-1, 1, (n_env, ACTION_DIM)), rng.normal(0, 1, (n_env, 5, 20))
         look, fc = rng.normal(0, 0.1, (n_env, 81)), rng.normal(0, 1, (n_env, 13))
+        look_arm = look.reshape(n_env, 3, 27)[:, :, 20:].reshape(n_env, 21)  # the GPU base's lookahead: the arm's
         for e, f in enumerate(fakes):
             for j, p in enumerate(f.patch_sensors):
                 p.codes = codes[e, starts[j]:starts[j] + len(p.codes)]
@@ -429,8 +434,75 @@ def test_student_observation_matches_residual_l2(stack, mask):
         row = gpu.sample(tt, torch.as_tensor(codes, device=DEV), torch.as_tensor(feats, device=DEV), bs, ba,
                          torch.as_tensor(qv, device=DEV), torch.as_tensor(cv / i_rated, device=DEV))
         gpu.push(row)
-        out = gpu.observe(*(torch.as_tensor(x, device=DEV) for x in (last_a, base_q, look, fc)),
+        out = gpu.observe(*(torch.as_tensor(x, device=DEV) for x in (last_a, base, look_arm, fc)),
                           torch.zeros(n_env, device=DEV)).cpu().numpy()
         for e, f in enumerate(fakes):
-            ref = ResidualHandL2.observe(f, t, np.stack([base_q[e]] * 5), look[e], False, fc[e])
+            ref = ResidualHandL2.observe(f, t, base[e], look[e], False, fc[e])
             assert out[e] == pytest.approx(ref, abs=2e-6, rel=1e-6), (k, e)
+
+
+# ------------------------------------------------------------------------------------------------ skin load rays
+
+
+def test_hull_rays_match_mujocos_ray_mesh():
+    """The YCB hammer's handle slices: each taxel's ray (3 mm inside the skin, along its normal) against the hulls its
+    patch pairs with, in the Warp kernel, against mj_rayMesh on the CPU model at the settled hold and with the hammer
+    shifted and turned about it (some rays then start inside a hull)."""
+    import mujoco
+
+    from tactile_rl.sensors.taxel_load import BACK, TaxelLoadModel
+    from tactile_sim.sim.training_parts import residual_training_config, training_parts
+
+    parts = training_parts(residual_training_config())
+    m = mujoco.MjModel.from_xml_string(parts.xml)
+    d = mujoco.MjData(m)
+    hj = m.joint(parts.hammer_joint)
+    a = int(hj.qposadr[0])
+    rng = np.random.default_rng(0)
+    states = [parts.qpos_settled.copy()]
+    for _ in range(3):
+        q = parts.qpos_settled.copy()
+        q[a:a + 3] += rng.normal(0, 0.004, 3)
+        dq = rng.normal(0, 0.1, 3)
+        quat = np.zeros(4)
+        mujoco.mju_axisAngle2Quat(quat, dq / np.linalg.norm(dq), np.linalg.norm(dq))
+        mujoco.mju_mulQuat(q[a + 3:a + 7], quat, q[a + 3:a + 7].copy())
+        states.append(q)
+    n = len(states)
+    lm = TaxelLoadModel(parts, m, n, DEV)
+    assert lm.mode == "hull" and lm.G >= 10
+    ray_ids = lm.ray_geoms.cpu().numpy()
+    xp, xm, gp, gm = [], [], [], []
+    for q in states:
+        d.qpos[:] = q
+        mujoco.mj_forward(m, d)
+        xp.append(d.xpos[lm.body.cpu().numpy()].copy())
+        xm.append(d.xmat[lm.body.cpu().numpy()].reshape(-1, 3, 3).copy())
+        gp.append(d.geom_xpos[ray_ids].copy())
+        gm.append(d.geom_xmat[ray_ids].reshape(-1, 3, 3).copy())
+
+    def t(x):
+        return torch.as_tensor(np.asarray(x), dtype=torch.float32, device=DEV)
+
+    P, K = lm.P, lm.K
+    _, _, _, _, _, org, ray = lm._contacts(torch.zeros(n, P, K, device=DEV), torch.zeros(n, P, K, 3, device=DEV),
+                                           torch.zeros(n, P, K, dtype=torch.bool, device=DEV), t(xp), t(xm))
+    need = torch.ones(n, lm.T, dtype=torch.bool, device=DEV)
+    gap = lm._hull_gaps(org, ray, need, t(gp), t(gm)).cpu().numpy()
+    org, ray = org.cpu().numpy().astype(float), ray.cpu().numpy().astype(float)
+    patch, pt = lm.patch.cpu().numpy(), lm.patch_tool.cpu().numpy()
+    hits = 0
+    for i, q in enumerate(states):
+        d.qpos[:] = q
+        mujoco.mj_forward(m, d)
+        for j in range(lm.T):
+            best = np.inf
+            for gi in np.flatnonzero(pt[patch[j]]):
+                h = mujoco.mj_rayMesh(m, d, int(ray_ids[gi]), org[i, j], ray[i, j] / np.linalg.norm(ray[i, j]))
+                if h >= 0:
+                    best = min(best, h - BACK)
+            if np.isfinite(best) or np.isfinite(gap[i, j]):
+                assert np.isfinite(best) and np.isfinite(gap[i, j]), (i, j, best, gap[i, j])
+                assert gap[i, j] == pytest.approx(best, abs=2e-5), (i, j)
+                hits += 1
+    assert hits > 50  # the palm and the pads see the handle

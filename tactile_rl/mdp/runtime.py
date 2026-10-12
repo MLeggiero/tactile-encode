@@ -74,8 +74,8 @@ class TactileRuntime:
         self.hand_ids = joint_ids(robot, parts.hand_joints, dev)
         self.arm_ids = joint_ids(robot, parts.arm_joints, dev)
         m = sim.mj_model
-        # MuJoCo Warp gives a capsule/mesh pair one contact: at most two per patch (a distal pad has two hulls)
-        self.load = TaxelLoadModel(parts, m, N, dev, prefix=PREFIX, max_per_patch=4, compiled=compiled)
+        # contact slots per patch: the model's default for the tool (capsule handle 4, hull slices 12)
+        self.load = TaxelLoadModel(parts, m, N, dev, prefix=PREFIX, compiled=compiled)
         self.scan = TorchTaxelScan(parts.skin, cfg.sensors, self.dt, N, dev)
         w = cfg.wuji
         every = int(round(1.0 / (w.sdk_rate * self.dt)))
@@ -90,7 +90,7 @@ class TactileRuntime:
         self.stack = stack_for(self.rate)
         self.task = task
         self.obs = StudentObs(N, self.stack, [p.grid for p in parts.skin], self.scan.codec.levels, mask_blocks, task,
-                              dev)
+                              dev, tau_rated=parts.hand_tau_rated)
         self.res = cfg.residual
         # truth
         self.tcp_site = m.site(PREFIX + parts.tcp_site).id

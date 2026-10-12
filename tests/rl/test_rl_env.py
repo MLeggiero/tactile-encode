@@ -17,7 +17,7 @@ from tactile_rl.mdp.action_map import TorchActionMap, TorchSynergy  # noqa: E402
 from tactile_rl.tasks.hold import RATES, decimation_for, hold_env_cfg, task_id  # noqa: E402
 from tactile_sim.config import ResidualCfg  # noqa: E402
 from tactile_sim.control.hand import WrapSynergy  # noqa: E402
-from tactile_sim.control.obs_spec import ActionSpec, JointParams, compose, offsets, slew  # noqa: E402
+from tactile_sim.control.obs_spec import ACTION_DIM, ActionSpec, JointParams, compose, offsets, slew  # noqa: E402
 from tactile_sim.control.residual_l2 import ResidualHandL2  # noqa: E402
 from tactile_sim.sim.wuji_drive import joint_group  # noqa: E402
 
@@ -53,8 +53,8 @@ def test_action_map_matches_obs_spec():
     trig = [NAMES.index(j) for j in ResidualCfg().trigger_joints]
     tm = TorchActionMap(spec, jp, DEV, close_dir=syn.close_dir, trigger_idx=trig)
     n = 64
-    a = rng.uniform(-1, 1, (n, 60))
-    prev = rng.normal(0, 0.05, (n, 3, 20))
+    a = rng.uniform(-1, 1, (n, ACTION_DIM))
+    prev = rng.normal(0, 0.05, (n, 2, 20))
     base = np.stack([np.stack(syn.mit_command(s, q)) for s, q in zip(rng.uniform(0, 1, n),
                                                                         rng.uniform(-0.5, 1.2, (n, 20)), strict=True)])
     t = lambda x: torch.as_tensor(x, dtype=torch.float32, device=DEV)  # noqa: E731
@@ -93,8 +93,8 @@ def test_zero_action_composes_the_base_exactly():
     syn = WrapSynergy.for_wuji(list(zip(NAMES, TAU, strict=True)), (1, 0, 1, 1), (0.0, -0.8, 0.0, 0.0), "rated")
     tm = TorchActionMap(spec, jp, DEV, close_dir=syn.close_dir, trigger_idx=[12, 14, 15])
     base = TorchSynergy(syn, DEV).mit_command(torch.rand(16, device=DEV), torch.rand(16, 20, device=DEV))
-    off = tm.trigger_guard(tm.slew(torch.zeros(16, 3, 20, device=DEV),
-                                   tm.offsets(torch.tanh(torch.zeros(16, 60, device=DEV))), 0.001),
+    off = tm.trigger_guard(tm.slew(torch.zeros(16, 2, 20, device=DEV),
+                                   tm.offsets(torch.tanh(torch.zeros(16, ACTION_DIM, device=DEV))), 0.001),
                            torch.zeros(16, dtype=torch.bool, device=DEV))
     assert torch.equal(tm.compose(base, off), base)
 
@@ -114,7 +114,7 @@ def test_zero_residual_reproduces_the_base_command_in_the_env(env64):
     env.reset()
     term = env.action_manager.get_term("residual")
     drive = term.drive
-    zero = torch.zeros(env.num_envs, 60, device=env.device)
+    zero = torch.zeros(env.num_envs, ACTION_DIM, device=env.device)
     for _ in range(20):
         env.step(zero)
         assert torch.equal(term.command, term.base)
@@ -135,13 +135,13 @@ def test_bank_resets_and_hold(env64):
 
     env, key = env64
     obs, _ = env.reset()
-    assert obs["actor"].shape == (env.num_envs, 100) and torch.isfinite(obs["actor"]).all()
+    assert obs["actor"].shape == (env.num_envs, 40 + ACTION_DIM) and torch.isfinite(obs["actor"]).all()
     st = tactile_state(env)
     assert st.bank.size == env.num_envs
     rel = hammer_in_hand(env, key)
     assert torch.allclose(rel, st.ref_rel, atol=1e-5)  # each env starts on its bank entry
     assert torch.all(env.sim.data.time == 0)
-    zero = torch.zeros(env.num_envs, 60, device=env.device)
+    zero = torch.zeros(env.num_envs, ACTION_DIM, device=env.device)
     rewards = []
     for _ in range(300):  # 0.3 s
         _, rew, term, trunc, _ = env.step(zero)

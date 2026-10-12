@@ -6,17 +6,20 @@
     python -m tactile_sim.experiments.residual_experiment run --stage E1hold --policy s1k=student_1k.onnx  # holds
 
 Every episode is the Vega U + WUJI under residual_config: MIT drives, the TaxelScan fast profile, a scripted base,
-and the residual loop. --task hammer (default): the light hammer, the scripted swing as the base (SwingBase:
+and the residual loop. --task hammer (default): the hammer named by --hammer (config.HAMMERS: "ycb", the real claw
+hammer the VLA swings, by default; "light", the primitive one), the scripted swing as the base (SwingBase:
 synergy hand command, arm lookahead, forecast), `strikes` strikes. --task drill: the pistol driver driving a
 screw, the scripted feed as the base (DrillBase: the trigger pulled by the index finger, the plant's seating and
 clutch forecast), one screw per episode. A seed fixes one residual_dr draw, shared by every condition, so
-conditions are compared pairwise. One JSON per episode at runs/residual/[drill/]<stage>/<condition>/seed<k>.json;
-a run skips files that exist.
+conditions are compared pairwise. Evaluation seeds never overlap the base library's (base_library.LIBRARY_SEED0 up),
+so a policy is never scored on the randomization it was trained on. One JSON per episode at
+runs/residual/[drill/]<stage>/<condition>/seed<k>.json; a run skips files that exist.
 
 Conditions (E1): "base" (the residual's base alone: constant grip, no anticipation, residual zero), "template_oracle"
 (the human grip template timed by the sim-only impact flag), "reactive_taxel" (the slip-ablation taxel detector
-raising the grip), "squeeze" (a constant grip at the hand's pre-impact level), and one "residual:<name>" per policy
-given with --policy. The drill has no oracle template (its loads have no impact flag).
+raising the grip), "squeeze" (the base gripping at the hand's full rating, SQUEEZE_LEVEL times its constant grip,
+which the synergy caps at 1), and one "residual:<name>" per policy given with --policy. The drill has no oracle
+template (its loads have no impact flag).
 """
 
 from __future__ import annotations
@@ -66,6 +69,11 @@ HELD_OUT_DRILL = {"heavy_battery": {"drill": {"pistol_battery_mass": 0.35}},
                                                 "gear_ratio": 50.0}},
                   "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
 TASKS = ("hammer", "drill")
+HAMMER = "ycb"  # the hammer the residual trains and runs on (config.HAMMERS; the VLA's since 2026-10-09)
+# the squeeze baseline: the base's grip scalar times this (ResidualCfg.hold_level), capped at the full rating (1) by
+# the synergy; the constant grip is 0.69 of it, so this is the full rated grip (a grip_hold above the hand's
+# grip_hold_max, as before, is clipped back to the base's own hold: a no-op)
+SQUEEZE_LEVEL = 1.5
 # E1hold: the base at these fractions of its grip (the GPU curriculum's hold levels; ResidualCfg.hold_level)
 HOLDS = (0.3, 0.5, 0.8, 1.0)
 LOST_MM, LOST_DEG = 20.0, 30.0  # the GPU env's lost grasp (terminations.tool_left_hand), from the swing's start
@@ -88,7 +96,7 @@ def e1_conditions(policies: dict[str, str] | None = None, task: str = "hammer") 
                                       "controller": {"impact_sources": ("ft", "accel")}}),
         # the taxel detector without its accelerometer channel: the real hand has no accelerometer
         Condition("reactive_taxel", {**const, "reactive": {"mode": "taxel", "accel_thresh": 1e9}}),
-        Condition("squeeze", {**const, "controller": {"grip_hold": 60.0}}),
+        Condition("squeeze", {**const, "residual": {"hold_level": SQUEEZE_LEVEL}}),
     ]
     for name, path in (policies or {}).items():
         from tactile_sim.control.policy_io import PolicyMeta
@@ -106,6 +114,7 @@ class Job:
     condition: Condition
     seed: int
     task: str = "hammer"
+    hammer: str = HAMMER
 
     def path(self, root: Path) -> Path:
         safe = self.condition.name.replace(":", "_").replace("@", "__").replace("=", "-")
@@ -115,7 +124,7 @@ class Job:
         from tactile_sim.sim.randomize import apply_residual_dr, residual_dr
 
         st = STAGES[self.stage]
-        cfg = residual_config(base=fast_config() if st["fast"] else None, task=self.task)
+        cfg = residual_config(base=fast_config() if st["fast"] else None, task=self.task, hammer_kind=self.hammer)
         dr = residual_dr(cfg, np.random.default_rng(self.seed))
         cfg = apply_residual_dr(cfg, dr)
         if self.condition.overrides:
@@ -176,12 +185,17 @@ def _merge(a: dict, b: dict) -> dict:
 
 
 def make_jobs(stage: str, policies: dict[str, str] | None = None, only: str | None = None,
-              task: str = "hammer") -> list[Job]:
+              task: str = "hammer", hammer: str = HAMMER) -> list[Job]:
+    from tactile_sim.behaviors.base_library import LIBRARY_SEED0
+
     st = STAGES[stage]
+    if st["seeds"] > LIBRARY_SEED0:
+        raise ValueError(f"evaluation seeds 0-{st['seeds'] - 1} would overlap the base library's "
+                         f"(from {LIBRARY_SEED0})")
     conds = stage_conditions(stage, policies, task)
     if only:
         conds = [c for c in conds if c.name == only]
-    return [Job(stage, c, s, task) for c in conds for s in range(st["seeds"])]
+    return [Job(stage, c, s, task, hammer) for c in conds for s in range(st["seeds"])]
 
 
 def load_policy(spec: str):
@@ -226,8 +240,8 @@ class Recorder:
         res = self.tb.residual
         if res is not None:
             sp, jp = res.spec, res.jp
-            n = np.concatenate([res.off[0] / np.asarray(sp.dq_max)[jp.group], res.off[1] / jp.kp_nom,
-                                res.off[2] / (sp.tau_frac * jp.tau_rated)])
+            n = np.concatenate([res.off[0] / np.asarray(sp.dq_max)[jp.group],
+                                res.off[1] / (sp.tau_frac * jp.tau_rated)])
             self.t.append(t)
             self.off.append(n)
 
@@ -322,9 +336,11 @@ def run_job(job: Job, root: str = str(ROOT)) -> dict:
     r = tb.residual
     payload = {
         "job": {"task": job.task, "stage": job.stage, "condition": job.condition.name,
-                "policy": job.condition.policy, "seed": job.seed},
+                "policy": job.condition.policy, "seed": job.seed, "hammer": job.hammer if job.task == "hammer" else ""},
         **result,
-        "residual": {"ticks": r.n_ticks, "stale": r.n_stale, "nonfinite": r.n_nonfinite, "i2t": rec.i2t,
+        "residual": {"ticks": r.n_ticks, "stale": r.n_stale, "nonfinite": r.n_nonfinite,
+                     "obs_nonfinite": r.n_obs_nonfinite, "base_nonfinite": r.n_base_nonfinite,
+                     "state_reset": r.n_state_reset, "i2t": rec.i2t,
                      "i_peak_ratio": rec.i_peak, "t_max_winding": float(tb.world.hand.drive.T.max())},
         "dropped": bool(tb.grip.dropped), "dr": dr, "wall_s": time.time() - t0,
     }
@@ -397,13 +413,16 @@ def per_seed(results: list[dict]) -> dict[str, dict[int, dict]]:
                  "slip_rot_deg": math.degrees(s["max_slip_rot"]), "slip_trans_mm": 1e3 * s["max_slip_trans"],
                  "t_seat": float(s["t_done"]), "drops": float(s["lost"]), **effort}
         else:
+            # an episode that dropped the tool before its first strike still counts (a drop, no slip); a dropped
+            # strike's slip is NaN (Episode.run), so the slip means are over the strikes that kept the tool
             st = r["strikes"]
-            if not st:
-                continue
-            m = {"slip_rot_deg": float(np.mean([x["slip_rot_deg"] for x in st])),
-                 "slip_trans_mm": float(np.mean([x["slip_trans_mm"] for x in st])),
-                 "advance_mm": float(np.mean([x["advance_mm"] for x in st])), "drops": float(r["dropped"]),
-                 **effort}
+
+            def mean(key, st=st):
+                v = np.asarray([x[key] for x in st if x.get(key) is not None], dtype=float)
+                return float(np.nanmean(v)) if np.isfinite(v).any() else float("nan")
+
+            m = {"slip_rot_deg": mean("slip_rot_deg"), "slip_trans_mm": mean("slip_trans_mm"),
+                 "advance_mm": mean("advance_mm"), "drops": float(r["dropped"]), **effort}
         out.setdefault(r["job"]["condition"], {})[r["job"]["seed"]] = m
     return out
 
@@ -492,20 +511,23 @@ def hold_table(stage: str = "E1hold", root: Path = ROOT) -> tuple[str, list[dict
     return "\n".join(lines), rows
 
 
-HOLD_PAIRED = (("slip_trans_mm", "net slip mm"), ("slip_rot_deg", "net slip deg"), ("path_deg", "slip path deg"),
-               ("i2t_w", "I2t"), ("advance_mm", "advance mm"))
+HOLD_PAIRED = (("lost", "lost per strike"), ("slip_trans_mm", "net slip mm"), ("slip_rot_deg", "net slip deg"),
+               ("path_deg", "slip path deg"), ("i2t_w", "I2t"), ("advance_mm", "advance mm"))
 
 
 def hold_pairs(stage: str = "E1hold", root: Path = ROOT, ref_hold: float = 1.0) -> str:
     """E1hold paired by seed (each seed's randomization is shared across conditions): each condition against the
-    zero residual at `ref_hold`. A seed contributes the mean of its kept strikes; the cell is the mean difference
-    with its 95 % bootstrap interval (residual_experiment.paired_bootstrap), over the seeds where both are finite."""
+    zero residual at `ref_hold`. A seed contributes the share of its strikes lost (a drop, or the tool 2 cm / 30 deg
+    from its pose at the swing's start; an episode that dropped the tool before its first strike counts one lost
+    strike) and the mean of its kept strikes; the cell is the mean difference with its 95 % bootstrap interval
+    (residual_experiment.paired_bootstrap), over the seeds where both are finite."""
     per: dict[tuple[str, float], dict[int, dict[str, float]]] = {}
     for r in load_results(stage, root, "hammer"):
         name, _, h = r["job"]["condition"].rpartition("@hold=")
-        kept = [x for x in r["strikes"] if not (x.get("lost_w", False) or x["drop"])]
-        m = {}
-        for k, _ in HOLD_PAIRED:
+        lost = [bool(x.get("lost_w", False) or x["drop"]) for x in r["strikes"]]
+        kept = [x for x, lo in zip(r["strikes"], lost, strict=True) if not lo]
+        m = {"lost": float(np.mean(lost)) if lost else float(bool(r.get("dropped", False)))}
+        for k, _ in HOLD_PAIRED[1:]:
             v = [x[k] for x in kept if x.get(k) is not None and np.isfinite(x[k])]
             m[k] = float(np.mean(v)) if v else float("nan")
         per.setdefault((name, float(h)), {})[r["job"]["seed"]] = m
@@ -533,13 +555,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("cmd", choices=("list", "run", "report"))
     ap.add_argument("--stage", default="smoke", choices=sorted(STAGES))
     ap.add_argument("--task", default="hammer", choices=TASKS)
+    ap.add_argument("--hammer", default=HAMMER, help="the hammer (config.HAMMERS) of task hammer")
     ap.add_argument("--workers", type=int, default=14)
     ap.add_argument("--policy", action="append", default=[], help="NAME=PATH of an exported residual policy")
     ap.add_argument("--only", default=None, help="run one condition")
     ap.add_argument("--root", default=str(ROOT))
     a = ap.parse_args(argv)
     policies = dict(p.split("=", 1) for p in a.policy)
-    jobs = make_jobs(a.stage, policies, a.only, a.task)
+    jobs = make_jobs(a.stage, policies, a.only, a.task, a.hammer)
     root = Path(a.root)
     if a.cmd == "list":
         for j in jobs:

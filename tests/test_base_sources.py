@@ -14,8 +14,8 @@ requires_wuji = pytest.mark.skipif(not hand_available("wuji2"), reason="WUJI Han
 
 
 def model(**over):
-    base = dict(mask_prob=0.0, dropout=0.0, bias_sigma=0.0, jitter_sigma=0.0, class_confusion=0.0, freq_err=0.0,
-                amp_err=0.0, update_rate=10.0, latency=0.1)
+    base = dict(mask_prob=0.0, dropout=0.0, bias_sigma=0.0, jitter_sigma=0.0, horizon_err=0.0, class_confusion=0.0,
+                freq_err=0.0, amp_err=0.0, update_rate=10.0, latency=0.1)
     base.update(over)
     return ForecastModel(ForecastCfg(**base), np.random.default_rng(0))
 
@@ -57,6 +57,40 @@ def test_errors_bias_jitter_and_confusion():
     p = v[3:8]
     assert p.sum() == pytest.approx(1.0) and p[REGIMES.index("periodic")] >= 0.7 - 1e-9
     assert p[REGIMES.index("periodic")] == p.max()
+
+
+def test_the_reported_sigmas_are_a_claim_not_the_episodes_error_model():
+    claimed = ForecastCfg()
+    for over in ({}, {"bias_sigma": 0.03, "jitter_sigma": 0.02, "freq_err": 0.2, "amp_err": 0.4}):
+        fm = model(**over)
+        _, v = run(fm, lambda t: ForecastTruth(True, 1.0, "periodic", 25.0, 100.0), 0.2)[-1]
+        assert v[2] == pytest.approx(np.hypot(claimed.bias_sigma, claimed.jitter_sigma))
+        assert v[9] == pytest.approx(claimed.freq_err * v[8]) and v[11] == pytest.approx(claimed.amp_err * v[10])
+
+
+def test_a_confused_forecast_can_name_the_wrong_regime():
+    wrong = 0
+    for seed in range(60):
+        fm = ForecastModel(ForecastCfg(mask_prob=0.0, dropout=0.0, class_confusion=0.6), np.random.default_rng(seed))
+        _, v = run(fm, lambda t: ForecastTruth(True, 1.0, "periodic", 25.0, 100.0), 0.2)[-1]
+        p = v[3:8]
+        assert p.sum() == pytest.approx(1.0) and np.count_nonzero(p) <= 2
+        wrong += int(np.argmax(p) != REGIMES.index("periodic"))
+    assert 2 <= wrong <= 25  # a sixth of the episodes, on average
+
+
+def test_the_event_times_error_grows_with_the_lead_time():
+    def spread(t_event):
+        errs = []
+        for seed in range(40):
+            fm = ForecastModel(ForecastCfg(mask_prob=0.0, dropout=0.0, bias_sigma=0.0, jitter_sigma=0.0,
+                                           horizon_err=0.1, latency=0.0), np.random.default_rng(seed))
+            _, v = run(fm, lambda t: ForecastTruth(True, t_event), 0.001)[-1]
+            errs.append(v[1] - t_event)
+        return float(np.std(errs))
+
+    near, far = spread(0.05), spread(0.8)
+    assert far > 5 * near and far == pytest.approx(0.08, rel=0.4)
 
 
 def test_no_event_ahead_clears_the_forecast():

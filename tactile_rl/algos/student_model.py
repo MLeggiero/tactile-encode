@@ -8,7 +8,7 @@ projected, then the stacked samples mixed; the policy-rate blocks (last action, 
 lookahead, the forecast, the task, the trigger enable) through a small MLP. Inputs are normalized first (running mean
 and variance, a floor on the scale, clipped, as the teacher's RobustNormalization), which the ONNX export folds in.
 
-Outputs per step: the action's pre-tanh mean (60; the env squashes it; the last layer starts at zero so a fresh
+Outputs per step: the action's pre-tanh mean (40; the env squashes it; the last layer starts at zero so a fresh
 student is the base) and the auxiliary predictions (AUX_LAYOUT): each patch's slip over the next 20 ms (mm), the
 load regime (5 regimes and none, logits), contact (each patch and the tool on the workpiece, logits).
 """
@@ -18,7 +18,16 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from tactile_sim.control.obs_spec import BOARDS, N_JOINTS, OBS_BLOCKS, TAXEL_PATCHES, TAXELS, obs_dim, obs_slices
+from tactile_sim.control.obs_spec import (
+    ACTION_DIM,
+    BOARDS,
+    N_JOINTS,
+    OBS_BLOCKS,
+    TAXEL_PATCHES,
+    TAXELS,
+    obs_dim,
+    obs_slices,
+)
 
 PALM_GRID = (8, 16)
 FINGER_TAXELS = 32
@@ -83,7 +92,7 @@ class StudentNet(nn.Module):
         slow_in = sum(self._sl[b][1] - self._sl[b][0] for b in SLOW_BLOCKS)
         self.slow = nn.Sequential(nn.Linear(slow_in, slow_dim), nn.ELU())
         self.gru = nn.GRU(fast_dim + slow_dim, self.hidden)
-        self.head = nn.Sequential(nn.Linear(self.hidden, 128), nn.ELU(), nn.Linear(128, 3 * N_JOINTS))
+        self.head = nn.Sequential(nn.Linear(self.hidden, 128), nn.ELU(), nn.Linear(128, ACTION_DIM))
         self.aux = nn.Linear(self.hidden, AUX_DIM)
         with torch.no_grad():
             self.head[-1].weight.zero_()

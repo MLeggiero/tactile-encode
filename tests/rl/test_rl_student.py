@@ -4,6 +4,8 @@ the student's ONNX export with its auxiliary output (tactile_rl.export.onnx_expo
 import numpy as np
 import pytest
 
+from tactile_sim.control.obs_spec import ACTION_DIM
+
 pytestmark = [pytest.mark.rl]
 torch = pytest.importorskip("torch")
 
@@ -93,7 +95,7 @@ def test_student_export_parity_and_cpu_runner(tmp_path):
     assert err["max_abs_action"] < 1e-5
     pol = OnnxPolicy(out)  # the CPU runner reads action and state, the aux output rides along
     a = pol(obs[0, 0])
-    assert a.shape == (60,) and np.all(np.abs(a) <= 1.0)
+    assert a.shape == (ACTION_DIM,) and np.all(np.abs(a) <= 1.0)
 
 
 def test_transfer_pairs_the_testbeds_base_with_the_gpus_zero():
@@ -141,7 +143,7 @@ def test_dagger_runs_a_few_iterations(library, tmp_path):
 
     d = obs_dim(1) + sum(PRIVILEGED_BY_TASK["mixed"].values())
     teacher = ZeroInitRNNModel(TensorDict({"teacher": torch.zeros(1, d)}, batch_size=[1]), {"actor": ["teacher"]},
-                               "actor", 60, hidden_dims=(256, 128), obs_normalization=True, rnn_type="gru",
+                               "actor", ACTION_DIM, hidden_dims=(256, 128), obs_normalization=True, rnn_type="gru",
                                rnn_hidden_dim=256, distribution_cfg={"class_name": "GaussianDistribution",
                                                                      "init_std": 0.3, "std_type": "scalar"})
     with torch.no_grad():

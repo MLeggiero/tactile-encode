@@ -6,11 +6,13 @@ with the hammer and drill teachers).
 | C0 | none: the hold | the settled hold | near nominal (scale 0.1) | clean |
 | C1 | load generator at a quarter of the amplitudes | 0.5-1.0 of it | scale 0.3 | clean (exact, timely, never masked) |
 | C2 | the full band | 0.3-0.8 of it (the plan's hold level) | the full table | noisy, 25 % of episodes masked |
-| C3 | 70 % hammer episodes (library swings), 30 % the full band | 0.3-0.8 | the full table | noisy, masked |
+| C3 | 70 % hammer episodes (library swings), 30 % the full band | 0.3-1.2 | the full table | noisy, masked |
 
 The base grip below the settled hold is what leaves the residual a job: at the hold the WUJI's closing joints already
 run near their current ceiling (the SDK effort limit is the rated current), and a residual that grips harder and
-stiffens cannot change the slip; at half the hold it recovers the hold's slip (tactile_rl/README.md).
+stiffens cannot change the slip; at half the hold it recovers the hold's slip (tactile_rl/README.md). C3 reaches past
+the hold (to 1.2 of it: a base that squeezes harder, as a VLA's may) so that the full hold, where the validator's
+headline comparison sits, is inside the training range of the teacher and of the students distilled in C3.
 
 A stage advances when, over the episodes that began in it and ended recently (at least `min_episodes`; each evaluation
 that does not pass halves the window's counts, so older episodes fade), drops stay below `drop_max` and, once there are
@@ -41,7 +43,7 @@ STAGES = (
      "mask": False},
     {"name": "C2", "loads": True, "amp_scale": 1.0, "hold": (0.3, 0.8), "dr_scale": 1.0, "forecast": "noisy",
      "mask": True},
-    {"name": "C3", "loads": True, "amp_scale": 1.0, "hold": (0.3, 0.8), "dr_scale": 1.0, "forecast": "noisy",
+    {"name": "C3", "loads": True, "amp_scale": 1.0, "hold": (0.3, 1.2), "dr_scale": 1.0, "forecast": "noisy",
      "mask": True, "hammer": 0.7},
 )
 

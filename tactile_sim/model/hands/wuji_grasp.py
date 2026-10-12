@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,8 +151,12 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
 
 
 def cache_path(cfg: SimConfig, hand_path: Path) -> Path:
+    """The keyframe's cache file: in $TACTILE_GRASP_CACHE when set (a pipeline's own keyframes, synthesized by its own
+    code), else ~/.cache/tactile_sim/grasps."""
     key = _cache_key(grasp_config(cfg), hand_path)
-    return Path.home() / ".cache" / "tactile_sim" / "grasps" / f"wuji2_{key}.json"
+    env = os.environ.get("TACTILE_GRASP_CACHE")
+    root = Path(env) if env else Path.home() / ".cache" / "tactile_sim" / "grasps"
+    return root / f"wuji2_{key}.json"
 
 
 def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:

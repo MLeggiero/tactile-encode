@@ -51,14 +51,14 @@ def parse_policies(spec: str) -> list[dict]:
 
 
 class ConstantGrip:
-    """The strongest constant residual toward closing (the authority bound): every joint's position offset, stiffness
-    and feedforward at their limits in the synergy's closing direction (pre-tanh actions of arctanh(0.999))."""
+    """The strongest constant residual toward closing (the authority bound): every joint's set-point offset and
+    feedforward at their limits in the synergy's closing direction (pre-tanh actions of arctanh(0.999))."""
 
     def __init__(self, env):
         act = env.action_manager.get_term("residual")
         cd = torch.as_tensor(np.asarray(act.parts.synergy.close_dir, float), dtype=torch.float32, device=env.device)
         big = float(np.arctanh(0.999))
-        self.a = torch.cat([big * cd, torch.full_like(cd, big), big * cd])[None].repeat(env.num_envs, 1)
+        self.a = torch.cat([big * cd, big * cd])[None].repeat(env.num_envs, 1)
 
     def reset(self) -> None:
         pass

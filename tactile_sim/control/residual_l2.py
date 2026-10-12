@@ -8,10 +8,13 @@ Two scheduler tasks drive it (Testbed registers them when ResidualCfg.enabled):
   millisecond since its previous step;
 - `tick` at ResidualCfg.rate builds the observation, runs the policy, bounds the result and sends the command.
 
-Safety, applied every tick in this order: non-finite actions become zero; the action is clipped to [-1, 1];
-on the drill task, offsets on the trigger joints are capped, and may only open the finger while the base disables
-the trigger (the interlock exists only where there is a trigger: task "drill"); if any input is stale the offsets
-decay to zero instead; the offsets' slew is limited per second. The GPU training env (tactile_rl) mirrors this.
+Safety, applied every tick in this order: a non-finite base command is replaced by the last finite one (none yet:
+nothing is sent) and counts as a stale input; non-finite observation entries read zero (counted), so they never
+reach the policy's recurrent state, and a policy whose state turns non-finite anyway restarts from zero (counted);
+non-finite actions become zero; the action is clipped to [-1, 1]; on the drill task, offsets on the trigger joints
+are capped, and may only open the finger while the base disables the trigger (the interlock exists only where there
+is a trigger: task "drill"); if any input is stale the offsets decay to zero instead; the offsets' slew is limited per
+second. The GPU training env (tactile_rl) mirrors this.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ import numpy as np
 
 from tactile_sim.control.interface import HandCommand
 from tactile_sim.control.obs_spec import (
+    ACTION_DIM,
     BOARDS,
     FORECAST_DIM,
     LOOKAHEAD,
@@ -32,7 +36,9 @@ from tactile_sim.control.obs_spec import (
     TASKS,
     ActionSpec,
     JointParams,
+    arm_lookahead,
     assert_deployable,
+    base_tau_obs,
     compose,
     obs_dim,
     obs_slices,
@@ -43,7 +49,8 @@ from tactile_sim.control.obs_spec import (
 )
 from tactile_sim.sim.world import full_inertia
 
-# what a base source returns at time t: the base MIT command (5, 20), the lookahead block, trigger enable, forecast
+# what a base source returns at time t: the base MIT command (5, 20), the lookahead (hand 20 then arm 7, per LOOKAHEAD
+# time; the observation keeps the arm's part), trigger enable, forecast
 BaseFn = Callable[[float], tuple[np.ndarray, np.ndarray, bool, np.ndarray]]
 
 
@@ -54,7 +61,7 @@ class ZeroPolicy:
         pass
 
     def __call__(self, obs: np.ndarray) -> np.ndarray:
-        return np.zeros(3 * N_JOINTS)
+        return np.zeros(ACTION_DIM)
 
 
 def trigger_indices(cfg, joint_names: list[str]) -> np.ndarray:
@@ -143,11 +150,13 @@ class ResidualHandL2:
     def reset(self) -> None:
         self.fast_dim = sum(d for d in (448, 66, 2 * BOARDS, N_JOINTS, N_JOINTS))
         self.ring: deque[np.ndarray] = deque([np.zeros(self.fast_dim)] * self.stack, maxlen=self.stack)
-        self.last_a = np.zeros(3 * N_JOINTS)
-        self.off = np.zeros((3, N_JOINTS))
+        self.last_a = np.zeros(ACTION_DIM)
+        self.off = np.zeros((2, N_JOINTS))
         self.last_seq = [-1] * BOARDS
         self.policy.reset()
         self.n_ticks = self.n_nonfinite = self.n_stale = 0
+        self.n_obs_nonfinite = self.n_base_nonfinite = self.n_state_reset = 0
+        self.good_base: np.ndarray | None = None
         self.last_obs: np.ndarray | None = None
         self.last_cmd: HandCommand | None = None
         self.last_base: np.ndarray | None = None
@@ -190,8 +199,8 @@ class ResidualHandL2:
         fast = np.stack(self.ring)  # (stack, fast_dim), newest first
         sl = np.cumsum([0, 448, 66, 2 * BOARDS, N_JOINTS, N_JOINTS])
         parts = [fast[:, sl[i]:sl[i + 1]].ravel() for i in range(5)]  # each fast block holds its `stack` samples
-        obs = np.concatenate(parts + [self.last_a, base[0], np.asarray(look, float), np.asarray(forecast, float),
-                                      self.task_vec, [1.0 if trigger else 0.0]])
+        obs = np.concatenate(parts + [self.last_a, base[0], base_tau_obs(base, self.jp.tau_rated), arm_lookahead(look),
+                                      np.asarray(forecast, float), self.task_vec, [1.0 if trigger else 0.0]])
         if obs.shape != (obs_dim(self.stack),):
             raise ValueError(f"observation has {obs.shape[0]} entries, the spec {obs_dim(self.stack)}")
         for sl in self.masked:
@@ -213,25 +222,41 @@ class ResidualHandL2:
         j = self.trig
         d = self.close_dir[j]
         dq = np.clip(out[0, j], -c.trigger_dq_max, c.trigger_dq_max)
-        tau_close = np.clip(d * out[2, j], c.trigger_tau[0], c.trigger_tau[1])
+        tau_close = np.clip(d * out[1, j], c.trigger_tau[0], c.trigger_tau[1])
         if not trigger:  # the trigger is disabled: the residual may only open the finger
             dq = np.where(d * dq > 0, 0.0, dq)
             tau_close = np.minimum(tau_close, 0.0)
         out[0, j] = dq
-        out[2, j] = d * tau_close
+        out[1, j] = d * tau_close
         return out
 
     def tick(self, t: float) -> None:
         base, look, trigger, forecast = self.base_fn(t)
         base = np.asarray(base, dtype=float)
+        bad_base = not np.all(np.isfinite(base))
+        if bad_base:  # never pass a non-finite command on: hold the last finite base, or send nothing yet
+            self.n_base_nonfinite += 1
+            if self.good_base is None:
+                return
+            base = self.good_base
+        else:
+            self.good_base = base
         obs = self.observe(t, base, look, trigger, forecast)
-        a = np.asarray(self.policy(obs), dtype=float).reshape(3 * N_JOINTS)
+        bad = ~np.isfinite(obs)
+        if bad.any():  # a non-finite input would stay in the policy's recurrent state until reset
+            obs = np.where(bad, 0.0, obs)
+            self.n_obs_nonfinite += 1
+        a = np.asarray(self.policy(obs), dtype=float).reshape(ACTION_DIM)
+        h = getattr(self.policy, "h", None)
+        if h is not None and not np.all(np.isfinite(h)):
+            self.policy.reset()
+            self.n_state_reset += 1
         if not np.all(np.isfinite(a)):
             a = np.zeros_like(a)
             self.n_nonfinite += 1
         a = np.clip(a, -1.0, 1.0)
         target = self._trigger_guard(offsets(self.spec, self.jp, a), trigger)
-        if self.stale(t):
+        if bad_base or self.stale(t):
             target = self.off * np.exp(-self.dt / self.cfg.decay_tau)
             self.n_stale += 1
         self.off = self._trigger_guard(slew(self.spec, self.jp, self.off, target, self.dt), trigger)

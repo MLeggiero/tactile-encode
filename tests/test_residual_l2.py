@@ -8,10 +8,13 @@ import pytest
 from tactile_sim.assets.fetch_hands import hand_available
 from tactile_sim.config import fast_config, hand_config
 from tactile_sim.control.obs_spec import (
+    ACTION_DIM,
     N_JOINTS,
     ActionSpec,
     JointParams,
+    arm_lookahead,
     assert_deployable,
+    base_tau_obs,
     compose,
     forecast_vector,
     obs_dim,
@@ -37,7 +40,9 @@ SPEC = ActionSpec()
 
 def test_observation_layout():
     fast = 448 + 66 + 8 + 20 + 20
-    assert obs_dim(1) == 740 and obs_dim(4) == 740 + 3 * fast
+    # v2: the 40-D last action, the base's target and feedforward, the arm's lookahead (7 x 3)
+    assert ACTION_DIM == 40 and obs_dim(1) == fast + 40 + 20 + 20 + 21 + 13 + 3 + 1 == 680
+    assert obs_dim(4) == 680 + 3 * fast
     for stack in (1, 2, 4, 10):
         sl = list(obs_slices(stack).values())
         assert sl[0].start == 0 and sl[-1].stop == obs_dim(stack)
@@ -47,30 +52,42 @@ def test_observation_layout():
 
 def test_zero_action_reproduces_the_base_exactly():
     rng = np.random.default_rng(0)
-    base = np.stack([rng.uniform(-1, 1, 20), rng.uniform(-1, 1, 20), rng.choice([0.0, 0.3, 1.0], 20),
+    # gains far above kp_nom included (the synergy's 2.0 Nm/rad on a held fingertip joint: OBS_SPEC_VERSION 1 clamped
+    # the total stiffness to 8 kp_nom, 1.76 on a PIP/DIP, so a = 0 did not reproduce the real hammer's base)
+    base = np.stack([rng.uniform(-1, 1, 20), rng.uniform(-1, 1, 20), rng.choice([0.0, 0.3, 2.0, 3.0], 20),
                      rng.uniform(0, 0.05, 20), rng.uniform(-0.3, 0.3, 20)])
-    out = compose(SPEC, JP, base, offsets(SPEC, JP, np.zeros(60)))
+    out = compose(SPEC, JP, base, offsets(SPEC, JP, np.zeros(ACTION_DIM)))
     assert np.array_equal(out, base)
 
 
-def test_stiffness_offset_is_additive_and_damping_follows():
+def test_the_action_moves_the_set_point_and_the_feedforward_only():
+    rng = np.random.default_rng(1)
+    base = np.stack([rng.uniform(-1, 1, 20), rng.uniform(-1, 1, 20), rng.choice([0.0, 2.0], 20),
+                     rng.uniform(0, 0.05, 20), rng.uniform(-0.3, 0.3, 20)])
+    out = compose(SPEC, JP, base, offsets(SPEC, JP, np.ones(ACTION_DIM)))
+    assert out[0] == pytest.approx(base[0] + np.asarray(SPEC.dq_max)[JP.group])
+    assert out[4] == pytest.approx(base[4] + SPEC.tau_frac * JP.tau_rated)
+    assert np.array_equal(out[1:4], base[1:4])  # qd*, Kp, Kd: the base's (configuration on WUJI Hand 2)
+    lo = compose(SPEC, JP, base, offsets(SPEC, JP, -np.ones(ACTION_DIM)))
+    assert lo[4] == pytest.approx(base[4] - SPEC.tau_frac * JP.tau_rated)
+
+
+def test_the_base_blocks_of_the_observation():
     base = np.zeros((5, 20))
-    base[2] = 0.0  # a closing joint of the synergy: torque-driven, no stiffness
-    hi = compose(SPEC, JP, base, offsets(SPEC, JP, np.concatenate([np.zeros(20), np.ones(20), np.zeros(20)])))
-    assert hi[2] == pytest.approx(3.0 * JP.kp_nom)  # the residual can stiffen a zero-stiffness base
-    assert hi[3] == pytest.approx(2 * SPEC.zeta * np.sqrt(JP.i_eff) * np.sqrt(3.0 * JP.kp_nom))
-    lo = compose(SPEC, JP, base, offsets(SPEC, JP, np.concatenate([np.zeros(20), -np.ones(20), np.zeros(20)])))
-    assert np.all(lo[2] == 0.0) and np.all(lo[3] >= 0.0)  # never negative stiffness or damping
-    q = compose(SPEC, JP, base, offsets(SPEC, JP, np.concatenate([np.ones(20), np.zeros(40)])))[0]
-    assert q == pytest.approx(np.asarray(SPEC.dq_max)[JP.group])
+    base[4] = 0.5 * JP.tau_rated
+    assert base_tau_obs(base, JP.tau_rated) == pytest.approx(np.full(20, 0.5))
+    look = np.arange(27 * 3, dtype=float)  # a base source's lookahead: hand 20 then arm 7, per time
+    arm = arm_lookahead(look)
+    assert arm.shape == (21,) and np.array_equal(arm.reshape(3, 7), look.reshape(3, 27)[:, 20:])
+    assert np.array_equal(arm_lookahead(arm), arm)
 
 
 def test_slew_limit_is_per_second():
-    target = offsets(SPEC, JP, np.ones(60))
-    a = np.zeros((3, N_JOINTS))
+    target = offsets(SPEC, JP, np.ones(ACTION_DIM))
+    a = np.zeros((2, N_JOINTS))
     for _ in range(4):
         a = slew(SPEC, JP, a, target, 0.001)
-    b = slew(SPEC, JP, np.zeros((3, N_JOINTS)), target, 0.004)
+    b = slew(SPEC, JP, np.zeros((2, N_JOINTS)), target, 0.004)
     assert a == pytest.approx(b)  # four 1 ms steps move as far as one 4 ms step
     assert b[0] == pytest.approx(np.minimum(target[0], SPEC.dq_rate * 0.004))
 
@@ -122,7 +139,7 @@ class Const:
 def test_zero_policy_passes_the_base_through(res_tb):
     tb = res_tb
     r = tb.residual
-    r.policy = Const(np.zeros(60))
+    r.policy = Const(np.zeros(ACTION_DIM))
     tb.reset(0)
     p0, _ = tb.world.hammer_in_hand()
     tb.run_for(0.01)
@@ -145,10 +162,10 @@ def test_nonfinite_actions_and_stale_inputs_zero_the_residual(res_tb):
     tb = res_tb
     r = tb.residual
     tb.reset(0)
-    r.policy = Const(np.full(60, np.nan))
+    r.policy = Const(np.full(ACTION_DIM, np.nan))
     tb.run_for(0.02)
     assert r.n_nonfinite >= 19 and np.all(r.off == 0.0)
-    r.policy = Const(np.full(60, 0.5))
+    r.policy = Const(np.full(ACTION_DIM, 0.5))
     tb.run_for(0.05)
     built = np.abs(r.off).max()
     assert built > 0
@@ -159,7 +176,62 @@ def test_nonfinite_actions_and_stale_inputs_zero_the_residual(res_tb):
     finally:
         r.cfg.stale_taxel = stale_taxel
     assert np.abs(r.off).max() < 0.05 * built and r.n_stale >= 99
-    r.policy = Const(np.zeros(60))
+    r.policy = Const(np.zeros(ACTION_DIM))
+
+
+class Stateful:
+    """A recurrent policy that keeps whatever it is fed in its state (an ONNX GRU's h does the same with a NaN)."""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.h = np.zeros((1, 4))
+
+    def __call__(self, obs):
+        self.h = self.h + float(np.sum(obs)) * 0.0 + float(obs[0])
+        return np.zeros(ACTION_DIM)
+
+
+@requires_wuji
+def test_nonfinite_inputs_never_reach_the_policy_state_nor_the_drives(res_tb):
+    tb = res_tb
+    r = tb.residual
+    tb.reset(0)
+    pol = Stateful()
+    r.policy = pol
+    base_fn = r.base_fn
+    poisoned = {"n": 0}
+
+    def nan_obs_base(t):
+        base, look, trig, fc = base_fn(t)
+        fc = np.array(fc, float)
+        fc[0] = np.nan  # a non-finite input (a forecast field)
+        poisoned["n"] += 1
+        return base, look, trig, fc
+
+    r.base_fn = nan_obs_base
+    tb.run_for(0.02)
+    assert r.n_obs_nonfinite >= 19 and np.all(np.isfinite(pol.h)) and r.n_state_reset == 0
+
+    def nan_base(t):
+        base, look, trig, fc = base_fn(t)
+        base = np.array(base, float)
+        base[4, 3] = np.nan
+        return base, look, trig, fc
+
+    good = r.good_base.copy()
+    r.base_fn = nan_base
+    try:
+        tb.run_for(0.02)
+    finally:
+        r.base_fn = base_fn
+    assert r.n_base_nonfinite >= 19 and np.all(np.isfinite(r.last_cmd.array()))
+    assert np.array_equal(r.last_base, good)  # the last finite base holds
+    pol.h[:] = np.nan  # a state that turned non-finite anyway restarts from zero
+    tb.run_for(0.002)
+    assert r.n_state_reset >= 1 and np.all(np.isfinite(pol.h))
+    r.policy = Const(np.zeros(ACTION_DIM))
 
 
 @requires_wuji
@@ -171,14 +243,14 @@ def test_trigger_joints_only_open_while_the_trigger_is_disabled(res_tb):
     r = ResidualHandL2(res_tb, cfg=replace(res_tb.cfg.residual, task="drill"))
     j = r.trig
     assert len(j) == 3
-    off = np.zeros((3, N_JOINTS))
+    off = np.zeros((2, N_JOINTS))
     off[0, j] = 0.2 * r.close_dir[j]  # close the finger hard
-    off[2, j] = 1.0 * r.close_dir[j]
+    off[1, j] = 1.0 * r.close_dir[j]
     shut = r._trigger_guard(off, trigger=False)
-    assert np.all(r.close_dir[j] * shut[0, j] <= 0) and np.all(r.close_dir[j] * shut[2, j] <= 0)
+    assert np.all(r.close_dir[j] * shut[0, j] <= 0) and np.all(r.close_dir[j] * shut[1, j] <= 0)
     enabled = r._trigger_guard(off, trigger=True)
     assert np.all(np.abs(enabled[0, j]) <= r.cfg.trigger_dq_max + 1e-12)
-    assert np.all(r.close_dir[j] * enabled[2, j] <= r.cfg.trigger_tau[1] + 1e-12)
+    assert np.all(r.close_dir[j] * enabled[1, j] <= r.cfg.trigger_tau[1] + 1e-12)
     opening = -off
     assert np.allclose(r._trigger_guard(opening, trigger=False)[0, j], -r.cfg.trigger_dq_max * r.close_dir[j])
     others = np.setdiff1d(np.arange(20), j)
@@ -192,7 +264,7 @@ def test_the_trigger_interlock_is_the_drill_tasks_only(res_tb):
 
     r = res_tb.residual  # task "hammer": no trigger, no interlock
     assert r.cfg.task == "hammer" and len(r.trig) == 0
-    off = np.random.default_rng(0).uniform(-1.0, 1.0, (3, N_JOINTS))
+    off = np.random.default_rng(0).uniform(-1.0, 1.0, (2, N_JOINTS))
     for trigger in (False, True):
         assert np.array_equal(r._trigger_guard(off, trigger), off)
     names = r.hand.joint_names

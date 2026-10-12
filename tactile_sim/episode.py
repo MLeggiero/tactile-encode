@@ -299,8 +299,11 @@ class Episode:
         if tb.grip.dropped:
             self.events.append(("drop", tb.grip.t_drop))
             if self._cur is not None:
+                # the strike a drop interrupted has no end and no slip: NaN, not the record's default 0 (a lost tool
+                # must not read as a perfectly held one in the slip means)
                 self._cur.drop = True
                 self._cur.depth_after = tb.world.plant.depth
+                self._cur.slip_trans = self._cur.slip_rot = float("nan")
                 self.records.append(self._cur)
                 self._cur = None
         summary = summarize(self.records, self.cfg)
@@ -311,6 +314,12 @@ class Episode:
         if self.dr is not None:
             summary.update({f"dr_{k}": v for k, v in self.dr.as_dict().items()})
         return EpisodeResult(self.records, summary, self.truth.arrays(), self.events, tb)
+
+
+def _nanmax(x) -> float:
+    """The largest finite value (a dropped strike's slip is NaN), NaN if none."""
+    v = np.asarray(x, dtype=float)
+    return float(np.nanmax(v)) if np.isfinite(v).any() else float("nan")
 
 
 def summarize(records: list[StrikeRecord], cfg: SimConfig) -> dict:
@@ -326,8 +335,8 @@ def summarize(records: list[StrikeRecord], cfg: SimConfig) -> dict:
         "hit_rate": float(np.mean([r.hit for r in records])),
         "strikes_to_target": float(reached[0] + 1) if reached else float("nan"),
         "mean_depth_inc": float(np.mean([r.depth_inc for r in records])),
-        "max_slip_trans": float(max(r.slip_trans for r in records)),
-        "max_slip_rot": float(max(r.slip_rot for r in records)),
+        "max_slip_trans": _nanmax([r.slip_trans for r in records]),
+        "max_slip_rot": _nanmax([r.slip_rot for r in records]),
         "drops": int(sum(r.drop for r in records)),
         "mean_peak_force": float(np.mean([r.peak_force_truth for r in records if r.hit] or [0.0])),
         "mean_pulse_width": float(np.mean([r.pulse_width for r in records if r.hit] or [0.0])),

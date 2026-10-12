@@ -35,8 +35,8 @@ ENV_CFGS = [
     {"sdk_lpf_hz": 300.0, "tau_i": 0.0005},
     {"cmd_jitter": 0.0, "tau_i": 0.0, "effort_limit_ratio": 1.5, "i_peak_ratio": 1.2},
     {"effort_limit_ratio": 2.0, "i_peak_ratio": 2.0, "c_th": 0.05, "r_th": 50.0, "t_warn": 40.0, "t_max": 60.0},
-    {"cmd_latency": 0.0015, "cmd_jitter": 0.0004, "sdk_lpf_hz": 100.0, "t_amb": 33.0, "r_wind": 3.0},
-    {"cmd_latency": 0.0, "cmd_jitter": 0.0, "effort_limit_ratio": 0.9},
+    {"cmd_latency": 0.0015, "cmd_jitter": 0.0004, "sdk_lpf_hz": 100.0, "t_amb": 33.0, "r_wind": 3.0, "kt_scale": 0.85},
+    {"cmd_latency": 0.0, "cmd_jitter": 0.0, "effort_limit_ratio": 0.9, "kt_scale": 1.15},
 ]
 PER_ENV = ("cmd_latency", "cmd_jitter", "r_wind", "r_th", "c_th", "t_amb", "t_warn", "t_max", "derate_floor", "tau_i")
 
@@ -73,7 +73,8 @@ def run_parity(sdk_lpf_fields=("q",), servo_rate=None, steps=4000, dt=0.00025, s
     drv.set_params(**{k: torch.tensor([getattr(c, k) for c in cfgs], dtype=torch.float64) for k in PER_ENV},
                    sdk_lpf_hz=torch.tensor([c.sdk_lpf_hz or 0.0 for c in cfgs], dtype=torch.float64),
                    effort_limit_ratio=torch.tensor([[c.effort_limit_ratio] for c in cfgs]),
-                   i_peak_ratio=torch.tensor([[c.i_peak_ratio] for c in cfgs]))
+                   i_peak_ratio=torch.tensor([[c.i_peak_ratio] for c in cfgs]),
+                   kt_scale=torch.tensor([[c.kt_scale] for c in cfgs]))
     drv.reset()
 
     def jitter(push: torch.Tensor) -> torch.Tensor:

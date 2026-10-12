@@ -7,11 +7,11 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from tactile_sim.control.obs_spec import ActionSpec, obs_dim, spec_hash
+from tactile_sim.control.obs_spec import ACTION_DIM, ActionSpec, obs_dim, spec_hash
 from tactile_sim.control.policy_io import PolicyMeta
 
 OUT = Path(__file__).parent
-D, H, A = obs_dim(1), 8, 60
+D, H, A = obs_dim(1), 8, ACTION_DIM
 
 
 class Tiny(torch.nn.Module):

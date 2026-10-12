@@ -77,7 +77,7 @@ class LoadGenCommand(CommandTerm):
         self.level = torch.ones(N, **f32)
         self.s_now = torch.full((N,), self.s_hold, **f32)
         self.base = torch.zeros(N, 5, N_JOINTS, **f32)
-        self.lookahead = torch.zeros(N, (N_JOINTS + N_ARM) * len(LOOKAHEAD), **f32)
+        self.lookahead = torch.zeros(N, N_ARM * len(LOOKAHEAD), **f32)
         self.forecast = torch.zeros(N, 13, **f32)
         z64 = torch.zeros(N, **f64)
         self.truth = {"valid": torch.zeros(N, dtype=torch.bool, device=dev), "t_event": z64, "f": z64, "amp": z64,
