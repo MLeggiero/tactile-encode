@@ -229,8 +229,8 @@ def test_reset_randomization_writes_per_world_parameters():
         hm = dr.v["head_mass"]
         assert float(hm.min()) >= c.head_mass[0] and float(hm.max()) <= c.head_mass[1]
         mass = m.body_mass[:, dr.hammer_bid]
-        # the hammer body's mass is the head's plus the handle's (0.10 kg)
-        torch.testing.assert_close(mass.double(), hm + 0.10, atol=2e-3, rtol=0)
+        # the hammer body's mass is the head's plus the handle's (the YCB's 0.215 kg, the light hammer's 0.10)
+        torch.testing.assert_close(mass.double(), hm + dr.parts.cfg.hammer.handle_mass, atol=2e-3, rtol=0)
         drive = hand_drive(env.scene["robot"])
         lat = drive.cmd_latency
         assert float(lat.min()) >= c.cmd_latency[0] - 1e-9 and float(lat.max()) <= c.cmd_latency[1] + 1e-9

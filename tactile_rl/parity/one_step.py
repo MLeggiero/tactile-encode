@@ -115,7 +115,7 @@ def sample_cpu_states(cfg: SimConfig, n_weld: int = 40, n_hold: int = 60, n_pert
         if i % int(round(0.02 / w.dt)) == 0:
             d.xfrc_applied[hb, :3] = rng.uniform(-15.0, 15.0, 3)
             d.xfrc_applied[hb, 3:] = rng.uniform(-0.5, 0.5, 3)
-            a = rng.uniform(-0.6, 0.6, 3 * len(hand.joint_names))
+            a = rng.uniform(-0.6, 0.6, spec.dim)
             base = np.stack(hand.synergy.mit_command(hand.s, d.qpos[hand.qadr]))
             hand.set_hand_command(HandCommand.from_array(w.t, compose(spec, jp, base, offsets(spec, jp, a))))
             arm_off[:] = rng.uniform(-0.02, 0.02, len(arm_off))

@@ -3,15 +3,17 @@
 # residual on the YCB hammer"). Two tracks, each step logged and marked done (a rerun skips finished steps, resumes
 # an interrupted teacher or student from its last checkpoint):
 #
-#   CPU: the base library (training venv) -> E1hold's zero residual (validator venv) -> each student's E1hold as its
-#        ONNX graph appears
-#   GPU: waits for the library and for $GATE_MARK in $GATE_LOG (another job's GPU block), then the GPU tests, then per
-#        rate in $RATES: teacher (Tactile-Residual C0-C3) -> DAgger student -> ONNX export with parity; then the GPU
-#        evaluation at matched hold levels
+#   CPU: waits for $CPU_GATE_MARK in $CPU_GATE_LOG (others' CPU jobs; empty: no wait), then the CPU tests, the base
+#        library (training venv) -> E1hold's zero residual (validator venv) -> each student's E1hold as its ONNX graph
+#        appears
+#   GPU: waits for $GATE_MARK in $GATE_LOG (another job's GPU block; empty: no wait), then the GPU tests and the load
+#        generator's band check, then (once the library exists) a throughput check and per rate in $RATES: teacher
+#        (Tactile-Residual C0-C3) -> DAgger student -> ONNX export with parity; then the GPU evaluation at matched
+#        hold levels
 #
 # then the reports and $OUT/PIPELINE_DONE. Launch detached, e.g.
 #   (setsid nohup tactile_rl/run_residual_pipeline.sh > ~/residual40/pipeline.out 2>&1 < /dev/null &)
-# Everything is configured by environment variables (defaults: g1's layout).
+# Everything is configured by environment variables or $PIPELINE_ENV (defaults: g1's layout).
 set -u
 
 # settings that must outlive a relaunch (after a reboot) live in this file, as VAR=value lines
@@ -23,8 +25,10 @@ TREE=${TREE:-$HOME/residual40/tree}          # a copy of this repository (git ar
 OUT=${OUT:-$HOME/residual40/runs}
 PY_RL=${PY_RL:-$HOME/rl-env/.venv-rl/bin/python}           # torch, mjlab 1.6.0 (MuJoCo / MuJoCo Warp 3.11)
 PY_VAL=${PY_VAL:-$HOME/tactile-encode/.venv/bin/python}    # the 8 kHz validator (MuJoCo 3.14)
-GATE_LOG=${GATE_LOG:-$HOME/tactile_vla/v5_pipeline.log}
+GATE_LOG=${GATE_LOG-$HOME/tactile_vla/v5_pipeline.log}   # the GPU's gate (set empty: none)
 GATE_MARK=${GATE_MARK:-V5_PIPELINE_DONE}
+CPU_GATE_LOG=${CPU_GATE_LOG-}                            # the CPU-heavy steps' gate (empty: none)
+CPU_GATE_MARK=${CPU_GATE_MARK:-SAMPLE_DONE}
 LIB_EPISODES=${LIB_EPISODES:-120}
 LIB_STRIKES=${LIB_STRIKES:-5}
 CPU_WORKERS=${CPU_WORKERS:-2}                 # while the gate is closed (others' CPU jobs run)
@@ -66,7 +70,14 @@ step() {
 }
 # wait_for NAME: until NAME is done (0) or failed (1)
 wait_for() { until done_ "$1" || failed "$1"; do sleep 120; done; done_ "$1"; }
-gate_open() { grep -q "$GATE_MARK" "$GATE_LOG" 2>/dev/null; }
+# a gate opens when its log holds its mark (an empty log name: always open); once open it stays open (a marker)
+open_gate() {  # open_gate NAME LOG MARK
+  done_ "gate_$1" && return 0
+  if [ -z "$2" ] || grep -q "$3" "$2" 2>/dev/null; then touch "$M/gate_$1.done"; return 0; fi
+  return 1
+}
+gate_open() { open_gate gpu "$GATE_LOG" "$GATE_MARK"; }
+cpu_gate_open() { open_gate cpu "$CPU_GATE_LOG" "$CPU_GATE_MARK"; }
 cpu_workers() { if gate_open; then echo "$CPU_WORKERS_FREE"; else echo "$CPU_WORKERS"; fi; }
 tag() { if [ "$1" = 1000 ]; then echo 1k; else echo "$1"; fi; }
 
@@ -78,6 +89,20 @@ e1() {  # e1 NAME [--policy NAME=PATH ...]: E1hold (20 seeds x 4 holds) in the v
 }
 
 cpu_track() {
+  until cpu_gate_open; do sleep 60; done
+  log "CPU gate open ($CPU_GATE_MARK in ${CPU_GATE_LOG:-nothing})"
+  if [ "$RUN_TESTS" = 1 ]; then
+    step tests_cpu "$PY_VAL" -m pytest -q tests/test_residual_l2.py tests/test_base_sources.py \
+      tests/test_wuji_drive.py tests/test_residual_experiment.py || log "CPU tests failed: going on (logs/tests_cpu.log)"
+  fi
+  if step library "$PY_RL" -m tactile_sim.behaviors.base_library export --episodes "$LIB_EPISODES" \
+       --strikes "$LIB_STRIKES" --workers "$CPU_WORKERS" --out "$LIB"; then
+    # the zero-residual base should hit nearly every swing (YCB, 2026-10-12: 8 of 8 on six randomized draws)
+    "$PY_RL" -c "import numpy as np; z = np.load('$LIB'); h = z['e_hit'].astype(float); \
+r = z['e_slip_rot'].astype(float); print(f'library: {len(h)} entries, hits {h.mean():.3f}, slip per swing \
+{np.degrees(np.nanmean(r)):.2f} deg', 'WARNING: the base misses swings' if h.mean() < 0.8 else '')" 2>&1 |
+      tee -a "$LOG"
+  fi
   e1 zero
   for r in $RATES; do
     local t; t=$(tag "$r")
@@ -148,21 +173,27 @@ gpu_eval() {
 }
 
 gpu_track() {
-  wait_for library || { log "no library: the GPU track stops"; return 1; }
+  gpu_body
+  local r t
+  for r in $RATES; do t=$(tag "$r"); done_ "export_s$t" || touch "$M/export_s$t.fail"; done  # releases the CPU track
+}
+
+gpu_body() {
   until gate_open; do sleep 300; done
-  log "gate open ($GATE_MARK): the GPU is ours"
+  log "GPU gate open ($GATE_MARK in ${GATE_LOG:-nothing}): the GPU is ours"
   nvidia-smi --query-gpu=memory.used,memory.total --format=csv | tee -a "$LOG"
-  if [ "$RUN_TESTS" = 1 ]; then
+  if [ "$RUN_TESTS" = 1 ]; then  # (their small libraries are recorded in-process: one CPU thread)
     step tests_gpu timeout 5400 "$PY_RL" -m pytest -q tests/rl/test_rl_env.py tests/rl/test_rl_sensors.py \
       tests/rl/test_rl_drive_parity.py tests/rl/test_rl_export.py tests/rl/test_rl_student.py \
       tests/rl/test_rl_hammer.py \
       || log "GPU tests failed: training goes on (see logs/tests_gpu.log)"
   fi
+  # the load generator's band (still the light hammer's) against the YCB grip at the four hold levels: a report
+  step band "$PY_RL" -m tactile_rl.bench.loadgen_calibration --envs "$BAND_ENVS" --band || true
+  wait_for library || { log "no library: the GPU track stops"; return 1; }
   # shellcheck disable=SC2086  # THROUGHPUT_ENVS is a list
   step throughput "$PY_RL" -m tactile_rl.bench.throughput --task hammer --seconds 0.25 --rate 1000 250 \
     --envs $THROUGHPUT_ENVS --library "$LIB" || true
-  # the load generator's band (still the light hammer's) against the YCB grip at the four hold levels: a report
-  step band "$PY_RL" -m tactile_rl.bench.loadgen_calibration --envs "$BAND_ENVS" --band || true
   local r t
   for r in $RATES; do
     t=$(tag "$r")
@@ -176,7 +207,6 @@ gpu_track() {
     step "student_s$t" student "$r" || continue
     step "export_s$t" export_student "$r"
   done
-  for r in $RATES; do t=$(tag "$r"); done_ "export_s$t" || touch "$M/export_s$t.fail"; done  # releases the CPU track
   if [ "$GPU_EVAL" = 1 ]; then step eval_gpu gpu_eval || true; fi
 }
 
@@ -190,21 +220,12 @@ fi
 echo $$ > "$OUT/pipeline.pid"
 rm -f "$OUT/PIPELINE_DONE"
 log "pipeline start: tree $TREE ($(cat "$TREE/COMMIT" 2>/dev/null || echo unknown commit)), out $OUT, rates $RATES, \
-library $LIB_EPISODES x $LIB_STRIKES, gate $GATE_MARK in $GATE_LOG"
-if [ "$RUN_TESTS" = 1 ]; then
-  step tests_cpu "$PY_VAL" -m pytest -q tests/test_residual_l2.py tests/test_base_sources.py tests/test_wuji_drive.py \
-    tests/test_residual_experiment.py || log "CPU tests failed: going on (see logs/tests_cpu.log)"
-fi
-step library "$PY_RL" -m tactile_sim.behaviors.base_library export --episodes "$LIB_EPISODES" \
-  --strikes "$LIB_STRIKES" --workers "$CPU_WORKERS" --out "$LIB"
-# the zero-residual base should hit nearly every swing (YCB, 2026-10-12: 8 of 8 on six randomized draws)
-"$PY_RL" -c "import numpy as np; z = np.load('$LIB'); h = z['e_hit'].astype(float); r = z['e_slip_rot'].astype(float); \
-print(f'library: {len(h)} entries, hits {h.mean():.3f}, slip per swing {np.degrees(np.nanmean(r)):.2f} deg', \
-'WARNING: the base misses swings' if h.mean() < 0.8 else '')" 2>&1 | tee -a "$LOG"
-cpu_track &
-CPU_PID=$!
-gpu_track
-wait "$CPU_PID"
+library $LIB_EPISODES x $LIB_STRIKES, GPU gate '$GATE_MARK' in '$GATE_LOG', CPU gate '$CPU_GATE_MARK' in \
+'$CPU_GATE_LOG', $CPU_WORKERS CPU workers"
+gpu_track &
+GPU_PID=$!
+cpu_track
+wait "$GPU_PID"
 "$PY_VAL" -m tactile_sim.experiments.residual_experiment report --stage "$E1_STAGE" --root "$OUT/e1" \
   > "$OUT/reports/e1hold.md" 2>> "$LOG"
 for r in $RATES; do
