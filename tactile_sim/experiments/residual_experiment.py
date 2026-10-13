@@ -43,7 +43,8 @@ ROOT = Path("runs/residual")
 STAGES = {"smoke": {"seeds": 2, "strikes": 3, "fast": True}, "E1": {"seeds": 20, "strikes": 10, "fast": False},
           "E1hold": {"seeds": 20, "strikes": 10, "fast": False}, "hold_smoke": {"seeds": 1, "strikes": 2, "fast": True},
           "E3": {"seeds": 20, "strikes": 10, "fast": False}, "E4": {"seeds": 20, "strikes": 10, "fast": False},
-          "E5": {"seeds": 10, "strikes": 10, "fast": False}, "E6": {"seeds": 20, "strikes": 10, "fast": False}}
+          "E5": {"seeds": 10, "strikes": 10, "fast": False}, "E6": {"seeds": 20, "strikes": 10, "fast": False},
+          "Efric": {"seeds": 12, "strikes": 10, "fast": False}, "fric_smoke": {"seeds": 1, "strikes": 2, "fast": True}}
 # E4: the observation blocks each sensing variant cannot see
 SENSING = {"touch": ("hand_current",), "current": ("taxel_codes", "patch_features", "board_status"),
            "proprio": ("hand_current", "taxel_codes", "patch_features", "board_status"), "both": ()}
@@ -76,6 +77,13 @@ HAMMER = "ycb"  # the hammer the residual trains and runs on (config.HAMMERS; th
 SQUEEZE_LEVEL = 1.5
 # E1hold: the base at these fractions of its grip (the GPU curriculum's hold levels; ResidualCfg.hold_level)
 HOLDS = (0.3, 0.5, 0.8, 1.0)
+# Efric: the hand's friction on the tool fixed per condition (over each seed's draw; the grasp keyframe stays the one
+# synthesized at wuji_grasp.GRASP_FRICTION, so the grip's shape is the same), at two of the base's hold levels
+FRICTIONS = (0.2, 0.3, 0.4, 0.6, 1.0, 1.5)
+FRIC_HOLDS = (1.0, 0.5)
+# the residual's activity, per joint group (activity_groups): a joint's name -> its group
+ACTIVITY_GROUPS = ("knuckle flexion", "middle joints", "fingertip joints", "abduction", "thumb base", "thumb outer")
+SQUEEZE_MS = (-100, 300)  # the window around a blow's contact the squeeze curve covers
 LOST_MM, LOST_DEG = 20.0, 30.0  # the GPU env's lost grasp (terminations.tool_left_hand), from the swing's start
 SLIP_LPF_HZ = 30.0  # the slip path's low-pass, as the GPU runtime's
 DRILL_T_MAX = 10.0  # s per screw
@@ -145,6 +153,12 @@ def stage_conditions(stage: str, policies: dict[str, str] | None = None, task: s
     and each policy under each held-out physics."""
     if stage in ("smoke", "E1", "E3"):
         return e1_conditions(policies, task)
+    if stage in ("Efric", "fric_smoke"):  # the base and each policy at each friction and hold level
+        conds = [c for c in e1_conditions(policies, task) if c.name == "base" or c.name.startswith("residual:")]
+        return [Condition(f"{c.name}@hold={h:g}@mu={mu:g}",
+                          _merge(c.overrides, {"residual": {"hold_level": h}, "gripper": {"hand_friction": mu}}),
+                          c.policy)
+                for mu in FRICTIONS for h in FRIC_HOLDS for c in conds]
     if stage in ("E1hold", "hold_smoke"):  # the base and each policy with the base at each hold level
         conds = [c for c in e1_conditions(policies, task) if c.name == "base" or c.name.startswith("residual:")]
         return [Condition(f"{c.name}@hold={h:g}", _merge(c.overrides, {"residual": {"hold_level": h}}), c.policy)
@@ -211,6 +225,7 @@ class Recorder:
         self.tb = tb
         self.hand = tb.world.hand
         self.t, self.off = [], []
+        self.raw: list[np.ndarray] = []  # the residual's offsets (2, 20): dq (rad), dtau (Nm), per millisecond
         self.i2t = 0.0
         self.i_peak = 0.0
         # per millisecond: time, the tool's pose in the hand, the 30 Hz low-passed pose's step (mm, deg), the drives'
@@ -244,6 +259,7 @@ class Recorder:
                                 res.off[1] / (sp.tau_frac * jp.tau_rated)])
             self.t.append(t)
             self.off.append(n)
+            self.raw.append(res.off.copy())
 
     def reaction_ms(self, t_contact: float, thresh: float = 0.05, window: float = 0.1) -> float:
         """Time from contact until the residual's normalized offsets first move by `thresh` (NaN if they do not
@@ -274,6 +290,99 @@ class Recorder:
         return {"path_mm": float(path[:, 0].sum()), "path_deg": float(path[:, 1].sum()),
                 "i2t_w": float(np.asarray(self.ms_i2)[m].sum()),
                 "lost_w": bool((dp > LOST_MM).any() or (dr > LOST_DEG).any())}
+
+
+def activity_groups(names: list[str]) -> dict[str, list[int]]:
+    """The hand's joints by ACTIVITY_GROUPS: the fingers' knuckle flexion, middle and fingertip joints and abduction,
+    the thumb's base (CMC flexion and abduction) and outer joints (MCP, IP)."""
+    def group(n: str) -> str:
+        if "thumb" in n:
+            return "thumb base" if "_cmc_" in n else "thumb outer"
+        for suffix, g in (("_mcp_flex", "knuckle flexion"), ("_pip", "middle joints"), ("_dip", "fingertip joints"),
+                          ("_mcp_abd", "abduction")):
+            if n.endswith(suffix):
+                return g
+        raise ValueError(n)
+
+    out: dict[str, list[int]] = {g: [] for g in ACTIVITY_GROUPS}
+    for i, n in enumerate(names):
+        out[group(n)].append(i)
+    return out
+
+
+def activity(rec: Recorder, strikes: list[dict]) -> dict:
+    """The residual's own activity over an episode's strikes (from each swing's start to its strike's end, or the
+    episode's end for a strike a drop interrupted):
+    - per joint group (activity_groups): mean and 95th percentile of |dq| (rad) and |dtau| (Nm) over the joints and
+      milliseconds;
+    - the squeeze around each blow's contact (SQUEEZE_MS): close_dir x dtau (Nm), the mean over the closing joints
+      (the grip synergy's: the fingers' knuckle and middle joints, the thumb's outer joints), and per closing group,
+      averaged over the episode's blows;
+    - the tool's pose in the hand around each blow (re-seating): its rotation (deg) and translation (mm) from its pose
+      at the episode's first swing start, 10 ms before contact, the largest within 100 ms after, 300 ms after, and at
+      the strike's end."""
+    if not rec.raw:
+        return {}
+    hand = rec.hand
+    t = np.asarray(rec.t)
+    raw = np.asarray(rec.raw)  # (T, 2, 20)
+    groups = activity_groups(list(hand.joint_names))
+    close = np.asarray(hand.synergy.close_dir, float)
+    win = np.zeros(len(t), bool)
+    for s in strikes:
+        t0 = s.get("t_swing_start", float("nan"))
+        t1 = s.get("t_end", float("nan"))
+        if np.isfinite(t0):
+            win |= (t >= t0) & (t <= (t1 if np.isfinite(t1) else t[-1]))
+    out: dict = {"groups": {}, "window_ms": int(win.sum())}
+    for g, idx in groups.items():
+        if not idx or not win.any():
+            continue
+        dq, dtau = np.abs(raw[win][:, 0][:, idx]).ravel(), np.abs(raw[win][:, 1][:, idx]).ravel()
+        out["groups"][g] = {"dq_mean": float(dq.mean()), "dq_p95": float(np.percentile(dq, 95)),
+                            "dtau_mean": float(dtau.mean()), "dtau_p95": float(np.percentile(dtau, 95))}
+    closing = {g: [i for i in idx if close[i] != 0] for g, idx in groups.items()}
+    closing = {g: idx for g, idx in closing.items() if idx}
+    every = [i for idx in closing.values() for i in idx]
+    lo, hi = SQUEEZE_MS
+    n = hi - lo + 1
+    curves = {g: [] for g in ["closing"] + list(closing)}
+    pose_t, pose = np.asarray(rec.ms_t), np.asarray(rec.ms_pose)
+    first = min((s["t_swing_start"] for s in strikes if np.isfinite(s.get("t_swing_start", np.nan))), default=None)
+    ref = pose[max(int(np.searchsorted(pose_t, first)) - 1, 0)] if first is not None and len(pose) else None
+    reseat = []
+    for s in strikes:
+        tc = s.get("t_contact", float("nan"))
+        if not np.isfinite(tc):
+            continue
+        k = int(np.searchsorted(t, tc))
+        rows = np.arange(k + lo, k + hi + 1)
+        ok = (rows >= 0) & (rows < len(t))
+        sq = close[None, :] * raw[np.clip(rows, 0, len(t) - 1), 1]  # (n, 20) closing torque offsets
+        for g, idx in [("closing", every)] + list(closing.items()):
+            c = np.where(ok, sq[:, idx].mean(axis=1), np.nan)
+            curves[g].append(c)
+        if ref is not None:
+            def at(tq):
+                j = min(max(int(np.searchsorted(pose_t, tq)) - 1, 0), len(pose) - 1)
+                d = pose[j] - ref
+                return float(np.degrees(np.linalg.norm(d[3:]))), float(1e3 * np.linalg.norm(d[:3]))
+
+            m = (pose_t >= tc) & (pose_t <= tc + 0.1)
+            if m.any():
+                d = pose[m] - ref
+                rots, trans = np.degrees(np.linalg.norm(d[:, 3:], axis=1)), 1e3 * np.linalg.norm(d[:, :3], axis=1)
+                peak = (float(rots.max()), float(trans.max()))
+            else:
+                peak = (float("nan"), float("nan"))
+            t_end = s.get("t_end", float("nan"))
+            reseat.append({"idx": s["idx"], "before": at(tc - 0.010), "peak": peak, "after": at(tc + 0.300),
+                           "end": at(t_end) if np.isfinite(t_end) else (float("nan"), float("nan"))})
+    out["squeeze"] = {g: (np.nanmean(np.stack(c), axis=0).tolist() if c else [float("nan")] * n)
+                      for g, c in curves.items()}
+    out["squeeze_blows"] = len(curves["closing"])
+    out["reseat"] = reseat
+    return out
 
 
 def _strike_row(r, rec: Recorder, t_end: float = float("nan")) -> dict:
@@ -343,6 +452,7 @@ def run_job(job: Job, root: str = str(ROOT)) -> dict:
                      "state_reset": r.n_state_reset, "i2t": rec.i2t,
                      "i_peak_ratio": rec.i_peak, "t_max_winding": float(tb.world.hand.drive.T.max())},
         "dropped": bool(tb.grip.dropped), "dr": dr, "wall_s": time.time() - t0,
+        "activity": activity(rec, result.get("strikes", [])) if job.task == "hammer" else {},
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
