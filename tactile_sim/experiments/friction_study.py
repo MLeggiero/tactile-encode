@@ -1,7 +1,8 @@
 """The friction study (residual_experiment's stage Efric): the hand's friction on the tool fixed per condition, the
 base at two hold levels, the zero residual and each student; outcomes and the residual's own activity.
 
-    python -m tactile_sim.experiments.friction_study --root runs/friction/e --out runs/friction/reports [--stage Efric]
+    python -m tactile_sim.experiments.friction_study --root runs/friction/e --out runs/friction/reports [--stage Efric] \
+        [--pair s250:s250v3 ...]
 
 Writes report.md (the tables below) and four figures:
 - outcomes.png: per friction level and hold, lost strikes, net slip, slip path, nail advance and I2t per policy
@@ -11,7 +12,8 @@ Writes report.md (the tables below) and four figures:
 - reseat.png: the tool's in-hand rotation per blow: the excursion during the blow and what stays after it.
 
 Tables: absolute values per condition; each policy against the zero residual at the same friction and hold, paired by
-seed (residual_experiment.paired_bootstrap); the activity per joint group; the re-seating. A seed's strike metrics are
+seed (residual_experiment.paired_bootstrap), and each `--pair A:B` (B against A); the activity per joint group; the
+re-seating. A seed's strike metrics are
 the means over its kept strikes (a dropped strike has no slip); lost per strike counts the testbed's drops and the tool
 2 cm / 30 deg from its pose at the swing's start; an episode dropped before its first strike counts one lost strike.
 """
@@ -107,7 +109,31 @@ def squeeze_curve(seeds: dict[int, dict], group: str = "closing") -> np.ndarray 
 
 
 # ------------------------------------------------------------------------------------------------ tables
-def tables(data) -> str:
+def paired_table(data, a: str, b: str) -> list[str]:
+    """B against A at each friction and hold, paired by seed: difference [95 % CI] per metric."""
+    mus, holds = sorted({k[2] for k in data}), sorted({k[1] for k in data}, reverse=True)
+    lines = [f"## {b} against {a} at the same friction and hold (paired by seed): difference [95 % CI]", "",
+             "| mu | hold | lost per strike | " + " | ".join(lab for _, lab in STRIKE_KEYS) + " |",
+             "|---" * (3 + len(STRIKE_KEYS)) + "|"]
+    for mu in mus:
+        for h in holds:
+            ref, s = data.get((a, h, mu)), data.get((b, h, mu))
+            if not ref or not s:
+                continue
+            cells = []
+            for k in ["lost"] + [k for k, _ in STRIKE_KEYS]:
+                common = [x for x in sorted(set(s) & set(ref)) if np.isfinite(s[x][k]) and np.isfinite(ref[x][k])]
+                if len(common) < 2:
+                    cells.append("")
+                    continue
+                d, lo, hi = paired_bootstrap([ref[x][k] for x in common], [s[x][k] for x in common])
+                fmt = "{:+.3f}" if k != "path_deg" else "{:+.2f}"
+                cells.append(f"{fmt.format(d)} [{fmt.format(lo)}, {fmt.format(hi)}]")
+            lines.append(f"| {mu:g} | {h:g} | " + " | ".join(cells) + " |")
+    return lines
+
+
+def tables(data, pairs: tuple[tuple[str, str], ...] = ()) -> str:
     pols, mus, holds = policies_of(data), sorted({k[2] for k in data}), sorted({k[1] for k in data}, reverse=True)
     lines = ["## Outcomes per condition (means over seeds; strike metrics over kept strikes)", "",
              "| mu | hold | policy | seeds | strikes | lost per strike | episodes dropped | first strike lost | "
@@ -150,6 +176,8 @@ def tables(data) -> str:
                     fmt = "{:+.3f}" if k != "path_deg" else "{:+.2f}"
                     cells.append(f"{fmt.format(d)} [{fmt.format(lo)}, {fmt.format(hi)}]")
                 lines.append(f"| {mu:g} | {h:g} | {p} | " + " | ".join(cells) + " |")
+    for a, b in pairs:
+        lines += [""] + paired_table(data, a, b)
     lines += ["", "## The residual's activity per joint group (mean over seeds of the episode's mean and 95th "
               "percentile over the strike windows)", "",
               "| mu | hold | policy | " + " | ".join(f"{g}: abs(dq) deg mean / p95, abs(dtau) Nm mean / p95"
@@ -328,11 +356,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--stage", default="Efric")
     ap.add_argument("--no-figures", action="store_true")
+    ap.add_argument("--pair", action="append", default=[], help="A:B, B paired against A (besides the zero residual)")
     a = ap.parse_args(argv)
     data = collect(Path(a.root), a.stage)
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
-    text = "# Friction study\n\n" + tables(data)
+    pairs = tuple(tuple(p.split(":", 1)) for p in a.pair)
+    text = "# Friction study\n\n" + tables(data, pairs)
     if not a.no_figures and data:
         text += "\n\nFigures: " + ", ".join(figures(data, out))
     (out / "report.md").write_text(text + "\n")
