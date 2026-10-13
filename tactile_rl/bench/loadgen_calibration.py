@@ -33,11 +33,12 @@ import torch
 GRID = {
     "impulse": (0, False, (10.0, 25.0, 50.0, 75.0, 100.0, 150.0, 200.0, 300.0, 450.0, 700.0)),
     "periodic_force": (1, False, (1.0, 2.5, 5.0, 10.0, 15.0, 20.0, 30.0, 40.0, 60.0, 90.0)),
-    "periodic_torque": (1, True, (0.02, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5)),
+    "periodic_torque": (1, True, (0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)),
     "step": (2, False, (2.5, 5.0, 10.0, 20.0, 30.0, 45.0, 60.0, 90.0, 120.0, 180.0)),
     "bind": (3, True, (0.05, 0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)),
     "push": (4, False, (2.5, 5.0, 10.0, 20.0, 30.0, 45.0, 60.0, 80.0, 100.0, 150.0)),
-    "torque_impulse": (5, True, (0.1, 0.2, 0.3, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 5.0)),
+    # (a blow's own moment about the grasp: 300 N at the face, 0.17 m out, is 51 Nm)
+    "torque_impulse": (5, True, (0.5, 1.0, 2.0, 3.0, 5.0, 7.5, 10.0, 15.0, 25.0, 40.0)),
 }
 # each kind's band key (LoadGenCfg) and the low end's share of the high end (LoadGenCfg's own ranges' shape)
 BAND_OF = {"impulse": ("impulse_n", 14.0 / 200.0), "periodic_force": ("periodic_n", 1.25 / 10.0),
