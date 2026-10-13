@@ -165,24 +165,29 @@ def test_stale_inputs_decay_the_residual(library):
 
 
 def test_the_gpu_replays_the_library_strikes(library):
-    """Unperturbed, every entry hits the nail on the GPU as on the CPU, with the same advance and blow."""
+    """Unperturbed, every entry hits the nail on the GPU exactly when it does on the CPU, with the same advance and
+    blow. (With the YCB hammer the second swing of seed 1 misses the nail on the CPU, and on the GPU too.)"""
     from tactile_rl.parity.strikes import gpu_replay
     from tactile_sim.behaviors.base_library import load_library
 
     lib = load_library(library)
     entries = list(range(len(lib["e_t0"])))
+    hits = [e for e in entries if bool(lib["e_hit"][e])]
+    assert len(hits) >= 2
     gpu = {r["entry"]: r for r in gpu_replay(library, entries)["rows"]}
     for e in entries:
         g = gpu[e]
-        assert g["hit"] and bool(lib["e_hit"][e])
+        assert g["hit"] == bool(lib["e_hit"][e])
+        if not g["hit"]:
+            continue
         assert abs(g["t_contact"] - lib["e_t_contact"][e]) < 0.003
         # the hard nail sticks or slips on a single step's force: a blow's advance differs by up to ~0.4 mm (P3's
         # 90th percentile over 776 strikes; the means agree within 6 %)
         assert abs(g["advance"] - lib["e_advance"][e]) < 0.0008
         assert g["peak2"] == pytest.approx(lib["e_peak2"][e], rel=0.15)
         assert g["v_face"] == pytest.approx(lib["e_v_face"][e], abs=0.05)
-    adv_gpu = np.mean([gpu[e]["advance"] for e in entries])
-    assert adv_gpu == pytest.approx(float(np.mean(lib["e_advance"][entries])), rel=0.25)
+    adv_gpu = np.mean([gpu[e]["advance"] for e in hits])
+    assert adv_gpu == pytest.approx(float(np.mean(lib["e_advance"][hits])), rel=0.25)
 
 
 def test_nail_plant_writes_its_fields_per_world(library):
@@ -200,7 +205,7 @@ def test_nail_plant_writes_its_fields_per_world(library):
             del depths[:-2]
 
         rt.recorders.append(keep)
-        for _ in range(900):  # past the blows (~0.86 s after the windup)
+        for _ in range(1100):  # past the blows (the YCB hammer meets the nail ~0.94-0.95 s in)
             env.step(zero)
             seen_contact |= nail.force > 0
         assert seen_contact.all()
