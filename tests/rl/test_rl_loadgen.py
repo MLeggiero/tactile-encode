@@ -437,7 +437,7 @@ def test_c3_training_distribution(library):
                 same_ep = t > prev_t  # (an env that reset restarted its clock)
                 held = on & same_ep & (t < prev_next - 1e-9)
                 assert torch.equal(base[held][:, 0], prev_q[held])
-                refreshes += (on & same_ep & ~torch.all(base[:, 0] == prev_q, dim=1)).float()
+                refreshes += (on & same_ep & (vla.next_t != prev_next)).float()  # (a refresh may keep the value)
                 reset |= ~same_ep
             prev_q, prev_next, prev_t = base[:, 0].clone(), vla.next_t.clone(), rt.t.clone()
         # VLA-style for the whole 100 ms: after the first reading's refresh (at 1 ms, not counted) the grid's points

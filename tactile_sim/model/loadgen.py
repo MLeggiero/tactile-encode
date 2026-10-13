@@ -13,8 +13,9 @@ handle, drawn with LoadGenCfg.p_kind:
   LoadGenCfg.p_kind has a sixth entry).
 
 Forces are in the tool frame (x along the handle or bit, z the strike or feed direction), torques about the tool
-x axis unless the event names its axis (`axis`, a signed unit vector); `wrench(t)` sums the active events. `forecast_truth(t)` gives the next event as a forecast truth: the
-schedule is the ground truth a VLA's forecast head would be trained to predict.
+x axis unless the event names its axis (`axis`, a signed unit vector); `wrench(t)` sums the active events.
+`forecast_truth(t)` gives the next event as a forecast truth: the schedule is the ground truth a VLA's forecast head
+would be trained to predict.
 """
 
 from __future__ import annotations

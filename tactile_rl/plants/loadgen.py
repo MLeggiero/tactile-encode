@@ -5,8 +5,8 @@ stream at LoadGenCfg.rate from t_start, each event's kind from p_kind and its pa
 next gap counted from the end of the previous event. The kinds (impulse half-sine along a cone about the strike
 axis, periodic force along the feed or torque about the long axis with a drifting amplitude, breakthrough or
 appearing step, bind torque spike about the long axis or any tool axis, steady push, torque impulse about any tool
-axis) and `value(t)` are LoadEvent's; a torque's signed axis is `tax` (LoadEvent.axis, +x by default). `amp_scale` scales every amplitude
-(the curriculum's low-amplitude stage).
+axis) and `value(t)` are LoadEvent's; a torque's signed axis is `tax` (LoadEvent.axis, +x by default). `amp_scale`
+scales every amplitude (the curriculum's low-amplitude stage).
 
 Every physics substep (`apply`, before MuJoCo steps) the summed wrench is applied at the tool's working point through
 xfrc_applied: the force at the hammer face, the torque about its axis. The tool frame is LoadEvent's: x

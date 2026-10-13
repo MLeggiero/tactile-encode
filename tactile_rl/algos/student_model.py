@@ -6,8 +6,9 @@ Per 1 kHz sample (a 250 Hz student reads `stack` = 4 of them, newest first, thro
 its 6 features) through one shared MLP (10 patches), the palm's features (layout 2), the boards' status, the joint
 angles and currents; each sample projected, then the stacked samples mixed; the policy-rate blocks of the layout
 (last action, the base's hand target, feedforward and lookahead, the task, the trigger enable; layout 2 also the
-forecast) through a small MLP. `version` picks the layout (obs_spec.OBS_LAYOUTS). Inputs are normalized first (running mean
-and variance, a floor on the scale, clipped, as the teacher's RobustNormalization), which the ONNX export folds in.
+forecast) through a small MLP. `version` picks the layout (obs_spec.OBS_LAYOUTS). Inputs are normalized first
+(running mean and variance, a floor on the scale, clipped, as the teacher's RobustNormalization), which the ONNX export
+folds in.
 
 Outputs per step: the action's pre-tanh mean (40; the env squashes it; the last layer starts at zero so a fresh
 student is the base) and the auxiliary predictions (AUX_LAYOUT): each patch's slip over the next 20 ms (mm), the
@@ -37,6 +38,8 @@ N_FINGER_PATCHES = TAXEL_PATCHES - 1
 REGIME_CLASSES = 6  # obs_spec.REGIMES and "none"
 AUX_LAYOUT = {"slip_next_mm": TAXEL_PATCHES, "regime_logits": REGIME_CLASSES, "contact_logits": TAXEL_PATCHES + 1}
 AUX_DIM = sum(AUX_LAYOUT.values())
+
+
 def slow_blocks(version: int = OBS_SPEC_VERSION) -> tuple[str, ...]:
     """The layout's policy-rate blocks."""
     return tuple(name for name, _, fast, _ in obs_blocks(version) if not fast)

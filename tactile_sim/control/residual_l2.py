@@ -25,8 +25,8 @@ from collections.abc import Callable
 import mujoco
 import numpy as np
 
-from tactile_sim.control.interface import HandCommand
 from tactile_sim.control.hand_safety import HandSafety
+from tactile_sim.control.interface import HandCommand
 from tactile_sim.control.obs_spec import (
     ACTION_DIM,
     BLOCKS,
@@ -213,7 +213,8 @@ class ResidualHandL2:
         blocks = {n: fast[:, edges[i]:edges[i + 1]].ravel() for i, n in enumerate(FAST_SAMPLE)}
         blocks.update(last_action=self.last_a, base_hand_now=base[0],
                       base_hand_tau=base_tau_obs(base, self.jp.tau_rated), base_lookahead=arm_lookahead(look),
-                      forecast=np.asarray(forecast, float), task=self.task_vec, trigger_enable=[1.0 if trigger else 0.0])
+                      forecast=np.asarray(forecast, float), task=self.task_vec,
+                      trigger_enable=[1.0 if trigger else 0.0])
         obs = np.concatenate([np.asarray(blocks[n], float) for n in OBS_LAYOUTS[self.version]])
         if obs.shape != (obs_dim(self.stack, self.version),):
             raise ValueError(f"observation has {obs.shape[0]} entries, the spec {obs_dim(self.stack, self.version)}")
