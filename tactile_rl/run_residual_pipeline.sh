@@ -64,9 +64,10 @@ step() {
   if done_ "$name"; then log "skip $name (done)"; return 0; fi
   rm -f "$M/$name.fail"
   log "start $name: $*"
-  if "$@" >> "$OUT/logs/$name.log" 2>&1; then touch "$M/$name.done"; log "done $name"; return 0; fi
-  local rc=$?
-  touch "$M/$name.fail"; log "FAIL $name (exit $rc), see logs/$name.log"; return $rc
+  local rc=0
+  "$@" >> "$OUT/logs/$name.log" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then touch "$M/$name.done"; log "done $name"; return 0; fi
+  touch "$M/$name.fail"; log "FAIL $name (exit $rc), see logs/$name.log"; return "$rc"
 }
 # wait_for NAME: until NAME is done (0) or failed (1)
 wait_for() { until done_ "$1" || failed "$1"; do sleep 120; done; done_ "$1"; }

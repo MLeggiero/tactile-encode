@@ -90,12 +90,15 @@ Warp's buffers 128 contacts and 512 constraint rows per world. The light hammer'
 - The load generator's band is still the light hammer's (`LoadGenCfg`); the pipeline runs `loadgen_calibration --band`
   on the YCB hammer's grip only as a report.
 
-**The pipeline** (`tactile_rl/run_residual_pipeline.sh`, unattended; environment variables configure it): the base
-library on the CPU (training venv; 120 episodes × 5 swings, seeds from 10^6), E1hold's zero residual in the validator,
-then on the GPU once another job's GPU block has ended (`GATE_LOG`, `GATE_MARK`) the GPU tests, a throughput check, and
-per rate (250 Hz, then 1 kHz) the teacher through C0–C3 (1000 iterations of 4096 envs), the DAgger student (300
-iterations), its ONNX export with parity, and its E1hold (20 seeds × 4 holds, paired, seeds disjoint from the
-library's); then the GPU evaluation at matched holds, the reports (`reports/e1hold.md`, curves) and `PIPELINE_DONE`.
+**The pipeline** (`tactile_rl/run_residual_pipeline.sh`, unattended; environment variables or
+`~/residual40/pipeline.env` configure it). The CPU track waits for its gate (`CPU_GATE_LOG`, `CPU_GATE_MARK`: others'
+CPU jobs; empty, none), then runs the CPU tests, the base library (training venv; 120 episodes × 5 swings, seeds from
+10^6) and E1hold's zero residual in the validator. The GPU track waits for its gate (`GATE_LOG`, `GATE_MARK`: another
+job's GPU block; empty, none), runs the GPU tests and the load generator's band check, then once the library exists a
+throughput check and per rate (250 Hz, then 1 kHz) the teacher through C0–C3 (1000 iterations of 4096 envs), the
+DAgger student (300 iterations) and its ONNX export with parity; each student's E1hold (20 seeds × 4 holds, paired,
+seeds disjoint from the library's) runs on the CPU track as its graph appears. Then the GPU evaluation at matched
+holds, the reports (`reports/e1hold.md`, curves) and `PIPELINE_DONE`.
 Every step leaves a marker; a rerun skips the finished steps and resumes an interrupted teacher (its curriculum stage
 from `$TACTILE_START_STAGE`) or student from its last checkpoint. One pipeline runs at a time (its pid file);
 settings that must survive a relaunch go in `~/residual40/pipeline.env`. The library and the validator get their own
