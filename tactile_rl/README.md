@@ -170,7 +170,8 @@ each policy paired against the zero residual at the same friction and hold, acti
 The script waits for the main pipeline's GPU steps, calibrates the band, trains the 250 Hz teacher (C0–C3, 2048 envs,
 1000 iterations), distills the layout-3 student s250v3 (DAgger, 2048 envs, 300 iterations) and exports it with parity,
 then the attribution student s250v3a (layout 2 from the same teacher). On the CPU, once Part 1 is done, it reruns two of
-Part 1's episodes from its own tree against Part 1's files (the zero residual and s250 on layout 2: `consistency`),
+Part 1's episodes from its own tree against Part 1's files (the zero residual and s250 on layout 2:
+`python -m tactile_sim.experiments.rerun_check`),
 then sweeps Efric with s250v3 and s250v3a added into Part 1's results (finished episodes are not rerun) and writes the
 reports. Markers, resumption and the pid guard as the pipeline's; the teacher resumes in the furthest curriculum stage
 its logs showed.

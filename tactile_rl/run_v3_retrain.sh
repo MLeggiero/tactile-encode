@@ -131,45 +131,9 @@ gpu_track() {
 }
 
 # ------------------------------------------------------------------------------------------------ the CPU track
-consistency() {  # two of Part 1's runs from this tree: the zero residual and s250 (layout 2), against Part 1's files
-  "$PY_VAL" - "$FRIC/e" "$OUT/consistency" "$S250" "$STAGE" <<'PY'
-import json
-import sys
-from pathlib import Path
-
-from tactile_sim.experiments.residual_experiment import HAMMER, make_jobs, run_all
-
-src, dst, s250, stage = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3], sys.argv[4]
-want = {"base@hold=1@mu=0.6", "residual:s250@hold=1@mu=0.6"}
-jobs = [j for j in make_jobs(stage, {"s250": s250}, None, "hammer", HAMMER) if j.condition.name in want and j.seed == 0]
-assert len(jobs) == 2, [j.condition.name for j in jobs]
-run_all(jobs, dst, 2)
-
-
-def leaves(x, path=""):
-    if isinstance(x, dict):
-        for k, v in x.items():
-            if k != "wall_s":
-                yield from leaves(v, f"{path}/{k}")
-    elif isinstance(x, list):
-        for i, v in enumerate(x):
-            yield from leaves(v, f"{path}[{i}]")
-    else:
-        yield path, x
-
-
-bad = 0
-for j in jobs:
-    a, b = (dict(leaves(json.loads(j.path(r).read_text()))) for r in (src, dst))
-    diff = [k for k in set(a) | set(b) if a.get(k) != b.get(k) and not (a.get(k) != a.get(k) and b.get(k) != b.get(k))]
-    worst = max((abs(a[k] - b[k]) for k in diff if isinstance(a.get(k), float) and isinstance(b.get(k), float)),
-                default=0.0)
-    print(f"{j.condition.name} seed {j.seed}: {len(a)} values, {len(diff)} differ (largest numeric difference {worst:g})")
-    for k in sorted(diff)[:10]:
-        print(f"  {k}: {a.get(k)} vs {b.get(k)}")
-    bad += bool(diff)
-print("CONSISTENT" if not bad else "DIFFERENT")
-PY
+consistency() {  # two of Part 1's episodes from this tree: the zero residual and s250 (layout 2), against Part 1's
+  "$PY_VAL" -m tactile_sim.experiments.rerun_check --src "$FRIC/e" --dst "$OUT/consistency" --stage "$STAGE" \
+    --policy "s250=$S250" --condition "base@hold=1@mu=0.6" --condition "residual:s250@hold=1@mu=0.6" --workers 2
 }
 
 sweep() {  # sweep NAME --policy N=P ...

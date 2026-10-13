@@ -166,3 +166,15 @@ def test_a_drill_smoke_episode_writes_metrics_and_reports(tmp_path):
     assert set(m) >= {"success", "cam_outs", "slip_rot_deg", "t_seat", "i2t"}
     assert m["success"] in (0.0, 1.0) and np.isfinite(m["slip_rot_deg"])
     assert "| base | 1 |" in report("smoke", tmp_path, task="drill")
+
+
+def test_rerun_check_compares_payloads_wall_time_aside():
+    from tactile_sim.experiments.rerun_check import compare
+
+    a = {"summary": {"slip": 1.5, "nan": float("nan"), "lost": False}, "strikes": [{"t": 0.1}, {"t": 0.2}],
+         "wall_s": 12.0}
+    n, diff, worst = compare(a, {**a, "wall_s": 99.0})
+    assert n == 5 and diff == [] and worst == 0.0
+    b = {**a, "summary": {**a["summary"], "slip": 1.75}, "strikes": [{"t": 0.1}]}
+    n, diff, worst = compare(a, b)
+    assert diff == ["/strikes[1]/t", "/summary/slip"] and worst == 0.25
