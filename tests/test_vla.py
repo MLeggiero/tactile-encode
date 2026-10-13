@@ -83,7 +83,8 @@ def test_the_head_is_aimed_at_the_task():
     mujoco.mj_camlight(m, d)
     cam = m.camera(names.EGO_CAMERA).id
     u, v, depth = project(m, d, cam, look_point(cfg), cfg.vla.cam_width, cfg.vla.cam_height)
-    assert (u, v) == pytest.approx((cfg.vla.cam_width / 2, cfg.vla.cam_height / 2), abs=1.0)
+    # the look point sits in the middle column, VlaCfg.aim_v of the way down (the head pitched less)
+    assert (u, v) == pytest.approx((cfg.vla.cam_width / 2, cfg.vla.aim_v * cfg.vla.cam_height), abs=1.0)
     assert 0.3 < depth < 1.5
     fixed = cfg.replace(vla={"head_pose": (0.4, 0.0, 0.0)})
     assert vla_config(fixed).arm.head_pose == (0.4, 0.0, 0.0)
