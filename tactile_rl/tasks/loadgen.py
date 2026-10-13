@@ -31,6 +31,7 @@ from tactile_rl.scene.entities import ENTITY, mujoco_cfg, robot_entity_cfg
 from tactile_rl.sensors.hub import TactileHubCfg
 from tactile_rl.tasks.common import ALL_GROUPS, dr_events, observation_groups, reward_terms, termination_terms
 from tactile_rl.tasks.hold import decimation_for
+from tactile_sim.config import LoadGenCfg
 from tactile_sim.sim.training_parts import config_key, residual_training_config
 
 # MuJoCo Warp's buffers for the held light hammer under loads (tactile_rl.bench.throughput reports the peaks)
@@ -61,13 +62,17 @@ def loadgen_scene_key(rate: float = 1000.0, timestep: float = 0.00025) -> str:
 def loadgen_env_cfg(rate: float = 1000.0, timestep: float = 0.00025, num_envs: int = 4096, episode_s: float = 3.0,
                     start_stage: int = 0, max_stage: int = 2, curriculum: bool = True, randomize: bool = True,
                     min_episodes: int = 2000, min_events: int = 2000, nconmax: int | None = NCONMAX,
-                    njmax: int | None = NJMAX, obs_groups: tuple[str, ...] = ALL_GROUPS) -> ManagerBasedRlEnvCfg:
+                    njmax: int | None = NJMAX, obs_groups: tuple[str, ...] = ALL_GROUPS,
+                    loadgen: LoadGenCfg | None = None,
+                    hand_friction: tuple[float, float] | None = None) -> ManagerBasedRlEnvCfg:
+    """The load generator's task; `loadgen` its loads (None: LoadGenCfg's), `hand_friction` the hand/tool friction's
+    range (None: the scene's ResidualDRCfg; a degenerate range fixes it)."""
     key = loadgen_scene_key(rate, timestep)
     events = {"tactile_fields": EventTermCfg(func=tactile_model_fields, mode="startup"),
               "state_bank": EventTermCfg(func=build_state_bank, mode="startup", params={"scene_key": key}),
               "reset_from_bank": EventTermCfg(func=reset_from_state_bank, mode="reset", params={"scene_key": key})}
     if randomize:
-        events.update(dr_events(key))
+        events.update(dr_events(key, hand_friction))
     cur = {}
     if curriculum:
         cur["stage"] = CurriculumTermCfg(func=TactileCurriculum, params={
@@ -81,7 +86,7 @@ def loadgen_env_cfg(rate: float = 1000.0, timestep: float = 0.00025, num_envs: i
         decimation=decimation_for(rate, timestep),
         scene=SceneCfg(num_envs=num_envs, env_spacing=2.0, entities={ENTITY: robot_entity_cfg(key)},
                        sensors=(TactileHubCfg(),)),
-        commands={"base": LoadGenCommandCfg(scene_key=key)},
+        commands={"base": LoadGenCommandCfg(scene_key=key, loadgen=LoadGenCfg() if loadgen is None else loadgen)},
         observations=observation_groups("loadgen", obs_groups),
         actions={
             "residual": ResidualHandActionCfg(entity_name=ENTITY, scene_key=key, task="loadgen"),

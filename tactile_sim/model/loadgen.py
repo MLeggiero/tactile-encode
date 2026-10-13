@@ -7,11 +7,13 @@ handle, drawn with LoadGenCfg.p_kind:
 - periodic: a force along the feed or a torque about the long axis at 1-100 Hz (a saw stroke to clutch ripple),
   its amplitude drifting as a random walk;
 - step: a steady push that disappears (drill breakthrough) or appears;
-- bind: a 20-80 ms torque spike about the long axis (a bit grabbing);
-- push: a steady force along the feed.
+- bind: a 20-80 ms torque spike about the long axis (a bit grabbing), or about any tool axis (LoadGenCfg.bind_axes);
+- push: a steady force along the feed;
+- torque_impulse: a half-sine torque pulse about a tool axis, either sign (a glancing blow's twist; drawn only when
+  LoadGenCfg.p_kind has a sixth entry).
 
 Forces are in the tool frame (x along the handle or bit, z the strike or feed direction), torques about the tool
-x axis; `wrench(t)` sums the active events. `forecast_truth(t)` gives the next event as a forecast truth: the
+x axis unless the event names its axis (`axis`, a signed unit vector); `wrench(t)` sums the active events. `forecast_truth(t)` gives the next event as a forecast truth: the
 schedule is the ground truth a VLA's forecast head would be trained to predict.
 """
 
@@ -24,8 +26,20 @@ import numpy as np
 from tactile_sim.behaviors.forecast import ForecastTruth
 from tactile_sim.config import LoadGenCfg
 
-KINDS = ("impulse", "periodic", "step", "bind", "push")
-REGIME_OF = {"impulse": "impulse", "periodic": "periodic", "step": "step", "bind": "bind", "push": "steady"}
+KINDS = ("impulse", "periodic", "step", "bind", "push", "torque_impulse")
+REGIME_OF = {"impulse": "impulse", "periodic": "periodic", "step": "step", "bind": "bind", "push": "steady",
+             "torque_impulse": "impulse"}
+AXES = np.eye(3)
+
+
+def kind_probs(cfg: LoadGenCfg) -> np.ndarray:
+    """The kinds' probabilities in KINDS order (a five-entry p_kind draws no torque impulses)."""
+    p = np.zeros(len(KINDS))
+    q = np.asarray(cfg.p_kind, dtype=float)
+    if len(q) not in (5, 6):
+        raise ValueError(f"p_kind has {len(q)} entries (5 or 6: {KINDS})")
+    p[:len(q)] = q
+    return p / p.sum()
 
 
 @dataclass
@@ -35,7 +49,8 @@ class LoadEvent:
     duration: float
     amp: float  # N, or Nm for a torque
     direction: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 1.0]))  # unit force direction
-    torque: bool = False  # about the tool x axis instead of a force
+    torque: bool = False  # a torque (about `axis`) instead of a force
+    axis: np.ndarray | None = None  # a torque's signed unit axis, tool frame (None: +x, the long axis)
     freq: float = 0.0  # Hz
     phase: float = 0.0
     sign: float = 1.0  # step: +1 the push vanishes at t0 (breakthrough), -1 it appears
@@ -55,7 +70,7 @@ class LoadEvent:
             return self.amp if 0 <= tau < hold else 0.0
         if tau < 0 or tau >= self.duration:
             return 0.0
-        if self.kind == "impulse":
+        if self.kind in ("impulse", "torque_impulse"):
             return self.amp * np.sin(np.pi * tau / self.duration)
         if self.kind == "bind":
             return self.amp * np.sin(np.pi * tau / self.duration) ** 2
@@ -78,16 +93,23 @@ def _cone(rng, half_angle: float) -> np.ndarray:
     return np.array([s * np.cos(phi), s * np.sin(phi), c])
 
 
+def _axis(rng) -> np.ndarray:
+    """A tool axis, either sign."""
+    return AXES[int(rng.integers(3))] * (1.0 if rng.uniform() < 0.5 else -1.0)
+
+
 def sample_schedule(cfg: LoadGenCfg, rng: np.random.Generator, t_end: float, t_start: float = 0.2) -> list[LoadEvent]:
-    """An episode's events from t_start to t_end, non-overlapping within each kind."""
-    p = np.asarray(cfg.p_kind, dtype=float)
-    p = p / p.sum()
+    """An episode's events from t_start to t_end, non-overlapping within each kind. A configuration without the sixth
+    kind and with binds about the long axis draws exactly the schedules it drew before torque impulses existed."""
+    p = kind_probs(cfg)
+    if len(cfg.p_kind) == 5:
+        p = p[:5]  # the same draws as before the sixth kind
     events, t = [], t_start
     while True:
         t += float(rng.exponential(1.0 / cfg.rate))
         if t >= t_end:
             break
-        kind = KINDS[int(rng.choice(len(KINDS), p=p))]
+        kind = KINDS[int(rng.choice(len(p), p=p))]
         if kind == "impulse":
             ev = LoadEvent(kind, t, _u(rng, cfg.impulse_ms) * 1e-3, _u(rng, cfg.impulse_n),
                            direction=_cone(rng, np.radians(cfg.cone_deg)))
@@ -106,6 +128,13 @@ def sample_schedule(cfg: LoadGenCfg, rng: np.random.Generator, t_end: float, t_s
             ev = LoadEvent(kind, t + hold if sign > 0 else t, hold, _u(rng, cfg.step_n), sign=sign)
         elif kind == "bind":
             ev = LoadEvent(kind, t, _u(rng, cfg.bind_ms) * 1e-3, _u(rng, cfg.bind_nm), torque=True)
+            if cfg.bind_axes == "xyz":
+                ev.axis = _axis(rng)
+            elif cfg.bind_axes != "x":
+                raise ValueError(f"bind_axes {cfg.bind_axes!r} (expected 'x' or 'xyz')")
+        elif kind == "torque_impulse":
+            ev = LoadEvent(kind, t, _u(rng, cfg.torque_impulse_ms) * 1e-3, _u(rng, cfg.torque_impulse_nm), torque=True)
+            ev.axis = _axis(rng)
         else:
             ev = LoadEvent(kind, t, _u(rng, cfg.push_s), _u(rng, cfg.push_n))
         events.append(ev)
@@ -126,7 +155,10 @@ def wrench(events: list[LoadEvent], t: float) -> tuple[np.ndarray, np.ndarray]:
         if v == 0.0:
             continue
         if ev.torque:
-            tq[0] += v
+            if ev.axis is None:
+                tq[0] += v
+            else:
+                tq += v * np.asarray(ev.axis, float)
         else:
             f += v * ev.direction
     return f, tq

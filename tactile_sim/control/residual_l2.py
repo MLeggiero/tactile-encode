@@ -26,13 +26,18 @@ import mujoco
 import numpy as np
 
 from tactile_sim.control.interface import HandCommand
+from tactile_sim.control.hand_safety import HandSafety
 from tactile_sim.control.obs_spec import (
     ACTION_DIM,
+    BLOCKS,
     BOARDS,
+    FAST_SAMPLE,
     FORECAST_DIM,
     LOOKAHEAD,
     N_ARM,
     N_JOINTS,
+    OBS_LAYOUTS,
+    OBS_SPEC_VERSION,
     TASKS,
     ActionSpec,
     JointParams,
@@ -40,6 +45,7 @@ from tactile_sim.control.obs_spec import (
     assert_deployable,
     base_tau_obs,
     compose,
+    layout_of,
     obs_dim,
     obs_slices,
     offsets,
@@ -116,12 +122,13 @@ class ResidualHandL2:
         self.i_rated = hand.drive.i_rated
         self.trig = trigger_indices(c, hand.joint_names)
         self.close_dir = hand.synergy.close_dir
+        self.safety = HandSafety(c, self.trig, self.close_dir)
         self.task_vec = np.eye(len(TASKS))[TASKS.index(c.task)]
-        slices = obs_slices(self.stack)
-        unknown = set(c.mask_blocks) - set(slices)
+        unknown = set(c.mask_blocks) - set(BLOCKS)
         if unknown:
             raise ValueError(f"unknown observation blocks to mask: {sorted(unknown)}")
-        self.masked = [slices[b] for b in c.mask_blocks]
+        # the observation layout: the current one, or the one an exported policy was trained on (check_policy)
+        self.version = OBS_SPEC_VERSION
         self.reset()
 
     def check_policy(self, policy) -> None:
@@ -129,15 +136,18 @@ class ResidualHandL2:
         meta = getattr(policy, "meta", None)
         if meta is None:
             return
-        want = spec_hash(self.spec, self.stack)
-        if meta.spec_hash != want:
-            raise ValueError(f"policy {meta.name!r} was trained on interface {meta.spec_hash}, this loop is {want}")
+        version = layout_of(meta.spec_hash, self.spec, self.stack)
+        if version is None:
+            want = {v: spec_hash(self.spec, self.stack, v) for v in OBS_LAYOUTS}
+            raise ValueError(f"policy {meta.name!r} was trained on interface {meta.spec_hash}, this loop runs "
+                             f"{want} (by layout)")
         if abs(meta.rate - self.cfg.rate) > 1e-9:
             raise ValueError(f"policy {meta.name!r} decides at {meta.rate} Hz, the loop runs at {self.cfg.rate} Hz")
         mask = tuple(meta.extra.get("mask_blocks", ()))
         if set(mask) != set(self.cfg.mask_blocks):
             raise ValueError(f"policy {meta.name!r} was trained blind to {sorted(mask)}, the loop masks "
                              f"{sorted(self.cfg.mask_blocks)}")
+        self.version = version
 
     def _i_eff(self) -> np.ndarray:
         """Each hand joint's effective inertia (diagonal of the joint-space inertia) at the current pose."""
@@ -196,15 +206,21 @@ class ResidualHandL2:
         self.ring.appendleft(self.fast_sample(t))
 
     def observe(self, t: float, base: np.ndarray, look: np.ndarray, trigger: bool, forecast: np.ndarray) -> np.ndarray:
+        """The observation in this loop's layout (self.version), masked blocks zero."""
         fast = np.stack(self.ring)  # (stack, fast_dim), newest first
-        sl = np.cumsum([0, 448, 66, 2 * BOARDS, N_JOINTS, N_JOINTS])
-        parts = [fast[:, sl[i]:sl[i + 1]].ravel() for i in range(5)]  # each fast block holds its `stack` samples
-        obs = np.concatenate(parts + [self.last_a, base[0], base_tau_obs(base, self.jp.tau_rated), arm_lookahead(look),
-                                      np.asarray(forecast, float), self.task_vec, [1.0 if trigger else 0.0]])
-        if obs.shape != (obs_dim(self.stack),):
-            raise ValueError(f"observation has {obs.shape[0]} entries, the spec {obs_dim(self.stack)}")
-        for sl in self.masked:
-            obs[sl] = 0.0
+        edges = np.cumsum([0] + [BLOCKS[n][0] for n in FAST_SAMPLE])
+        # each fast block holds its `stack` samples
+        blocks = {n: fast[:, edges[i]:edges[i + 1]].ravel() for i, n in enumerate(FAST_SAMPLE)}
+        blocks.update(last_action=self.last_a, base_hand_now=base[0],
+                      base_hand_tau=base_tau_obs(base, self.jp.tau_rated), base_lookahead=arm_lookahead(look),
+                      forecast=np.asarray(forecast, float), task=self.task_vec, trigger_enable=[1.0 if trigger else 0.0])
+        obs = np.concatenate([np.asarray(blocks[n], float) for n in OBS_LAYOUTS[self.version]])
+        if obs.shape != (obs_dim(self.stack, self.version),):
+            raise ValueError(f"observation has {obs.shape[0]} entries, the spec {obs_dim(self.stack, self.version)}")
+        slices = obs_slices(self.stack, self.version)
+        for b in self.cfg.mask_blocks:
+            if b in slices:
+                obs[slices[b]] = 0.0
         return obs
 
     def stale(self, t: float) -> bool:
@@ -215,20 +231,8 @@ class ResidualHandL2:
 
     # ------------------------------------------------------------------ control
     def _trigger_guard(self, off: np.ndarray, trigger: bool) -> np.ndarray:
-        if not len(self.trig):
-            return off
-        c = self.cfg
-        out = off.copy()
-        j = self.trig
-        d = self.close_dir[j]
-        dq = np.clip(out[0, j], -c.trigger_dq_max, c.trigger_dq_max)
-        tau_close = np.clip(d * out[1, j], c.trigger_tau[0], c.trigger_tau[1])
-        if not trigger:  # the trigger is disabled: the residual may only open the finger
-            dq = np.where(d * dq > 0, 0.0, dq)
-            tau_close = np.minimum(tau_close, 0.0)
-        out[0, j] = dq
-        out[1, j] = d * tau_close
-        return out
+        """The drill-trigger interlock (HandSafety.trigger_guard): outside the policy, whatever it observes."""
+        return HandSafety.trigger_guard(self, off, trigger)
 
     def tick(self, t: float) -> None:
         base, look, trigger, forecast = self.base_fn(t)

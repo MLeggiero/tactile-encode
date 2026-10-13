@@ -733,7 +733,8 @@ class ForecastCfg:
 class LoadGenCfg:
     """Synthetic loads at the tool's working point (tactile_sim.model.loadgen): the first training stage covers every
     load regime the residual will meet, before the nail and drill plants. Events are drawn per episode; forces are
-    in the tool frame (x along the handle or bit, z along the strike or feed), torques about the tool's long axis.
+    in the tool frame (x along the handle or bit, z along the strike or feed), torques about the tool's long axis
+    (binds about any tool axis with `bind_axes` "xyz"; torque impulses, a sixth entry of p_kind, about any).
 
     The amplitudes are the WUJI Hand 2's capacity with the light hammer (calibrated on the GPU env, zero residual, the
     full randomization: tactile_rl.bench.loadgen_calibration): at the settled hold no single event of the band loses
@@ -742,7 +743,8 @@ class LoadGenCfg:
     axis already slips the full hold 2.5 mm, and 60 N loses it. Each kind's range is the old one scaled by a factor."""
 
     rate: float = 2.0  # events per second (Poisson)
-    p_kind: tuple[float, float, float, float, float] = (0.35, 0.25, 0.15, 0.15, 0.10)  # impulse periodic step bind push
+    # impulse periodic step bind push [torque_impulse]: a sixth entry draws torque impulses (none without)
+    p_kind: tuple[float, ...] = (0.35, 0.25, 0.15, 0.15, 0.10)
     # impulse: half-sine force along the strike axis within cone_deg
     impulse_ms: tuple[float, float] = (0.5, 5.0)
     impulse_n: tuple[float, float] = (14.0, 200.0)  # the light hammer's own blows peak ~185 N
@@ -756,12 +758,16 @@ class LoadGenCfg:
     # step: a steady push that vanishes (breakthrough) or appears
     step_n: tuple[float, float] = (2.7, 12.0)
     step_hold_s: tuple[float, float] = (0.2, 1.0)
-    # bind: a torque spike about the long axis
+    # bind: a torque spike about the long axis ("x"), or about a tool axis drawn per event, either sign ("xyz")
     bind_ms: tuple[float, float] = (20.0, 80.0)
     bind_nm: tuple[float, float] = (0.1, 0.6)
+    bind_axes: str = "x"
     # push: a steady force along the feed
     push_n: tuple[float, float] = (1.5, 12.0)
     push_s: tuple[float, float] = (0.3, 1.5)
+    # torque impulse: a half-sine torque about a tool axis drawn per event, either sign (a glancing blow's twist)
+    torque_impulse_ms: tuple[float, float] = (0.5, 5.0)
+    torque_impulse_nm: tuple[float, float] = (0.2, 2.0)
 
 
 @dataclass

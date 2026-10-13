@@ -4,7 +4,8 @@
 servos (the targets carry each env's gravity droop for its servo gains), the hand base is the grip synergy at a
 fraction of the settled hold's scalar (`hold_level`, drawn per episode from the range the curriculum sets: the plan's
 "hold level" of the base, which leaves the residual room to grip harder) from the joint angles the host last read, the
-lookahead is zero (the base does not move), and the loads come from a TorchLoadGen schedule drawn at reset (from
+lookahead is zero (the base does not move; in a share `vla_frac` of the episodes the hand base is VLA-style:
+action_map.TorchHandTable), and the loads come from a TorchLoadGen schedule drawn at reset (from
 `t_start`, when the reset state has settled, to the episode's end; `amp_scale` and `enabled` are the curriculum's).
 Every substep before MuJoCo steps (the runtime's pre-hook) the schedule's wrench goes on the tool through
 xfrc_applied. The forecast is the schedule's next event (forecast_truth) through the torch ForecastModel.
@@ -18,13 +19,15 @@ is within `slip_target` (mm, degrees). The drift reference (the runtime's `ref_r
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import json
+import os
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING
 
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 
-from tactile_rl.mdp.action_map import TorchSynergy
+from tactile_rl.mdp.action_map import TorchSynergy, vla_table
 from tactile_rl.mdp.forecast import TorchForecastModel
 from tactile_rl.mdp.runtime import PREFIX, tactile_runtime
 from tactile_rl.plants.loadgen import LoadApplicator, TorchLoadGen, tool_frame
@@ -34,6 +37,40 @@ from tactile_sim.control.obs_spec import LOOKAHEAD, N_ARM, N_JOINTS
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
+
+
+# the residual's training loads (2026-10-13): impulses up to 60 degrees off the strike axis, binds and torque impulses
+# about every tool axis (impulse periodic step bind push torque_impulse)
+WIDE_P_KIND = (0.30, 0.21, 0.13, 0.13, 0.08, 0.15)
+WIDE_CONE_DEG = 60.0
+# the amplitude ranges a band file sets (tactile_rl.bench.loadgen_calibration --choose writes one)
+BAND_KEYS = ("impulse_n", "periodic_n", "periodic_nm", "step_n", "bind_nm", "push_n", "torque_impulse_nm")
+
+
+def wide_loads(band: str | dict | None = None) -> LoadGenCfg:
+    """The residual's training loads: LoadGenCfg with impulses within WIDE_CONE_DEG of the strike axis, binds about
+    every tool axis, torque impulses (WIDE_P_KIND), and the amplitude band of a calibration: `band` a band file (JSON:
+    {"band": {key: [lo, hi]}} or the mapping itself) or its contents; None reads $TACTILE_LOADGEN_BAND (unset or
+    empty: LoadGenCfg's ranges)."""
+    cfg = LoadGenCfg(p_kind=WIDE_P_KIND, cone_deg=WIDE_CONE_DEG, bind_axes="xyz")
+    if band is None:
+        band = os.environ.get("TACTILE_LOADGEN_BAND") or None
+    if band is None:
+        return cfg
+    if isinstance(band, str):
+        with open(band) as fh:
+            band = json.load(fh)
+    ranges = band.get("band", band)
+    unknown = set(ranges) - set(BAND_KEYS)
+    if unknown:
+        raise ValueError(f"unknown band keys {sorted(unknown)} (expected {BAND_KEYS})")
+    over = {}
+    for k, v in ranges.items():
+        lo, hi = (float(x) for x in v)
+        if not 0.0 < lo <= hi:
+            raise ValueError(f"band {k}: [{lo}, {hi}]")
+        over[k] = (lo, hi)
+    return replace(cfg, **over)
 
 
 @dataclass(kw_only=True)
@@ -49,6 +86,8 @@ class LoadGenCommandCfg(CommandTermCfg):
     hold_level: tuple[float, float] = (1.0, 1.0)  # the base's grip, fraction of the settled hold (the curriculum's)
     slots: int = 16
     resampling_time_range: tuple[float, float] = (1.0e9, 1.0e9)  # one schedule per episode
+    vla_frac: float = 0.0  # the share of VLA-style episodes (TorchHandTable)
+    vla_hz: float = 30.0
 
     def build(self, env: ManagerBasedRlEnv) -> LoadGenCommand:
         return LoadGenCommand(self, env)
@@ -108,6 +147,9 @@ class LoadGenCommand(CommandTerm):
         for k in ("events", "events_ok_frac", "slip_per_event_mm", "slip_per_event_deg", "path_per_event_mm",
                   "path_per_event_deg", "hold_level"):
             self.metrics[k] = torch.zeros(N, **f32)
+        # VLA-style episodes: drawn and applied by the term that drives the env (MixedBaseCommand clears `vla_top`)
+        self.vla = vla_table(rt, cfg.vla_hz) if cfg.vla_frac > 0 else None
+        self.vla_top = True
 
     @property
     def command(self) -> torch.Tensor:
@@ -149,6 +191,8 @@ class LoadGenCommand(CommandTerm):
         rt, c = self.rt, self.cfg
         t = rt.t
         self.base = self.synergy.mit_command(self.s_now, rt.rb_q.value.float())
+        if self.vla is not None and self.vla_top:
+            self.base = self.vla.apply(self.base, rt.rb_q.value, t, rt.rb_q.seq >= 0)
         tr = self.gen.truth(t)
         z = torch.zeros_like(tr["t_event"])
         self.truth = {"valid": tr["valid"], "t_event": tr["t_event"], "regime": tr["regime"], "f": tr["f"],
@@ -197,6 +241,10 @@ class LoadGenCommand(CommandTerm):
         dr = getattr(self._env, "_tactile_dr", None)
         if dr is not None:
             dr.v["hold_level"][env_ids] = level.double()
+        if self.vla is not None and self.vla_top:
+            self.vla.reset(env_ids, c.vla_frac)
+            if dr is not None:
+                dr.v["vla"][env_ids] = self.vla.active[env_ids].double()
         self.forecaster.reset(env_ids)
         self.ev_path[env_ids] = 0.0
         self.ev_started[env_ids] = False

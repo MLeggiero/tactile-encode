@@ -22,7 +22,9 @@ runs, the DR scale, the forecast's mode), so the episodes under way at a change 
 
 `stage_cap_s` (simulated seconds summed over the envs; None: the gates alone) bounds the time a stage may take: past
 it the stage advances at its next evaluation whether or not it passed, and `capped` counts the stages that did. A
-training budget then reaches the last stage in time (C3 keeps C2's load-generator episodes as its 30 %).
+training budget then reaches the last stage in time (C3 keeps C2's load-generator episodes as its 30 %). With
+`cap_ref_envs` the cap is stated for that many envs and scales with the env count, so a stage takes at most the same
+number of iterations at any count (half the envs: half the simulated seconds).
 """
 
 from __future__ import annotations
@@ -64,7 +66,8 @@ class TactileCurriculum:
         self.eval_every = int(p.get("eval_every", 100))
         self.drop_term = p.get("drop_term", "tool_dropped")
         cap = p.get("stage_cap_s")
-        self.stage_cap_s = None if cap is None else float(cap)
+        ref = p.get("cap_ref_envs")
+        self.stage_cap_s = None if cap is None else float(cap) * (env.num_envs / float(ref) if ref else 1.0)
         dev = env.device
         self.win = torch.zeros(4, dtype=torch.float64, device=dev)  # episodes, drops, events, events ok
         self.ep_stage = torch.full((env.num_envs,), self.stage, dtype=torch.long, device=dev)  # each episode's stage

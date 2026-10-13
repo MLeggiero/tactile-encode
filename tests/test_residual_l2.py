@@ -39,10 +39,24 @@ SPEC = ActionSpec()
 
 
 def test_observation_layout():
+    from tactile_sim.control.obs_spec import OBS_LAYOUTS, OBS_SPEC_VERSION, layout_of
+
     fast = 448 + 66 + 8 + 20 + 20
     # v2: the 40-D last action, the base's target and feedforward, the arm's lookahead (7 x 3)
-    assert ACTION_DIM == 40 and obs_dim(1) == fast + 40 + 20 + 20 + 21 + 13 + 3 + 1 == 680
-    assert obs_dim(4) == 680 + 3 * fast
+    assert ACTION_DIM == 40 and obs_dim(1, 2) == fast + 40 + 20 + 20 + 21 + 13 + 3 + 1 == 680
+    assert obs_dim(4, 2) == 680 + 3 * fast
+    # v3: no patch features, no forecast
+    fast3 = 448 + 8 + 20 + 20
+    assert OBS_SPEC_VERSION == 3 and obs_dim(1) == fast3 + 40 + 20 + 20 + 21 + 3 + 1 == 601
+    assert obs_dim(4) == 601 + 3 * fast3
+    assert "patch_features" not in obs_slices(1) and "forecast" not in obs_slices(1)
+    assert "task" in obs_slices(1) and "trigger_enable" in obs_slices(1)
+    # each layout keeps its hash (version 2's is what its exported policies carry)
+    assert spec_hash(stack=1, version=2) == "6620399b46bef23d" and spec_hash(stack=4, version=2) == "276b29d6d34ed190"
+    assert {layout_of(spec_hash(stack=s, version=v), stack=s) for v in OBS_LAYOUTS for s in (1, 4)} == {2, 3}
+    for v in OBS_LAYOUTS:
+        sl = list(obs_slices(4, v).values())
+        assert sl[0].start == 0 and sl[-1].stop == obs_dim(4, v)
     for stack in (1, 2, 4, 10):
         sl = list(obs_slices(stack).values())
         assert sl[0].start == 0 and sl[-1].stop == obs_dim(stack)
@@ -205,8 +219,8 @@ def test_nonfinite_inputs_never_reach_the_policy_state_nor_the_drives(res_tb):
 
     def nan_obs_base(t):
         base, look, trig, fc = base_fn(t)
-        fc = np.array(fc, float)
-        fc[0] = np.nan  # a non-finite input (a forecast field)
+        look = np.array(look, float)
+        look[N_JOINTS] = np.nan  # a non-finite input (the arm's first lookahead target, in every layout)
         poisoned["n"] += 1
         return base, look, trig, fc
 
@@ -289,17 +303,37 @@ def test_a_slower_policy_sees_every_millisecond():
 DATA = __import__("pathlib").Path(__file__).parent / "data"
 
 
-def test_an_exported_policy_matches_its_torch_outputs():
+@pytest.mark.parametrize("stem, version", [("tiny_policy", 2), ("tiny_policy_v3", 3)])
+def test_an_exported_policy_matches_its_torch_outputs(stem, version):
     pytest.importorskip("onnxruntime")
     from tactile_sim.control.policy_io import OnnxPolicy
 
-    pol = OnnxPolicy(DATA / "tiny_policy.onnx")
-    ref = np.load(DATA / "tiny_policy_io.npz")
-    assert pol.recurrent and pol.meta.rate == 1000.0 and pol.meta.spec_hash == spec_hash(ActionSpec(), 1)
+    pol = OnnxPolicy(DATA / f"{stem}.onnx")
+    ref = np.load(DATA / f"{stem}_io.npz")
+    assert pol.recurrent and pol.meta.rate == 1000.0 and pol.meta.spec_hash == spec_hash(ActionSpec(), 1, version)
     out = np.array([pol(o) for o in ref["obs"]])  # the state carries across ticks
     assert out == pytest.approx(ref["action"], abs=1e-5)
     pol.reset()
     assert pol(ref["obs"][0]) == pytest.approx(ref["action"][0], abs=1e-5)
+
+
+@requires_wuji
+def test_each_policy_runs_on_its_own_layout(res_tb):
+    """A layout-2 policy (the s250 / s1k students' interface) and a layout-3 one run in the same loop: the loop builds
+    each the observation it was trained on."""
+    pytest.importorskip("onnxruntime")
+    from tactile_sim.control.policy_io import OnnxPolicy
+
+    r = res_tb.residual
+    for stem, version in (("tiny_policy", 2), ("tiny_policy_v3", 3)):
+        pol = OnnxPolicy(DATA / f"{stem}.onnx")
+        r.check_policy(pol)
+        r.policy = pol
+        assert r.version == version
+        res_tb.reset(0)
+        res_tb.run_for(0.02)
+        assert r.last_obs.shape == (obs_dim(1, version),) and r.n_nonfinite == 0
+    r.policy = Const(np.zeros(ACTION_DIM))
 
 
 @requires_wuji
@@ -327,8 +361,8 @@ def test_masked_blocks_read_as_zero_and_must_match_the_policy(res_tb):
     r = tb.residual
     tb.reset(0)
     tb.run_for(0.05)
-    sl = obs_slices(1)
-    assert np.all(r.last_obs[sl["taxel_codes"]] == 0) and np.all(r.last_obs[sl["patch_features"]] == 0)
+    sl = obs_slices(1, r.version)
+    assert np.all(r.last_obs[sl["taxel_codes"]] == 0) and np.all(r.last_obs[sl.get("patch_features", slice(0))] == 0)
     assert np.any(r.last_obs[sl["hand_current"]] != 0)  # current-only student: the motor currents stay
     pol = OnnxPolicy(DATA / "tiny_policy.onnx")  # trained with every block
     with pytest.raises(ValueError, match="blind"):

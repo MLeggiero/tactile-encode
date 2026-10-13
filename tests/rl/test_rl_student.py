@@ -27,11 +27,14 @@ def _trained_like(net, seed: int = 0):
     return net.eval()
 
 
+@pytest.mark.parametrize("version", [2, 3])
 @pytest.mark.parametrize("stack", [1, 4])
-def test_student_size_zero_start_and_sequence_matches_steps(stack):
+def test_student_size_zero_start_and_sequence_matches_steps(stack, version):
     from tactile_rl.algos.student_model import AUX_DIM, StudentNet, count_parameters
+    from tactile_sim.control.obs_spec import obs_dim
 
-    net = StudentNet(stack)
+    net = StudentNet(stack, version=version)
+    assert net.obs_dim == obs_dim(stack, version) and net.version == version
     n = count_parameters(net)
     assert 0.35e6 < n < 0.5e6, n  # the plan's ~0.45 M
     B = 3
@@ -69,22 +72,24 @@ def test_future_slip_labels():
     assert bool(ok[1, 1]) and not bool(ok[2, 1]) and not bool(ok[4, 1]) and bool(ok[5, 1])  # crosses the episode end
 
 
-def test_student_export_parity_and_cpu_runner(tmp_path):
+@pytest.mark.parametrize("version", [2, 3])
+def test_student_export_parity_and_cpu_runner(tmp_path, version):
     pytest.importorskip("onnxruntime")
     from tactile_rl.algos.student_model import AUX_DIM, StudentNet
     from tactile_rl.export.onnx_export import check_student, export_student
-    from tactile_sim.control.obs_spec import ActionSpec, spec_hash
+    from tactile_sim.control.obs_spec import ActionSpec, layout_of, spec_hash
     from tactile_sim.control.policy_io import OnnxPolicy, PolicyMeta
 
-    net = _trained_like(StudentNet(1))
+    net = _trained_like(StudentNet(1, version=version))
     ck = tmp_path / "student.pt"
     torch.save({"student_state_dict": net.state_dict(), "stack": 1, "hidden": net.hidden, "rate": 1000.0,
-                "teacher": "teacher.pt", "iter": 7}, ck)
+                "teacher": "teacher.pt", "iter": 7, "obs_version": version}, ck)
     out = tmp_path / "student_1k.onnx"
     info = export_student(str(ck), str(out), commit="test")
     assert info["hidden"] == 192 and info["obs_dim"] == net.obs_dim
     meta = PolicyMeta.read(out)
-    assert meta.spec_hash == spec_hash(ActionSpec(), 1) and meta.hidden == 192 and meta.rate == 1000.0
+    assert meta.spec_hash == spec_hash(ActionSpec(), 1, version) and meta.hidden == 192 and meta.rate == 1000.0
+    assert layout_of(meta.spec_hash) == version and meta.extra["obs_version"] == version
     assert meta.extra["kind"] == "student" and sum(meta.extra["aux"].values()) == AUX_DIM
     rng = np.random.default_rng(0)
     obs = rng.random((40, 4, net.obs_dim)).astype(np.float32)
@@ -132,7 +137,8 @@ def library(tmp_path_factory):
 
 @needs_gpu
 @pytest.mark.gpu
-def test_dagger_runs_a_few_iterations(library, tmp_path):
+@pytest.mark.parametrize("obs_version", [3, 2])
+def test_dagger_runs_a_few_iterations(library, tmp_path, obs_version):
     pytest.importorskip("mjlab")
     from tensordict import TensorDict
 
@@ -152,7 +158,7 @@ def test_dagger_runs_a_few_iterations(library, tmp_path):
     tck = tmp_path / "teacher.pt"
     torch.save({"actor_state_dict": teacher.state_dict()}, tck)
     cfg = DaggerCfg(num_envs=32, iterations=3, bc_iterations=1, mix_iterations=1, rollout_s=0.032, minibatches=2,
-                    epochs=1, save_every=3)
+                    epochs=1, save_every=3, obs_version=obs_version)
     tr = DaggerTrainer(cfg, str(tck), library, str(tmp_path / "run"), device="cuda:0")
     try:
         tr.train()
@@ -164,6 +170,7 @@ def test_dagger_runs_a_few_iterations(library, tmp_path):
         tr.env.close()
     assert tr.use_teacher.dtype == torch.bool and tr.it == 3
     st = load_student(str(tmp_path / "run" / "student_2.pt"))
+    assert st.version == obs_version and st.obs_dim == obs_dim(st.stack, obs_version)
     assert all(torch.isfinite(p).all() for p in st.parameters())
     assert float(st.norm.count) > 0
     assert (tmp_path / "run" / "student_3.pt").exists()

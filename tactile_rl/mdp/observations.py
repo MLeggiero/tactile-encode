@@ -53,11 +53,11 @@ def _parts(env: ManagerBasedRlEnv):
     return cmd, cmd.rt
 
 
-def student_obs(env: ManagerBasedRlEnv, action_name: str = "residual") -> torch.Tensor:
-    """obs_spec's student observation (N, obs_dim(stack))."""
+def student_obs(env: ManagerBasedRlEnv, action_name: str = "residual", version: int | None = None) -> torch.Tensor:
+    """obs_spec's student observation (N, obs_dim(stack, version)) in layout `version` (None: the current one)."""
     cmd, rt = _parts(env)
     act = env.action_manager.get_term(action_name)
-    return rt.obs.observe(act.a_sq, cmd.base, cmd.lookahead, cmd.forecast, cmd.trigger)
+    return rt.obs.observe(act.a_sq, cmd.base, cmd.lookahead, cmd.forecast, cmd.trigger, version=version)
 
 
 def tool_in_hand(env: ManagerBasedRlEnv) -> torch.Tensor:
@@ -137,8 +137,8 @@ def drive_internals(env: ManagerBasedRlEnv) -> torch.Tensor:
 
 
 def randomization(env: ManagerBasedRlEnv) -> torch.Tensor:
-    """The randomization the env runs with: (N, 25) the library entry's (BaseTrajectoryCommand.param_vector), (N, 33)
-    the reset events' draws and the base's hold level (randomization.TactileDR.param_vector)."""
+    """The randomization the env runs with: (N, 25) the library entry's (BaseTrajectoryCommand.param_vector), (N, 34)
+    the reset events' draws, the base's hold level and whether it runs VLA-style (randomization.TactileDR)."""
     cmd, _ = _parts(env)
     return cmd.param_vector()
 
@@ -158,9 +158,9 @@ PRIVILEGED_BY_TASK = {
     "hammer": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "nail_state": 5, "drive_internals": 44,
                "randomization": 25},
     "loadgen": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "load_truth": 6, "drive_internals": 44,
-                "randomization": 33},
+                "randomization": 34},
     "mixed": {"tool_in_hand": 12, "patch_contact": 44, "event_truth": 10, "nail_state": 5, "load_truth": 6,
-              "drive_internals": 44, "randomization": 33},
+              "drive_internals": 44, "randomization": 34},
 }
 PRIVILEGED = PRIVILEGED_BY_TASK["hammer"]
 assert math.isfinite(sum(PRIVILEGED.values()))

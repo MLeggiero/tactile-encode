@@ -15,12 +15,15 @@ through tau; on the shaping joints (abduction, the thumb's base, a held fingerti
 set point q* as well. Slew limits are per second (the same at every policy rate) and act on the residual's offsets,
 not on the base.
 
-Observation: the blocks of OBS_BLOCKS, in order, each scaled to O(1). The student sees only what the robot has
-(touch through the TaxelScan fast profile, the WUJI's joint angles and currents, the base command (its targets and
-its feedforward: the base's grip) and the arm's lookahead, the forecast); `assert_deployable` rejects the testbed's
-sim-only sensors. Version 2: the 40-D action (last_action), the base's feedforward torque (base_hand_tau: under the
-synergy the grip lives there, not in q*), and the lookahead of the arm only (a scripted swing base has no hand
-plan ahead of time, and a VLA's hand targets mean something else).
+Observation: the blocks of a layout (OBS_LAYOUTS; OBS_BLOCKS is the current one), in order, each scaled to O(1). The
+student sees only what the robot has (touch through the TaxelScan fast profile, the WUJI's joint angles and
+currents, the base command (its targets and its feedforward: the base's grip) and the arm's lookahead);
+`assert_deployable` rejects the testbed's sim-only sensors. Version 2: the 40-D action (last_action), the base's
+feedforward torque (base_hand_tau: under the synergy the grip lives there, not in q*), the lookahead of the arm only
+(a scripted swing base has no hand plan ahead of time, and a VLA's hand targets mean something else), plus the patch
+features, the forecast, the task and the trigger enable. Version 3: touch as the raw codes only (no patch
+features) and no forecast; the task and the trigger enable stay. A policy's sidecar carries its layout's spec_hash;
+the runtimes build each policy the layout it was trained on (layout_of).
 """
 
 from __future__ import annotations
@@ -33,7 +36,7 @@ import numpy as np
 
 from tactile_sim.sim.wuji_drive import JOINT_GROUPS, joint_group
 
-OBS_SPEC_VERSION = 2
+OBS_SPEC_VERSION = 3  # the current layout; OBS_LAYOUTS keeps the earlier ones runnable
 N_JOINTS = 20
 N_ARM = 7
 LOOKAHEAD = (0.010, 0.025, 0.050)  # s ahead of now at which the base command is sampled
@@ -44,24 +47,48 @@ TAXELS = 448
 BOARDS = 4
 ACTION_DIM = 2 * N_JOINTS  # [dq, dtau] per joint
 
-# name, dimension, fast (sampled at 1 kHz and stacked `stack` deep for a slower policy), what it is
-OBS_BLOCKS: tuple[tuple[str, int, bool, str], ...] = (
-    ("taxel_codes", TAXELS, True, "mu-law codes / (levels - 1), patches in layout order"),
-    ("patch_features", 6 * TAXEL_PATCHES, True, "per patch: sum (10 N), CoP row and column (fractions of the grid; "
+# every block a layout may use: name -> (dimension, fast (sampled at 1 kHz and stacked `stack` deep for a slower
+# policy), what it is)
+BLOCKS: dict[str, tuple[int, bool, str]] = {
+    "taxel_codes": (TAXELS, True, "mu-law codes / (levels - 1), patches in layout order"),
+    "patch_features": (6 * TAXEL_PATCHES, True, "per patch: sum (10 N), CoP row and column (fractions of the grid; "
                                                 "-1 unloaded), area (fraction), peak (10 N), rate (10 N per frame)"),
-    ("board_status", 2 * BOARDS, True, "per board: age of its newest frame (5 ms units), frames received since "
+    "board_status": (2 * BOARDS, True, "per board: age of its newest frame (5 ms units), frames received since "
                                        "the previous sample (0 = none: stale)"),
-    ("hand_q", N_JOINTS, True, "encoder angle (rad)"),
-    ("hand_current", N_JOINTS, True, "motor current / rated current"),
-    ("last_action", ACTION_DIM, False, "the residual's previous squashed action"),
-    ("base_hand_now", N_JOINTS, False, "base hand target q* (rad)"),
-    ("base_hand_tau", N_JOINTS, False, "base hand feedforward torque / rated torque (the base's grip)"),
-    ("base_lookahead", N_ARM * len(LOOKAHEAD), False,
-     "the arm's base targets at each lookahead time, relative to now (rad)"),
-    ("forecast", FORECAST_DIM, False, "load-regime forecast (forecast_vector); all zero when masked"),
-    ("task", len(TASKS), False, "one-hot task"),
-    ("trigger_enable", 1, False, "1 while the base allows the drill trigger"),
-)
+    "hand_q": (N_JOINTS, True, "encoder angle (rad)"),
+    "hand_current": (N_JOINTS, True, "motor current / rated current"),
+    "last_action": (ACTION_DIM, False, "the residual's previous squashed action"),
+    "base_hand_now": (N_JOINTS, False, "base hand target q* (rad)"),
+    "base_hand_tau": (N_JOINTS, False, "base hand feedforward torque / rated torque (the base's grip)"),
+    "base_lookahead": (N_ARM * len(LOOKAHEAD), False,
+                       "the arm's base targets at each lookahead time, relative to now (rad)"),
+    "forecast": (FORECAST_DIM, False, "load-regime forecast (forecast_vector); all zero when masked"),
+    "task": (len(TASKS), False, "one-hot task"),
+    "trigger_enable": (1, False, "1 while the base allows the drill trigger"),
+}
+# each version's blocks, in order. 2: the 40-D action's first layout (touch through codes and patch features, the
+# base, the forecast, the task, the trigger enable). 3 (2026-10-13): touch from the raw codes only (no patch features)
+# and no forecast; the task one-hot stays (the tool's profile is the base's guidance, a VLA's instruction on the
+# robot, not something to infer from touch) and so does the trigger enable (the base's own command state; the
+# interlock itself is the safety layer's, HandSafety, outside the policy)
+OBS_LAYOUTS: dict[int, tuple[str, ...]] = {
+    2: ("taxel_codes", "patch_features", "board_status", "hand_q", "hand_current", "last_action", "base_hand_now",
+        "base_hand_tau", "base_lookahead", "forecast", "task", "trigger_enable"),
+    3: ("taxel_codes", "board_status", "hand_q", "hand_current", "last_action", "base_hand_now", "base_hand_tau",
+        "base_lookahead", "task", "trigger_enable"),
+}
+# the 1 kHz sample the runtimes keep (every fast block any layout reads), in this order
+FAST_SAMPLE = ("taxel_codes", "patch_features", "board_status", "hand_q", "hand_current")
+
+
+def obs_blocks(version: int = OBS_SPEC_VERSION) -> tuple[tuple[str, int, bool, str], ...]:
+    """A layout's blocks: (name, dimension, fast, what it is), in order."""
+    if version not in OBS_LAYOUTS:
+        raise ValueError(f"unknown observation layout {version} (known: {sorted(OBS_LAYOUTS)})")
+    return tuple((n, *BLOCKS[n]) for n in OBS_LAYOUTS[version])
+
+
+OBS_BLOCKS = obs_blocks()  # the current layout
 
 
 def stack_for(rate: float) -> int:
@@ -69,14 +96,14 @@ def stack_for(rate: float) -> int:
     return max(1, int(round(1000.0 / rate)))
 
 
-def obs_dim(stack: int = 1) -> int:
-    return sum(d * (stack if fast else 1) for _, d, fast, _ in OBS_BLOCKS)
+def obs_dim(stack: int = 1, version: int = OBS_SPEC_VERSION) -> int:
+    return sum(d * (stack if fast else 1) for _, d, fast, _ in obs_blocks(version))
 
 
-def obs_slices(stack: int = 1) -> dict[str, slice]:
+def obs_slices(stack: int = 1, version: int = OBS_SPEC_VERSION) -> dict[str, slice]:
     """Where each block sits; a fast block holds `stack` samples, newest first."""
     out, k = {}, 0
-    for name, d, fast, _ in OBS_BLOCKS:
+    for name, d, fast, _ in obs_blocks(version):
         n = d * (stack if fast else 1)
         out[name] = slice(k, k + n)
         k += n
@@ -167,12 +194,21 @@ def arm_lookahead(look: np.ndarray) -> np.ndarray:
     return look.reshape(len(LOOKAHEAD), N_JOINTS + N_ARM)[:, N_JOINTS:].reshape(-1)
 
 
-def spec_hash(action: ActionSpec | None = None, stack: int = 1) -> str:
-    """Version tag of the observation layout and action map: a policy runs only where its hash matches."""
-    blob = json.dumps({"v": OBS_SPEC_VERSION, "blocks": [(n, d, f) for n, d, f, _ in OBS_BLOCKS], "stack": stack,
+def spec_hash(action: ActionSpec | None = None, stack: int = 1, version: int = OBS_SPEC_VERSION) -> str:
+    """Version tag of an observation layout and the action map: a policy runs only where its hash matches (a layout's
+    hash never changes: version 2's is what its policies' sidecars carry)."""
+    blob = json.dumps({"v": version, "blocks": [(n, d, f) for n, d, f, _ in obs_blocks(version)], "stack": stack,
                        "lookahead": LOOKAHEAD, "tasks": TASKS, "regimes": REGIMES,
                        "action": asdict(action or ActionSpec())}, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
+
+
+def layout_of(hash_: str, action: ActionSpec | None = None, stack: int = 1) -> int | None:
+    """The layout version whose spec_hash (at this action map and stack) is `hash_`, None if none is."""
+    for v in OBS_LAYOUTS:
+        if spec_hash(action, stack, v) == hash_:
+            return v
+    return None
 
 
 def assert_deployable(sensor_names: list[str]) -> None:

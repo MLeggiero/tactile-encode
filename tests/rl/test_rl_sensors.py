@@ -372,14 +372,15 @@ def test_forecast_matches_the_forecast_model(tick):
 # ------------------------------------------------------------------------------------------------ student obs
 
 
+@pytest.mark.parametrize("version", [2, 3])
 @pytest.mark.parametrize("stack, mask", [(1, ()), (4, ()), (10, ("hand_current", "forecast")),
                                          (2, ("taxel_codes", "patch_features", "board_status"))])
-def test_student_observation_matches_residual_l2(stack, mask):
+def test_student_observation_matches_residual_l2(stack, mask, version):
     import types
     from collections import deque
 
     from tactile_rl.mdp.obs_builder import StudentObs
-    from tactile_sim.control.obs_spec import ACTION_DIM, BOARDS, TASKS, obs_slices
+    from tactile_sim.control.obs_spec import ACTION_DIM, BOARDS, TASKS, obs_dim
     from tactile_sim.control.residual_l2 import ResidualHandL2
     from tactile_sim.sensors.base import SensorSample
 
@@ -403,7 +404,7 @@ def test_student_observation_matches_residual_l2(stack, mask):
             i_rated=i_rated[e], last_seq=[-1] * BOARDS, stack=stack, fast_dim=562,
             ring=deque([np.zeros(562)] * stack, maxlen=stack), last_a=np.zeros(ACTION_DIM),
             jp=types.SimpleNamespace(tau_rated=tau_rated),
-            task_vec=np.eye(len(TASKS))[0], masked=[obs_slices(stack)[b] for b in mask]))
+            task_vec=np.eye(len(TASKS))[0], version=version, cfg=types.SimpleNamespace(mask_blocks=mask)))
         fakes[-1].fast_sample = (lambda t, f=fakes[-1]: ResidualHandL2.fast_sample(f, t))
     gpu = StudentObs(n_env, stack, GRIDS, codec.levels, mask, "hammer", DEV, tau_rated=tau_rated)
     starts = np.concatenate([[0], np.cumsum([g[0] * g[1] for g in GRIDS])[:-1]])
@@ -435,7 +436,8 @@ def test_student_observation_matches_residual_l2(stack, mask):
                          torch.as_tensor(qv, device=DEV), torch.as_tensor(cv / i_rated, device=DEV))
         gpu.push(row)
         out = gpu.observe(*(torch.as_tensor(x, device=DEV) for x in (last_a, base, look_arm, fc)),
-                          torch.zeros(n_env, device=DEV)).cpu().numpy()
+                          torch.zeros(n_env, device=DEV), version=version).cpu().numpy()
+        assert out.shape == (n_env, obs_dim(stack, version))
         for e, f in enumerate(fakes):
             ref = ResidualHandL2.observe(f, t, base[e], look[e], False, fc[e])
             assert out[e] == pytest.approx(ref, abs=2e-6, rel=1e-6), (k, e)

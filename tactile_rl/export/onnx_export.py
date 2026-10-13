@@ -220,9 +220,10 @@ def export_student(checkpoint: str, out: str, commit: str | None = None) -> dict
                       dynamic_axes={k: {0: "batch"} for k in ("obs", "h_in", "action", "h_out", "aux")},
                       opset_version=OPSET, dynamo=False)
     codec = CodecSpec()
-    meta = PolicyMeta(spec_hash=spec_hash(ActionSpec(), net.stack), rate=float(ck["rate"]), stack=net.stack,
-                      hidden=H, name=Path(out).stem,
-                      extra={"kind": "student", "obs_dim": D, "aux": AUX_LAYOUT, "params": count_parameters(net),
+    meta = PolicyMeta(spec_hash=spec_hash(ActionSpec(), net.stack, net.version), rate=float(ck["rate"]),
+                      stack=net.stack, hidden=H, name=Path(out).stem,
+                      extra={"kind": "student", "obs_version": net.version, "obs_dim": D, "aux": AUX_LAYOUT,
+                             "params": count_parameters(net),
                              "normalizer": {"std_floor": net.norm.std_floor, "clip": net.norm.clip},
                              "codec": {"bits": codec.bits, "mu": codec.mu, "f_max": codec.f_max,
                                        "version": "taxel_codec_v1"},
@@ -285,7 +286,8 @@ def record_student_inputs(checkpoint: str, num_envs: int = 64, steps: int = 160,
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
     net = load_student(checkpoint, device=device)
     env = ManagerBasedRlEnv(residual_env_cfg(float(ck["rate"]), library=library, num_envs=num_envs,
-                                             start_stage=stage, max_stage=stage, obs_groups=("student",)),
+                                             start_stage=stage, max_stage=stage, obs_groups=("student",),
+                                             student_version=net.version),
                             device=device)
     obs_rec, done_rec = [], []
     try:

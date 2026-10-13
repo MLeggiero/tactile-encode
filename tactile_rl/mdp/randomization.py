@@ -4,8 +4,9 @@ draws per seed with sim.randomize.residual_dr) plus the plan's DR-table entries 
 
 Groups, each its own reset event (so a task picks what it randomizes), all writing one per-env state (`TactileDR`):
 
-- `pair_solref_solimp`: the hand-tool contact pairs' friction (mu, and the torsional coefficient), contact time
-  constant (solref, also on the hand's self pairs, as the testbed's gripper.hand_solref) and impedance d0 (solimp);
+- `pair_solref_solimp`: the hand-tool contact pairs' friction (mu, from the event's `hand_friction` range when given,
+  else ResidualDRCfg's; and the torsional coefficient), contact time constant (solref, also on the hand's self pairs,
+  as the testbed's gripper.hand_solref) and impedance d0 (solimp);
 - `randomize_wuji_drive`: command latency (+ jitter), SDK low-pass (or off), current-loop time constant, the motors'
   torque constant against the nominal one the SDK converts with (Kt error: WujiDriveCfg.kt_scale), effort limit,
   ambient temperature, current-readback noise scale; the hand joints' friction loss, damping and armature;
@@ -129,7 +130,7 @@ class TactileDR:
             "ts_f_half", "ts_bandwidth", "ts_skin_depth", "ts_drop_prob", "ts_bridge_hi", "dead_taxel_frac",
             "rt_phase", "servo_p_mult", "arm_kd_scale", "nail_r0", "nail_r_per_m", "face_tc", "vdr_zeta0",
             "fc_bias_sigma", "fc_jitter_sigma", "fc_class_confusion", "fc_freq_err", "fc_amp_err", "fc_latency",
-            "fc_update_rate", "fc_dropout", "fc_mask_prob", "fc_horizon_err", "hold_level")
+            "fc_update_rate", "fc_dropout", "fc_mask_prob", "fc_horizon_err", "hold_level", "vla")
 
     def __init__(self, env: ManagerBasedRlEnv, scene_key: str, cfg: ResidualDRCfg | None = None,
                  extra: DRExtraCfg | None = None):
@@ -178,7 +179,8 @@ class TactileDR:
             "vdr_zeta0": float(p.vdr_zeta0),
             "fc_bias_sigma": 0.0, "fc_jitter_sigma": 0.0, "fc_class_confusion": 0.0, "fc_freq_err": 0.0,
             "fc_amp_err": 0.0, "fc_latency": 0.05, "fc_update_rate": 10.0, "fc_dropout": 0.0, "fc_mask_prob": 0.0,
-            "fc_horizon_err": 0.0, "hold_level": 1.0}  # the base's grip (the load generator's command draws it)
+            "fc_horizon_err": 0.0, "hold_level": 1.0,  # the base's grip (the load generator's command draws it)
+            "vla": 0.0}  # the hand base runs VLA-style this episode (the base term draws it)
         self.v = {k: torch.full((N,), self.nominal[k], **f64) for k in self.KEYS}
         # model nominal arrays the scales multiply
         self.jf0 = torch.as_tensor(m.dof_frictionloss[parts_dofs(m, parts)], **f64)
@@ -222,11 +224,11 @@ class TactileDR:
                 v["ts_bandwidth"] / 500.0, v["ts_skin_depth"] / 0.003, v["ts_drop_prob"] / 0.01,
                 v["dead_taxel_frac"] / 0.02, v["rt_phase"] / 0.001, v["servo_p_mult"], v["arm_kd_scale"],
                 v["nail_r0"] / 100.0, v["nail_r_per_m"] / 5e3, v["face_tc"] / 0.003, v["vdr_zeta0"],
-                v["fc_bias_sigma"] / 0.03, v["fc_latency"] / 0.25, v["fc_mask_prob"], v["hold_level"]]
+                v["fc_bias_sigma"] / 0.03, v["fc_latency"] / 0.25, v["fc_mask_prob"], v["hold_level"], v["vla"]]
         return torch.stack(cols, dim=1).float()
 
 
-PARAM_DIM = 33
+PARAM_DIM = 34
 
 
 def parts_dofs(m, parts) -> np.ndarray:
@@ -259,12 +261,14 @@ PLANT_FIELDS = ("body_mass", "body_ipos", "body_iquat", "body_inertia", "body_in
 
 
 @requires_model_fields(*CONTACT_FIELDS)
-def pair_solref_solimp(env: ManagerBasedRlEnv, env_ids, scene_key: str) -> None:
-    """The hand-tool contact: friction (mu, torsion), time constant (also the hand's self pairs), impedance d0."""
+def pair_solref_solimp(env: ManagerBasedRlEnv, env_ids, scene_key: str,
+                       hand_friction: tuple[float, float] | None = None) -> None:
+    """The hand-tool contact: friction (mu from `hand_friction`, else the table's; torsion), time constant (also the
+    hand's self pairs), impedance d0."""
     dr = tactile_dr(env, scene_key)
     ids = _ids(env, env_ids)
     c, x = dr.cfg, dr.extra
-    mu = dr.draw(ids, "hand_friction", c.hand_friction).float()
+    mu = dr.draw(ids, "hand_friction", c.hand_friction if hand_friction is None else hand_friction).float()
     tor = dr.draw(ids, "hand_torsion", x.hand_torsion).float()
     tc = dr.draw(ids, "hand_solref_tc", c.hand_solref_tc).float()
     d0 = dr.draw(ids, "hand_solimp_d0", x.hand_solimp_d0).float()
