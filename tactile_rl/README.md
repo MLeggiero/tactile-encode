@@ -116,6 +116,36 @@ git archive <this branch> | tar -x -C ~/residual40/tree
 (setsid nohup ~/residual40/tree/tactile_rl/run_residual_pipeline.sh > ~/residual40/pipeline.out 2>&1 < /dev/null &)
 ```
 
+### Results of the pipeline (desktop, RTX 5070 Ti, 2026-10-12/13; `~/residual40/runs/reports/`)
+
+- **Library**: 120 episodes × 5 swings (seeds from 10^6), every swing hit; 2.50° of slip per swing.
+- **The band** (LoadGenCfg's, still the light hammer's) on the YCB grip, 1024 envs, friction 1.1–2.0: no grasp lost at
+  any hold; 65 / 79 / 86 / 85 % of events within 0.7 mm / 1.4° at holds 0.3 / 0.5 / 0.8 / 1.0. Too easy for this
+  grip, hence the calibration of the v3 retrain.
+- **Throughput** (4096 envs, the YCB hammer): 124.5 ms per env step at 1 kHz (32.9 simulated s per s), 435 ms at
+  250 Hz (37.7); about 4.8 GB for the env; peaks per world 65 broadphase candidates, 16.8 contacts, 101 constraint rows.
+- **Teachers**: at 4096 envs both ran out of GPU memory at a graph launch (MuJoCo Warp); the pipeline's retry at 2048
+  envs resumed them from their checkpoints, the curriculum restarting at C0. 250 Hz: 833 iterations in C3, return
+  −11.3, 0.79 mm / 1.90° net slip per event, 91 % within target; 1 kHz: 777 in C3, −12.8, 0.62 mm / 1.63°, 89 %.
+- **Students** (DAgger, 300 iterations): s250 457 k parameters, ONNX parity 2.5e-7; s1k 419 k, 3.9e-7.
+- **E1hold** (8 kHz validator, 20 seeds paired by seed against the zero residual at the same hold; no strike lost
+  anywhere; `e1_s250_pairs.md`, `e1_s1k_pairs.md`):
+
+| hold | s250: net mm | s250: path deg | s250: I2t | s1k: net mm | s1k: net deg | s1k: path deg | s1k: I2t |
+|---|---|---|---|---|---|---|---|
+| 0.3 | +0.145 [+0.088, +0.203] | +0.21 [−0.30, +0.68] | +0.016 | +0.408 [+0.316, +0.492] | +0.48 [+0.21, +0.77] | +0.36 [−0.34, +1.01] | +0.044 |
+| 0.5 | +0.094 [+0.053, +0.135] | −1.38 [−1.69, −1.09] | +0.019 | +0.294 [+0.237, +0.351] | +0.75 [+0.55, +0.96] | −2.72 [−3.39, −2.08] | +0.053 |
+| 0.8 | +0.104 [+0.076, +0.133] | −1.89 [−2.14, −1.65] | +0.016 | +0.072 [+0.032, +0.111] | +0.51 [+0.28, +0.73] | −4.39 [−5.03, −3.72] | +0.069 |
+| 1.0 | +0.057 [+0.015, +0.093] | −2.31 [−2.69, −1.96] | +0.019 | −0.063 [−0.104, −0.021] | +0.37 [+0.08, +0.62] | −4.64 [−5.05, −4.22] | +0.070 |
+
+  The zero residual: 0.54 mm / 1.40°, path 8.8°, I2t 0.200 at hold 0.3; 0.62 mm / 1.37°, path 9.5°, I2t 0.429 at
+  1.0. Both students cut the slip path (s1k to half at the full hold) for a little more net slip and current.
+- **On the GPU** (`bench.residual_eval`, 1024 envs per cell, the library's friction, C3's randomization): the same
+  students against the zero residual are far stronger, e.g. at hold 0.3 in the testbed's strike window net slip
+  1.49 (s250) / 1.29 (s1k) mm against 3.43 mm, path 9.0 / 8.6° against 15.2°; the students track their teachers.
+  The GPU's zero residual slips several times more than the validator's (no noslip, 4 kHz): the sim-to-sim gap the
+  students' CPU numbers inherit.
+
 ## The friction study and the v3 retrain (2026-10-13)
 
 **Part 1: the friction sweep** (`residual_experiment run --stage Efric`, `tactile_rl/run_friction_study.sh`). In the
@@ -128,6 +158,17 @@ from 100 ms before to 300 ms after each contact (the squeeze), and the tool's in
 each blow (re-seating). `python -m tactile_sim.experiments.friction_study --root R --out D` writes the tables (outcomes,
 each policy paired against the zero residual at the same friction and hold, activity, re-seating) and the figures
 (`outcomes.png`, `activity_hold*.png`, `squeeze_hold*.png`, `reseat.png`).
+
+*Part 1's results* (desktop, 2026-10-13, 432 episodes; `~/residual40/friction/reports/final/`). Grasps are lost only
+at hold 0.5 and mu ≤ 0.3: the zero residual loses 25 % of its strikes at mu 0.2 (half its episodes) and 6 % at 0.3;
+s250 8 % and 0 %, s1k 4 % (paired against zero −0.21 [−0.36, −0.06]) and 0 %. Both students cut the slip path at
+almost every friction and hold (at hold 0.5 and mu 0.2 by 14° and 18° from 31°; at the full hold and mu 1.5 by 2° and
+4.5° from 9.2°), and pay current that does not depend on the friction (I2t per strike +0.01–0.03 for s250, +0.05–0.07
+for s1k). Net slip at mu ≥ 0.4 is a little worse with either (s250 +0.05–0.22 mm; s1k up to +0.42 mm and +0.6°): the
+zero residual springs the tool back after each blow better. Neither student's activity changes with friction; the
+squeeze is a fixed timing pattern (both hold +0.04 Nm of extra closing feedforward before contact and spike at it,
+s250 to 0.06 Nm, then releasing within 50 ms, s1k to 0.14 Nm and holding about +0.05 Nm for 300 ms). The students
+never saw a friction below 1.1.
 
 **Part 2: the v3 retrain** (`tactile_rl/run_v3_retrain.sh`). The user's decisions (2026-10-13):
 
