@@ -12,13 +12,19 @@ drives, the TaxelScan readout; `apply_params`). It then plays the entry, optiona
   tick the target q, its velocity feedforward and the droop are interpolated between the CPU's ticks at u, and the
   servo target is q0 + a (q - q0) + droop + kd / kp a w qd (World.set_arm_position), held until the next tick;
 - the hand base: the grip synergy at the library's scalar s(u) from the joint angles the host last read
-  (WrapSynergy.mit_command), recomputed at every policy tick;
-- the lookahead (arm part; the hand's targets do not move ahead under this base), refreshed on the arm's ticks: the
-  library's displacements at the LOOKAHEAD horizons, re-sampled at the warped horizons and scaled by a;
+  (WrapSynergy.mit_command), recomputed at every policy tick; in a share `vla_frac` of the episodes VLA-style instead
+  (action_map.TorchHandTable: the table-equivalent targets of that synergy base on a 30 Hz grid, under the task's
+  hand table);
+- the lookahead (the arm's: obs_spec's base_lookahead), refreshed on the arm's ticks: the library's displacements at
+  the LOOKAHEAD horizons, re-sampled at the warped horizons and scaled by a;
 - the forecast: the library's truth (event time mapped to env time, amplitude scaled by a w) through the torch
   ForecastModel.
 
-Unperturbed (w = a = 1, d = 0) an env replays the entry exactly as base_library.replay_entry does on the CPU.
+With `hand_friction` set, a hammer episode's hand/tool friction is drawn from that range instead of taken from the
+library entry (the start state stays the entry's: its grasp was settled at the keyframes' friction).
+
+Unperturbed (w = a = 1, d = 0, no friction draw, no VLA-style episodes) an env replays the entry exactly as
+base_library.replay_entry does on the CPU.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ import numpy as np
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 
-from tactile_rl.mdp.action_map import TorchSynergy
+from tactile_rl.mdp.action_map import TorchSynergy, vla_table
 from tactile_rl.mdp.forecast import TorchForecastModel
 from tactile_rl.mdp.runtime import tactile_runtime
 from tactile_sim.behaviors.base_library import DRIVE_STATE, arm_tick_phase_ms, base_signature, load_library
@@ -137,6 +143,9 @@ class BaseTrajectoryCommandCfg(CommandTermCfg):
     task: str = "hammer"
     mask_blocks: tuple[str, ...] = ()
     resampling_time_range: tuple[float, float] = (1.0e9, 1.0e9)  # one entry per episode
+    hand_friction: tuple[float, float] | None = None  # drawn per episode (None: the entry's)
+    vla_frac: float = 0.0  # the share of VLA-style episodes (TorchHandTable)
+    vla_hz: float = 30.0
 
     def build(self, env: ManagerBasedRlEnv) -> BaseTrajectoryCommand:
         return BaseTrajectoryCommand(self, env)
@@ -186,7 +195,7 @@ class BaseTrajectoryCommand(CommandTerm):
         self.level = torch.ones(N, device=dev)
         self.active = torch.ones(N, dtype=torch.bool, device=dev)  # the envs this term drives (the C3 mix: hammer envs)
         self.base = torch.zeros(N, 5, N_JOINTS, device=dev)
-        self.lookahead = torch.zeros(N, (N_JOINTS + N_ARM) * len(LOOKAHEAD), device=dev)
+        self.lookahead = torch.zeros(N, N_ARM * len(LOOKAHEAD), device=dev)
         self.forecast = torch.zeros(N, 13, device=dev)
         z64 = torch.zeros(N, **f64)
         self.truth = {"valid": torch.zeros(N, dtype=torch.bool, device=dev), "t_event": z64, "f": z64, "amp": z64,
@@ -197,6 +206,10 @@ class BaseTrajectoryCommand(CommandTerm):
         hit = self.lib.outcome.get("hit", self.lib.outcome.get("done", np.zeros(self.lib.E)))
         self._hit_cpu = torch.as_tensor(np.asarray(hit, float), dtype=torch.float32, device=dev)
         self.s_trig_now = None if self.lib.s_trig is None else torch.zeros(N, device=dev)
+        self.mu = torch.ones(N, **f64)  # the hand/tool friction each env runs with
+        # VLA-style episodes: drawn and applied by the term that drives the env (MixedBaseCommand clears `vla_top`)
+        self.vla = vla_table(rt, cfg.vla_hz) if cfg.vla_frac > 0 else None
+        self.vla_top = True
 
     @property
     def command(self) -> torch.Tensor:
@@ -259,6 +272,8 @@ class BaseTrajectoryCommand(CommandTerm):
         if lib.trigger is not None:
             self.trigger = lib.trigger[e, i]
         self.base = self.synergy.mit_command(self.s_now, rt.rb_q.value.float(), self.s_trig_now)
+        if self.vla is not None and self.vla_top:
+            self.base = self.vla.apply(self.base, rt.rb_q.value, tau, rt.rb_q.seq >= 0)
         # lookahead on the arm's ticks, re-sampled at the warped horizons and scaled
         started, _, u_j = self._tick(tau)
         il = torch.where(started, torch.floor(u_j * 1000.0 + 1e-6).long(), torch.zeros_like(i))
@@ -272,8 +287,7 @@ class BaseTrajectoryCommand(CommandTerm):
         v1 = vals.gather(1, (seg + 1)[..., None].expand(-1, -1, N_ARM))
         arm = v0 + ((x - x0) / (x1 - x0))[..., None] * (v1 - v0)
         arm = arm * self.amp[:, None, None]
-        look = torch.cat([torch.zeros(self.num_envs, len(LOOKAHEAD), N_JOINTS, device=self.device), arm.float()], 2)
-        self.lookahead = look.reshape(self.num_envs, -1)
+        self.lookahead = arm.float().reshape(self.num_envs, -1)
         # forecast truth in env time, then the forecast model
         valid = lib.fc_valid[e, i]
         # the library stores no event as NaN: 0 where none is planned, as the load generator's truth
@@ -319,6 +333,8 @@ class BaseTrajectoryCommand(CommandTerm):
             self.apply_params(env_ids, e)
         self.write_state(env_ids, e)
         self.forecaster.reset(env_ids)
+        if self.vla is not None and self.vla_top:
+            self.vla.reset(env_ids, c.vla_frac)
         self.metrics["entry_hit_cpu"][env_ids] = self._hit_cpu[e]
 
     def write_state(self, env_ids: torch.Tensor, e: torch.Tensor) -> None:
@@ -346,7 +362,8 @@ class BaseTrajectoryCommand(CommandTerm):
         model.body_inertia[ids, b] = P["hammer_inertia"][e].float()
         model.body_invweight0[ids, b] = P["hammer_invweight0"][e].float()
         model.dof_invweight0[ids[:, None], self.hammer_dofs] = P["hammer_dof_invweight0"][e].float()
-        mu = P["hand_friction"][e].float()
+        mu = P["hand_friction"][e].float() if self.cfg.hand_friction is None else self._draw_friction(ids)
+        self.mu[ids] = mu.double()
         sp = self.skin_pairs
         if len(sp):
             mu_p = torch.minimum(mu[:, None], self.skin_caps[None])  # the trigger finger's cap
@@ -372,8 +389,8 @@ class BaseTrajectoryCommand(CommandTerm):
         lpf = P["sdk_lpf_hz"][e]
         i_rated = P["i_rated"][e][:, self.group]  # (n, J)
         rt.drive.set_params(ids, cmd_latency=P["cmd_latency"][e], sdk_lpf_hz=lpf, tau_i=P["tau_i"][e],
-                            i_rated=i_rated, effort_limit_ratio=P["effort_limit_ratio"][e][:, None],
-                            t_amb=P["t_amb"][e])
+                            i_rated=i_rated, kt_scale=self._kt_scale(e)[:, None],
+                            effort_limit_ratio=P["effort_limit_ratio"][e][:, None], t_amb=P["t_amb"][e])
         rt.scan.set_params(ids, gain_mismatch=P["ts_gain_mismatch"][e], offset_lsb=P["ts_offset_lsb"][e],
                            f_half=P["ts_f_half"][e], bandwidth=P["ts_bandwidth"][e],
                            bridge_latency=(P["ts_bridge_lo"][e], P["ts_bridge_hi"][e]),
@@ -382,6 +399,15 @@ class BaseTrajectoryCommand(CommandTerm):
         rt.rb_i.set_params(ids, noise_scale=P["noise_scale"][e])
         self._sync_dr(ids, e)
 
+    def _draw_friction(self, ids: torch.Tensor) -> torch.Tensor:
+        """A hand/tool friction per env from cfg.hand_friction (through the DR state when the task has one: its scale
+        and record)."""
+        dr = getattr(self._env, "_tactile_dr", None)
+        if dr is not None:
+            return dr.draw(ids, "hand_friction", self.cfg.hand_friction).float()
+        lo, hi = self.cfg.hand_friction
+        return (lo + (hi - lo) * torch.rand(len(ids), dtype=torch.float64, device=self.device)).float()
+
     def _sync_dr(self, ids: torch.Tensor, e: torch.Tensor) -> None:
         """The entry's draw into the reset events' randomization state (when the task has one), so the teacher's
         randomization vector shows what these envs run with (the C3 mix: library draws over the events')."""
@@ -389,7 +415,7 @@ class BaseTrajectoryCommand(CommandTerm):
         if dr is None:
             return
         P = self.lib.params
-        for k_dr, k_lib in (("head_mass", "head_mass"), ("hand_friction", "hand_friction"),
+        for k_dr, k_lib in (("head_mass", "head_mass"),
                             ("hand_solref_tc", "hand_solref_tc"), ("nail_r0", "nail_r0"),
                             ("nail_r_per_m", "nail_r_per_m"), ("vdr_zeta0", "vdr_zeta0"), ("face_tc", "face_tc"),
                             ("cmd_latency", "cmd_latency"), ("sdk_lpf_hz", "sdk_lpf_hz"), ("tau_i", "tau_i"),
@@ -401,18 +427,22 @@ class BaseTrajectoryCommand(CommandTerm):
                             ("noise_scale", "noise_scale")):
             if k_lib in P:
                 dr.v[k_dr][ids] = P[k_lib][e].double()
+        dr.v["hand_friction"][ids] = self.mu[ids]
         dr.v["arm_kd_scale"][ids] = 1.0
-        if dr.i_rated0 is not None:
-            dr.v["kt_scale"][ids] = (P["i_rated"][e][:, self.group].double().mean(1)
-                                     / dr.i_rated0.double().mean())
+        dr.v["kt_scale"][ids] = self._kt_scale(e).double()
+
+    def _kt_scale(self, e: torch.Tensor) -> torch.Tensor:
+        """The entries' Kt error (a library before version 2 has none: 1)."""
+        P = self.lib.params
+        return P["kt_scale"][e] if "kt_scale" in P else torch.ones_like(P["head_mass"][e])
 
     def param_vector(self) -> torch.Tensor:
         """The randomization each env runs with, scaled to O(1) (teacher / critic observation)."""
         P, e = self.lib.params, self.entry
-        cols = [P["head_mass"][e] / 0.5, P["hand_friction"][e], P["hand_solref_tc"][e] / 0.003,
+        cols = [P["head_mass"][e] / 0.5, self.mu, P["hand_solref_tc"][e] / 0.003,
                 P["nail_r0"][e] / 300.0, P["nail_r_per_m"][e] / 1e4, P["vdr_zeta0"][e], P["face_tc"][e] / 0.003,
                 P["cmd_latency"][e] / 0.003, P["sdk_lpf_hz"][e] / 300.0, P["tau_i"][e] / 0.0005,
-                P["i_rated"][e][:, 0], P["effort_limit_ratio"][e], (P["t_amb"][e] - 25.0) / 10.0,
+                self._kt_scale(e), P["effort_limit_ratio"][e], (P["t_amb"][e] - 25.0) / 10.0,
                 P["ts_gain_mismatch"][e] / 0.15, P["ts_offset_lsb"][e] / 6.0, P["ts_f_half"][e] / 8.0,
                 P["ts_bandwidth"][e] / 500.0, P["ts_skin_depth"][e] / 0.003, P["ts_drop_prob"][e] / 0.01,
                 P["ts_bridge_hi"][e] / 0.001, P["servo_p_mult"][e], torch.log(P["noise_scale"][e]),

@@ -1,11 +1,11 @@
 """DAgger distillation of a privileged teacher into the student (the plan's pipeline, step 2).
 
-Rollouts run in Tactile-Residual's C3 (70 % hammer swings, 30 % load generator, the base at 0.3-0.8 of its hold, the
-full randomization). Each env episode is driven either by the teacher (with probability beta, drawn at every reset) or
-by the student; the teacher labels every step. The schedule follows the plan: behaviour cloning first (beta = 1:
-the teacher drives everything), then beta falls linearly to 0, then on-policy (the student drives, the teacher only
-labels). One rollout of `rollout_s` (0.128 s) per iteration, as the teachers' PPO, so iterations are comparable in
-simulated time across rates.
+Rollouts run in Tactile-Residual's C3 (70 % hammer swings, 30 % load generator, the base at 0.3-1.2 of its hold, so
+the full hold is in the students' range; the full randomization). Each env episode is driven either by the teacher
+(with probability beta, drawn at every reset) or by the student; the teacher labels every step. The schedule follows
+the plan: behaviour cloning first (beta = 1: the teacher drives everything), then beta falls linearly to 0, then
+on-policy (the student drives, the teacher only labels). One rollout of `rollout_s` (0.128 s) per iteration, as the
+teachers' PPO, so iterations are comparable in simulated time across rates.
 
 Loss on every step (truncated backpropagation through each env's rollout, the student's state carried across
 rollouts and zeroed at episode starts):
@@ -33,6 +33,7 @@ import torch
 import torch.nn.functional as F
 
 from tactile_rl.algos.student_model import AUX_LAYOUT, REGIME_CLASSES, StudentNet, count_parameters
+from tactile_sim.control.obs_spec import ACTION_DIM, OBS_SPEC_VERSION
 
 N_SLIP = AUX_LAYOUT["slip_next_mm"]
 N_CONTACT = AUX_LAYOUT["contact_logits"]
@@ -61,6 +62,9 @@ class DaggerCfg:
     hidden: int = 192
     seed: int = 1
     save_every: int = 50
+    # the student's observation layout (obs_spec.OBS_LAYOUTS); the teacher reads its own (the current layout's
+    # student part plus the privileged state), whatever the student's
+    obs_version: int = OBS_SPEC_VERSION
 
 
 def beta_at(cfg: DaggerCfg, it: int) -> float:
@@ -127,17 +131,17 @@ class DaggerTrainer:
         self.cfg, self.device = cfg, device
         self.stack = stack_for(cfg.rate)
         env_cfg = residual_env_cfg(cfg.rate, library=library, num_envs=cfg.num_envs, start_stage=3, max_stage=3,
-                                   obs_groups=("student", "teacher"))
+                                   obs_groups=("student", "teacher"), student_version=cfg.obs_version)
         env_cfg.seed = cfg.seed
         self.env = ManagerBasedRlEnv(env_cfg, device=device)
         self.teacher = load_actor(teacher_ckpt, device=device).to(device).eval()
-        self.student = StudentNet(self.stack, hidden=cfg.hidden).to(device)
+        self.student = StudentNet(self.stack, hidden=cfg.hidden, version=cfg.obs_version).to(device)
         self.opt = torch.optim.Adam(self.student.parameters(), lr=cfg.lr)
         self.T = max(1, round(cfg.rollout_s * cfg.rate))
         self.dt = 1.0 / cfg.rate
         self.k_slip = max(1, round(cfg.slip_horizon_s * cfg.rate))
-        self.D = obs_dim(self.stack)
-        self.sl = teacher_label_slices(self.D)
+        self.D = obs_dim(self.stack, cfg.obs_version)
+        self.sl = teacher_label_slices(obs_dim(self.stack))  # in the teacher's observation (the current layout)
         self.teacher_ckpt = str(teacher_ckpt)
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +150,8 @@ class DaggerTrainer:
                                                            "library": library, "stack": self.stack,
                                                            "params": count_parameters(self.student)}, indent=1))
         N, T, dev = cfg.num_envs, self.T, device
-        self.buf = {"obs": torch.zeros(T, N, self.D, device=dev), "a_t": torch.zeros(T, N, 60, device=dev),
+        self.buf = {"obs": torch.zeros(T, N, self.D, device=dev),
+                    "a_t": torch.zeros(T, N, ACTION_DIM, device=dev),
                     "speed": torch.zeros(T, N, N_SLIP, device=dev),
                     "regime": torch.zeros(T, N, dtype=torch.long, device=dev),
                     "contact": torch.zeros(T, N, N_CONTACT, dtype=torch.bool, device=dev),
@@ -235,7 +240,7 @@ class DaggerTrainer:
     def save(self, path: Path) -> None:
         torch.save({"student_state_dict": self.student.state_dict(), "optimizer": self.opt.state_dict(),
                     "iter": self.it, "cfg": asdict(self.cfg), "stack": self.stack, "hidden": self.cfg.hidden,
-                    "rate": self.cfg.rate, "teacher": self.teacher_ckpt}, path)
+                    "rate": self.cfg.rate, "teacher": self.teacher_ckpt, "obs_version": self.cfg.obs_version}, path)
 
     def resume(self, path: str) -> None:
         """Continue a run from its checkpoint: the student (normalizer included) and the optimizer; the schedules go on
@@ -279,8 +284,9 @@ class DaggerTrainer:
 
 
 def load_student(path: str, device: str = "cpu") -> StudentNet:
+    """A student checkpoint; one without a layout is layout 2's (written before layout 3 existed)."""
     ck = torch.load(path, map_location=device, weights_only=False)
-    net = StudentNet(int(ck["stack"]), hidden=int(ck.get("hidden", 192)))
+    net = StudentNet(int(ck["stack"]), hidden=int(ck.get("hidden", 192)), version=int(ck.get("obs_version", 2)))
     net.load_state_dict(ck["student_state_dict"])
     net.norm.frozen = True
     return net.to(device).eval()

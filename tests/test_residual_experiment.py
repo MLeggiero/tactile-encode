@@ -24,10 +24,41 @@ def test_conditions_share_each_seeds_randomization():
     b = next(j for j in jobs if j.condition.name == "squeeze" and j.seed == 1)
     (ca, da), (cb, db) = a.config(), b.config()
     assert da == db and ca.hammer.head_mass == cb.hammer.head_mass and ca.wuji.cmd_latency == cb.wuji.cmd_latency
-    assert ca.controller.grip_hold != cb.controller.grip_hold
+    # the squeeze grips at the hand's full rating (a grip_hold above the hand's hold maximum was clipped back to the
+    # base's own: a no-op)
+    from tactile_sim.experiments.residual_experiment import SQUEEZE_LEVEL
+
+    assert ca.residual.hold_level == 1.0 and cb.residual.hold_level == SQUEEZE_LEVEL
+    assert SQUEEZE_LEVEL * ca.controller.grip_hold / 78.19 >= 1.0  # s capped at the full rating
+    assert ca.hammer.model == "ycb" and ca.controller.grip_hold == cb.controller.grip_hold
     tiny = str(__import__("pathlib").Path(__file__).parent / "data" / "tiny_policy.onnx")
     last = e1_conditions({"s1": tiny})[-1]
     assert last.name == "residual:s1" and last.overrides["residual"]["rate"] == 1000.0  # the policy's own rate
+
+
+def test_evaluation_seeds_never_meet_the_libraries():
+    import inspect
+
+    from tactile_sim.behaviors.base_library import LIBRARY_SEED0, export_library
+    from tactile_sim.experiments.residual_experiment import STAGES
+
+    assert inspect.signature(export_library).parameters["seed0"].default == LIBRARY_SEED0
+    assert max(st["seeds"] for st in STAGES.values()) <= LIBRARY_SEED0
+    assert max(j.seed for j in make_jobs("E1hold")) < LIBRARY_SEED0
+
+
+def test_a_drop_is_neither_zero_slip_nor_skipped():
+    """A strike a drop interrupted carries no slip (NaN, so the kept strikes carry the mean); an episode that dropped
+    the tool before its first strike still counts as a drop."""
+    def res(seed, strikes, dropped):
+        return {"job": {"condition": "base", "seed": seed, "task": "hammer"}, "strikes": strikes, "dropped": dropped,
+                "residual": {"i2t": 1.0, "i_peak_ratio": 1.0}}
+
+    kept = {"slip_rot_deg": 2.0, "slip_trans_mm": 1.0, "advance_mm": 2.0}
+    lost = {"slip_rot_deg": float("nan"), "slip_trans_mm": float("nan"), "advance_mm": 0.5}
+    ps = per_seed([res(0, [kept, lost], True), res(1, [], True), res(2, [kept], False)])["base"]
+    assert set(ps) == {0, 1, 2} and ps[1]["drops"] == 1.0 and np.isnan(ps[1]["slip_rot_deg"])
+    assert ps[0]["slip_rot_deg"] == 2.0 and ps[0]["slip_trans_mm"] == 1.0 and ps[0]["drops"] == 1.0
 
 
 def test_paired_bootstrap():
@@ -102,7 +133,9 @@ def test_the_hold_stage_and_its_table_count_a_drop_as_a_lost_strike(tmp_path):
     assert "| base | 1 | 2 / 6 | 0.0 % | 0 % | 0 % | 1.000 / 2.000 |" in text
     assert "| 1.00, 1.00, 1.00 | 0.30, 1.00, 1.00 |" in text  # the zero at 0.3: against itself, against the full hold
     pairs = hold_pairs("E1hold", tmp_path)  # per seed against the full hold: seed 0 at 0.3 kept no strike
-    assert "| base | 0.5 | 2 | -0.5 [-0.5, -0.5] |" in pairs and "| base | 0.3 | 1 |" in pairs
+    # lost per strike: none at 0.5; at 0.3 seed 0 lost its only strike (+1) and seed 1 none: +0.5
+    assert "| base | 0.5 | 2 | +0 [+0, +0] | -0.5 [-0.5, -0.5] |" in pairs
+    assert "| base | 0.3 | 2 | +0.5 [+0, +1] |" in pairs
 
 
 def test_drill_jobs_have_their_own_conditions_and_place():
@@ -133,3 +166,15 @@ def test_a_drill_smoke_episode_writes_metrics_and_reports(tmp_path):
     assert set(m) >= {"success", "cam_outs", "slip_rot_deg", "t_seat", "i2t"}
     assert m["success"] in (0.0, 1.0) and np.isfinite(m["slip_rot_deg"])
     assert "| base | 1 |" in report("smoke", tmp_path, task="drill")
+
+
+def test_rerun_check_compares_payloads_wall_time_aside():
+    from tactile_sim.experiments.rerun_check import compare
+
+    a = {"summary": {"slip": 1.5, "nan": float("nan"), "lost": False}, "strikes": [{"t": 0.1}, {"t": 0.2}],
+         "wall_s": 12.0}
+    n, diff, worst = compare(a, {**a, "wall_s": 99.0})
+    assert n == 5 and diff == [] and worst == 0.0
+    b = {**a, "summary": {**a["summary"], "slip": 1.75}, "strikes": [{"t": 0.1}]}
+    n, diff, worst = compare(a, b)
+    assert diff == ["/strikes[1]/t", "/summary/slip"] and worst == 0.25

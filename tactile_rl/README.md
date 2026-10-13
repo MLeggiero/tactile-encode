@@ -25,6 +25,202 @@ GPU-parallel training of the WUJI Hand 2 residual (L2) on MuJoCo Warp through mj
   transfer number. M5 also ports the 12 V drill: the drivetrain and the plant's laws, batched and exact against the
   CPU, the dyno's ratings on the batched drivetrain, the Vega U + WUJI drill scene, the drill library and
   zero-residual drill episodes against the CPU. Last, it trains the teachers' seeds 2 and 3.
+- **The 40-D residual on the YCB hammer** (2026-10-12, below): the action becomes what WUJI Hand 2 can take at rate
+  (a set-point and a feedforward offset per joint; the gains stay configuration), the residual trains on the 665 g
+  YCB claw hammer the VLA swings, with the hands' grippy coverings, and the reviews' cheap verified bugs are fixed.
+  The milestone results below (M1–M5) are the light hammer's and the 60-D action's.
+- **The friction study and the v3 retrain** (2026-10-13, below): the students in the validator with the hand's
+  friction fixed from 0.2 to 1.5, and a teacher and students retrained on a wider distribution (friction 0.2–2.0,
+  loads off the strike axis and about every tool axis at a calibrated band, VLA-style hand commands) with observation
+  layout 3 (no patch features, no forecast); the earlier students keep running on layout 2.
+
+## The 40-D residual on the YCB hammer (2026-10-12)
+
+The user's decisions (2026-10-12) after the two reviews (`reports/Residual L2 sim-to-real audit.md`, `reports/Methods
+and novelty validation.md`): a 40-D action, the YCB hammer, the current WUJI assumptions with the grippy coverings
+(e4e483c: `config.WUJI_COVERED_FRICTION` 1.5 in `residual_config`, `ResidualDRCfg.hand_friction` 1.1–2.0).
+
+**The action (obs_spec version 2).** Per joint a set-point offset dq (±0.08–0.20 rad by group) and a feedforward
+offset (±0.6 τ_rated), tanh-bounded, slew-limited (20 rad/s, 100 τ_rated/s), zero-initialized; Kp, Kd and qd* are
+the base's. WUJI Hand 2 writes `mit_params (kp, kd)` once (audit A1): the realtime command carries position, velocity
+and torque only. a = 0 now reproduces any base exactly: version 1 clamped the total Kp to 8 kp_nom, which changed the
+YCB grip's held fingertip joints (Kp 2.0 against a 1.76 cap; audit A8). Under the grip synergy the closing joints run
+Kp = 0 (their grip is the feedforward), so there the residual acts through tau alone; dq moves the springs of the
+shaping joints (abduction, the thumb's base, the held fingertip joints) and of the coupled fingertip joints.
+
+**The observation (version 2, 680 entries at 1 kHz, 2366 at 250 Hz).** `last_action` is 40-D; `base_hand_tau` (new):
+the base command's feedforward over the rated torques, so the student sees the base's grip, which lives in tau_ff,
+not in q* (audit B1); `base_lookahead` is the arm's alone (21): the scripted base has no hand plan ahead, and a VLA's
+hand targets mean something else (audit B3: the hand part was always zero in training). Base sources keep returning
+the full 81-entry lookahead (`obs_spec.arm_lookahead` picks the arm's).
+
+**The YCB hammer on the GPU.** `residual_training_config(hammer_kind="ycb")` is the default (`TRAINING_HAMMER`):
+`config.HAMMERS["ycb"]` (the scan's hull slices, the palm grip with the fingertip joints held at 0.6 rad, the fingers
+colliding, the arm reaching forward, windup 0.16 m, nail 100 N + 7 kN/m, head 0.38–0.52 kg). The taxel load model
+(`sensors/taxel_load.py`) ray-casts the hand's TaxelScan rays against the handle's 12 convex slices: the face planes of
+each hull (MuJoCo's convex hull of the scan's vertices), Cyrus-Beck in a Warp kernel that casts only the rays a shape
+refresh needs and skips a slice whose bounding sphere a ray misses (the testbed's cut); it matches `mj_rayMesh` to
+2e-5 m (`test_hull_rays_match_mujocos_ray_mesh`). A patch's shape is also refreshed when the set of slices loading it
+changes, as the testbed's. Contact slots per patch 12 (the palm along the handle touches several slices), MuJoCo
+Warp's buffers 128 contacts and 512 constraint rows per world. The light hammer's capsule path is kept
+(`hammer_kind="light"`).
+
+**Fixes from the reviews (the cheap verified ones).**
+
+| review | finding | fix |
+|---|---|---|
+| audit A1 ✔ | Kp/Kd streamed per tick; the hardware takes them as configuration | the 40-D action |
+| audit A8 ✔ | compose clamped the base's Kp: a = 0 did not reproduce the YCB grip | compose leaves the gains alone |
+| audit A2 ✔ | the Kt randomization was a no-op (drawn as an i_rated scale, cancelled twice) | `WujiDriveCfg.kt_scale`: the SDK converts with the nominal Kt, the joint gets kt_scale × the torque per amp (and at the ceiling); the current read back does not move; CPU drive, GPU drive, residual_dr, the library's parameters (`kt_scale`) and the GPU randomization |
+| audit B1 ✔ | the student could not see the base's grip | `base_hand_tau` |
+| audit B2 ✔ | the forecast reported the env's own error model; its regime argmax was always right; its timing error did not grow with the lead | the sigma fields are the nominal ForecastCfg's claim (`ForecastModel.claimed`); the confusion moves its share onto one wrong regime, up to 0.6 (`class_confusion`, the GPU's DR 0–0.6: above 0.5 the forecast names the wrong regime); the event time's noise is hypot(jitter, `horizon_err` × lead) (0.05 nominal, DR 0–0.1). CPU and GPU draw for draw (`test_forecast_matches_the_forecast_model`) |
+| audit B3 ✔ | the hand lookahead was always zero in training | dropped from the observation |
+| audit C1 ✔ | students distilled at holds 0.3–0.8 only | C3 (teachers and DAgger) draws the hold level from 0.3–1.2 |
+| audit D1 ✔ | one NaN killed the residual silently; a NaN base reached the drives | `ResidualHandL2.tick`: a non-finite base is replaced by the last finite one (none yet: nothing sent) and counts as stale; non-finite observation entries read zero (`n_obs_nonfinite`); a policy state that turns non-finite restarts (`n_state_reset`); E1's JSON records the counts |
+| methods B ✔ | a dropped strike counted as slip 0 | `Episode.run`: its slip is NaN; `summarize` and `per_seed` take nan-aware means |
+| methods B | episodes that dropped before their first strike vanished from `per_seed` | they count as a drop |
+| methods B ✔ | E1's seeds 0–19 reused the library's draws | the library's seeds start at `LIBRARY_SEED0` (10^6); `make_jobs` refuses an overlap |
+| methods A1 ✔ | the squeeze baseline was clipped back to the base's hold | `squeeze` = the base at `SQUEEZE_LEVEL` (1.5) × its grip, capped at the full rating by the synergy |
+| (E1-lite) | drops had no interval | `hold_pairs` adds the lost-strike share per seed, paired with bootstrap intervals |
+
+**Left, and why.**
+- The arm lookahead is still the exact scripted future (methods A8): noise, latency and a 30 Hz hold need a model of
+  the planner the robot will run; the forecast's leaks are fixed.
+- The torque scale (0.62 against 2.0 Nm at MCP, methods A5 / audit A3), joint friction (A4), the effort range: the
+  user's decision is to keep the current WUJI assumptions until the hardware is measured.
+- Frame bookkeeping (B7), the frozen normalizer (B6), the skin's non-idealities (B5), the deployment layer (D2–D7), the
+  GPU contact recalibration, Holm corrections and seeds as a random effect: not cheap; unchanged.
+- The VLA base's hand semantics (C3): `tactile_sim/vla/` is the VLA session's.
+- The load generator's band is still the light hammer's (`LoadGenCfg`); the pipeline runs `loadgen_calibration --band`
+  on the YCB hammer's grip only as a report.
+
+**The pipeline** (`tactile_rl/run_residual_pipeline.sh`, unattended; environment variables or
+`~/residual40/pipeline.env` configure it). The CPU track waits for its gate (`CPU_GATE_LOG`, `CPU_GATE_MARK`: others'
+CPU jobs; empty, none), then runs the CPU tests, the base library (training venv; 120 episodes × 5 swings, seeds from
+10^6) and E1hold's zero residual in the validator. The GPU track waits for its gate (`GATE_LOG`, `GATE_MARK`: another
+job's GPU block; empty, none), runs the GPU tests and the load generator's band check, then once the library exists a
+throughput check and per rate (250 Hz, then 1 kHz) the teacher through C0–C3 (1000 iterations of 4096 envs), the
+DAgger student (300 iterations) and its ONNX export with parity; each student's E1hold (20 seeds × 4 holds, paired,
+seeds disjoint from the library's) runs on the CPU track as its graph appears. Then the GPU evaluation at matched
+holds, the reports (`reports/e1hold.md`, curves) and `PIPELINE_DONE`.
+Every step leaves a marker; a rerun skips the finished steps and resumes an interrupted teacher (its curriculum stage
+from `$TACTILE_START_STAGE`) or student from its last checkpoint. One pipeline runs at a time (its pid file);
+settings that must survive a relaunch go in `~/residual40/pipeline.env`. The library and the validator get their own
+grasp-keyframe cache (`$TACTILE_GRASP_CACHE`, synthesized by this code: a first probe episode on g1, with whatever
+`~/.cache` held under the key, missed 7 of 10 swings, where the same seed with fresh keyframes, synthesized in MuJoCo
+3.11 or 3.14, hits 10 of 10; the cause is unconfirmed). CPU: 2 workers by
+default (`CPU_WORKERS`, `CPU_WORKERS_FREE` once the gate is open).
+
+```bash
+git archive <this branch> | tar -x -C ~/residual40/tree
+(setsid nohup ~/residual40/tree/tactile_rl/run_residual_pipeline.sh > ~/residual40/pipeline.out 2>&1 < /dev/null &)
+```
+
+### Results of the pipeline (desktop, RTX 5070 Ti, 2026-10-12/13; `~/residual40/runs/reports/`)
+
+- **Library**: 120 episodes × 5 swings (seeds from 10^6), every swing hit; 2.50° of slip per swing.
+- **The band** (LoadGenCfg's, still the light hammer's) on the YCB grip, 1024 envs, friction 1.1–2.0: no grasp lost at
+  any hold; 65 / 79 / 86 / 85 % of events within 0.7 mm / 1.4° at holds 0.3 / 0.5 / 0.8 / 1.0. Too easy for this
+  grip, hence the calibration of the v3 retrain.
+- **Throughput** (4096 envs, the YCB hammer): 124.5 ms per env step at 1 kHz (32.9 simulated s per s), 435 ms at
+  250 Hz (37.7); about 4.8 GB for the env; peaks per world 65 broadphase candidates, 16.8 contacts, 101 constraint rows.
+- **Teachers**: at 4096 envs both ran out of GPU memory at a graph launch (MuJoCo Warp); the pipeline's retry at 2048
+  envs resumed them from their checkpoints, the curriculum restarting at C0. 250 Hz: 833 iterations in C3, return
+  −11.3, 0.79 mm / 1.90° net slip per event, 91 % within target; 1 kHz: 777 in C3, −12.8, 0.62 mm / 1.63°, 89 %.
+- **Students** (DAgger, 300 iterations): s250 457 k parameters, ONNX parity 2.5e-7; s1k 419 k, 3.9e-7.
+- **E1hold** (8 kHz validator, 20 seeds paired by seed against the zero residual at the same hold; no strike lost
+  anywhere; `e1_s250_pairs.md`, `e1_s1k_pairs.md`):
+
+| hold | s250: net mm | s250: path deg | s250: I2t | s1k: net mm | s1k: net deg | s1k: path deg | s1k: I2t |
+|---|---|---|---|---|---|---|---|
+| 0.3 | +0.145 [+0.088, +0.203] | +0.21 [−0.30, +0.68] | +0.016 | +0.408 [+0.316, +0.492] | +0.48 [+0.21, +0.77] | +0.36 [−0.34, +1.01] | +0.044 |
+| 0.5 | +0.094 [+0.053, +0.135] | −1.38 [−1.69, −1.09] | +0.019 | +0.294 [+0.237, +0.351] | +0.75 [+0.55, +0.96] | −2.72 [−3.39, −2.08] | +0.053 |
+| 0.8 | +0.104 [+0.076, +0.133] | −1.89 [−2.14, −1.65] | +0.016 | +0.072 [+0.032, +0.111] | +0.51 [+0.28, +0.73] | −4.39 [−5.03, −3.72] | +0.069 |
+| 1.0 | +0.057 [+0.015, +0.093] | −2.31 [−2.69, −1.96] | +0.019 | −0.063 [−0.104, −0.021] | +0.37 [+0.08, +0.62] | −4.64 [−5.05, −4.22] | +0.070 |
+
+  The zero residual: 0.54 mm / 1.40°, path 8.8°, I2t 0.200 at hold 0.3; 0.62 mm / 1.37°, path 9.5°, I2t 0.429 at
+  1.0. Both students cut the slip path (s1k to half at the full hold) for a little more net slip and current.
+- **On the GPU** (`bench.residual_eval`, 1024 envs per cell, the library's friction, C3's randomization): the same
+  students against the zero residual are far stronger, e.g. at hold 0.3 in the testbed's strike window net slip
+  1.49 (s250) / 1.29 (s1k) mm against 3.43 mm, path 9.0 / 8.6° against 15.2°; the students track their teachers.
+  The GPU's zero residual slips several times more than the validator's (no noslip, 4 kHz): the sim-to-sim gap the
+  students' CPU numbers inherit.
+
+## The friction study and the v3 retrain (2026-10-13)
+
+**Part 1: the friction sweep** (`residual_experiment run --stage Efric`, `tactile_rl/run_friction_study.sh`). In the
+8 kHz validator, the hand/tool friction on the YCB hammer is fixed per condition (0.2, 0.3, 0.4, 0.6, 1.0 and 1.5, over
+each seed's draw; the grasp keyframe stays the one synthesized at `wuji_grasp.GRASP_FRICTION` 1.0), with the base at
+holds 1.0 and 0.5, the zero residual and each student, 12 paired seeds disjoint from the library's. Each episode's JSON
+also records the residual's activity: per joint group (knuckle flexion, middle, fingertip, abduction, thumb base, thumb
+outer) the mean and 95th percentile of |dq| and |dtau| over the strike windows, the closing joints' feedforward offset
+from 100 ms before to 300 ms after each contact (the squeeze), and the tool's in-hand rotation before, during and after
+each blow (re-seating). `python -m tactile_sim.experiments.friction_study --root R --out D` writes the tables (outcomes,
+each policy paired against the zero residual at the same friction and hold, activity, re-seating) and the figures
+(`outcomes.png`, `activity_hold*.png`, `squeeze_hold*.png`, `reseat.png`).
+
+*Part 1's results* (desktop, 2026-10-13, 432 episodes; `~/residual40/friction/reports/final/`). Grasps are lost only
+at hold 0.5 and mu ≤ 0.3: the zero residual loses 25 % of its strikes at mu 0.2 (half its episodes) and 6 % at 0.3;
+s250 8 % and 0 %, s1k 4 % (paired against zero −0.21 [−0.36, −0.06]) and 0 %. Both students cut the slip path at
+almost every friction and hold (at hold 0.5 and mu 0.2 by 14° and 18° from 31°; at the full hold and mu 1.5 by 2° and
+4.5° from 9.2°), and pay current that does not depend on the friction (I2t per strike +0.01–0.03 for s250, +0.05–0.07
+for s1k). Net slip at mu ≥ 0.4 is a little worse with either (s250 +0.05–0.22 mm; s1k up to +0.42 mm and +0.6°): the
+zero residual springs the tool back after each blow better. Neither student's activity changes with friction; the
+squeeze is a fixed timing pattern (both hold +0.04 Nm of extra closing feedforward before contact and spike at it,
+s250 to 0.06 Nm, then releasing within 50 ms, s1k to 0.14 Nm and holding about +0.05 Nm for 300 ms). The students
+never saw a friction below 1.1.
+
+**Part 2: the v3 retrain** (`tactile_rl/run_v3_retrain.sh`). The user's decisions (2026-10-13):
+
+- *Friction.* The training draws the hand/tool friction per episode from `TRAIN_HAND_FRICTION` (0.2–2.0, the training
+  configuration only; the CPU's `ResidualDRCfg` keeps 1.1–2.0): a load-generator episode through the contact event's
+  range (`dr_events(key, hand_friction)`), a hammer episode over its library entry's own (`BaseTrajectoryCommandCfg.
+  hand_friction`; the start state stays the entry's, settled at the keyframes' friction). The teacher's randomization
+  vector shows it.
+- *Observation layout 3* (`obs_spec.OBS_LAYOUTS`; 601 entries at 1 kHz, 2089 at 250 Hz, hash 9752a7a5c8829cee at
+  stack 1): layout 2 without `patch_features` and `forecast`. `task` and `trigger_enable` stay; the drill trigger's
+  interlock stays outside the policy (`control.hand_safety.HandSafety`). Each layout keeps its hash
+  (`spec_hash(..., version)`; layout 2's are unchanged, 6620399b46bef23d / 276b29d6d34ed190), and the CPU loop builds
+  each policy the observation its hash names (`ResidualHandL2.check_policy` → `layout_of`): the s250 / s1k students
+  keep running. On the GPU the `student` group is the trained layout (`residual_env_cfg(student_version=)`,
+  `DaggerCfg.obs_version`, `distill --obs-version`), `student_v2` is layout 2 beside it, and the teacher's and critic's
+  student part follows the current layout. Exports carry `obs_version`; `StudentNet(version=)` drops the palm-feature
+  path in layout 3.
+- *Wider loads* (`loadgen_command.wide_loads`, the training's): impulses up to 60° off the strike axis
+  (`LoadGenCfg.cone_deg`), binds about every tool axis with either sign (`bind_axes="xyz"`), and torque impulses (a
+  sixth kind: a half-sine torque of 0.5–5 ms about a tool axis drawn per event, the head twisting about y included;
+  regime "impulse"), CPU and GPU alike (`LoadEvent.axis`, `TorchLoadGen.tax`; a five-entry `p_kind` and binds about x
+  draw exactly the schedules they drew before). The amplitude band comes from the calibration:
+  `loadgen_calibration --wide --friction 0.6 --holds 0.5 --choose band.json` runs one event per env of each kind on a
+  10-amplitude grid (zero residual, full randomization, friction fixed at 0.6, the base at half its hold) and
+  `choose_band` puts each kind's top where its events lose the grasp 40 % of the time (of the grasps that held until the
+  event; log-linear between cells), and its bottom at the kind's reference share of the top, lowered to the largest
+  amplitude below which no event lost the grasp. `wide_loads()` reads the file from `$TACTILE_LOADGEN_BAND`.
+- *VLA-style hand commands* in 40 % of the episodes (`VLA_FRAC`, hammer and load-generator episodes alike;
+  `action_map.TorchHandTable`): the base's hand command becomes the VLA's, `HandTable.from_synergy` at the base's grip
+  (`TrainingParts.s_hold`: the vendor's nominal Kp on the closing joints) with the targets `equivalent_targets` of the
+  scripted base (the static torque of the synergy at the angles the host read), refreshed on a 30 Hz grid at a random
+  phase per episode and held in between. Between refreshes the closing joints have a real spring, so the residual's
+  set-point offsets act there too; the action stays 40-D. The observation's base and the command the residual composes
+  on are the same refresh (`test_c3_training_distribution`).
+- *Curriculum caps per env count*: `stage_cap_s` is stated for 4096 envs (`cap_ref_envs`), so at 2048 envs a capped
+  stage takes the same number of iterations (half the simulated seconds).
+- The GPU evaluation (`bench.residual_eval`) keeps its own conditions: the library's friction, the scripted base,
+  `LoadGenCfg`'s band.
+
+The script waits for the main pipeline's GPU steps, calibrates the band, trains the 250 Hz teacher (C0–C3, 2048 envs,
+1000 iterations), distills the layout-3 student s250v3 (DAgger, 2048 envs, 300 iterations) and exports it with parity,
+then the attribution student s250v3a (layout 2 from the same teacher). On the CPU, once Part 1 is done, it reruns two of
+Part 1's episodes from its own tree against Part 1's files (the zero residual and s250 on layout 2:
+`python -m tactile_sim.experiments.rerun_check`),
+then sweeps Efric with s250v3 and s250v3a added into Part 1's results (finished episodes are not rerun) and writes the
+reports. Markers, resumption and the pid guard as the pipeline's; the teacher resumes in the furthest curriculum stage
+its logs showed.
+
+```bash
+git archive <this branch> | tar -x -C ~/residual40/tree_v3
+(setsid nohup ~/residual40/tree_v3/tactile_rl/run_v3_retrain.sh > ~/residual40/v3.out 2>&1 < /dev/null &)
+```
 
 ## What is here
 

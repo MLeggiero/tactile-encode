@@ -5,8 +5,8 @@ States come from a CPU hammering episode (one_step.sample_strike_states: the hol
 before each blow and the face/nail impacts). Per state, the CPU's per-taxel loads with a freshly computed shape are the
 reference. Two GPU numbers:
 
-- `model`: the GPU model fed the CPU's own contacts, patch poses and handle pose: the load model alone (float32
-  arithmetic, analytic capsule rays against MuJoCo's mju_rayGeom);
+- `model`: the GPU model fed the CPU's own contacts, patch poses and tool poses: the load model alone (float32
+  arithmetic; analytic capsule rays against MuJoCo's mju_rayGeom, or the hull planes' rays against mj_rayMesh);
 - `end_to_end`: the GPU model on MuJoCo Warp's contacts after a forward pass from the same state: what the GPU env's
   skin sees, the simulators' contact differences included (see P1).
 
@@ -31,18 +31,20 @@ def cpu_reference(world, states) -> dict:
     hand = world.hand
     patches = hand.patches
     P = len(patches)
-    K = 8
+    K = 16
     tool = set(int(g) for g in hand.tool_geoms)
+    ray = sorted(set().union(*hand._pair_tool.values()))  # the ray geoms, in TaxelLoadModel's order
     geom_patch = {}
     for k, p in enumerate(patches):
         for g in p.geoms:
             geom_patch[int(g)] = k
-    handle = m.geom("hammer_handle").id
     n = len(states)
     T = sum(len(p.taxel_pos) for p in patches)
+    G = len(ray)
     out = {"loads": np.zeros((n, T)), "f": np.zeros((n, P, K)), "pos": np.zeros((n, P, K, 3)),
-           "occ": np.zeros((n, P, K), bool), "xpos": np.zeros((n, P, 3)), "xmat": np.zeros((n, P, 3, 3)),
-           "cpos": np.zeros((n, 3)), "cmat": np.zeros((n, 3, 3)), "overflow": 0}
+           "occ": np.zeros((n, P, K), bool), "tg": -np.ones((n, P, K), int), "xpos": np.zeros((n, P, 3)),
+           "xmat": np.zeros((n, P, 3, 3)), "cpos": np.zeros((n, G, 3)), "cmat": np.zeros((n, G, 3, 3)),
+           "overflow": 0}
     saved = {k: getattr(m, k).copy() for k in states.model}
     f6 = np.zeros(6)
     from tactile_rl.parity.one_step import STATE_FIELDS
@@ -78,12 +80,14 @@ def cpu_reference(world, states) -> dict:
             out["f"][i, k, slot[k]] = f6[0]
             out["pos"][i, k, slot[k]] = c.pos
             out["occ"][i, k, slot[k]] = True
+            tg = g1 if g1 in tool else g2
+            out["tg"][i, k, slot[k]] = ray.index(tg) if tg in ray else -1
             slot[k] += 1
         for k, p in enumerate(patches):
             out["xpos"][i, k] = d.xpos[p.body]
             out["xmat"][i, k] = d.xmat[p.body].reshape(3, 3)
-        out["cpos"][i] = d.geom_xpos[handle]
-        out["cmat"][i] = d.geom_xmat[handle].reshape(3, 3)
+        out["cpos"][i] = d.geom_xpos[ray]
+        out["cmat"][i] = d.geom_xmat[ray].reshape(G, 3, 3)
     for k, v in saved.items():
         getattr(m, k)[:] = v
     return out
@@ -101,7 +105,8 @@ def gpu_model_on_cpu_contacts(parts, mj_model, ref: dict, device: str) -> np.nda
         return torch.as_tensor(x, dtype=dtype, device=device)
 
     out = lm.loads(t(ref["f"]), t(ref["pos"]), t(ref["occ"], torch.bool), t(ref["xpos"]), t(ref["xmat"]),
-                   t(ref["cpos"]), t(ref["cmat"]), torch.zeros(n, dtype=torch.float64, device=device))
+                   t(ref["cpos"]), t(ref["cmat"]), torch.zeros(n, dtype=torch.float64, device=device),
+                   t(ref["tg"], torch.long))
     return out.cpu().numpy().astype(float)
 
 

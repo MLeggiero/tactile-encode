@@ -6,17 +6,20 @@
     python -m tactile_sim.experiments.residual_experiment run --stage E1hold --policy s1k=student_1k.onnx  # holds
 
 Every episode is the Vega U + WUJI under residual_config: MIT drives, the TaxelScan fast profile, a scripted base,
-and the residual loop. --task hammer (default): the light hammer, the scripted swing as the base (SwingBase:
+and the residual loop. --task hammer (default): the hammer named by --hammer (config.HAMMERS: "ycb", the real claw
+hammer the VLA swings, by default; "light", the primitive one), the scripted swing as the base (SwingBase:
 synergy hand command, arm lookahead, forecast), `strikes` strikes. --task drill: the pistol driver driving a
 screw, the scripted feed as the base (DrillBase: the trigger pulled by the index finger, the plant's seating and
 clutch forecast), one screw per episode. A seed fixes one residual_dr draw, shared by every condition, so
-conditions are compared pairwise. One JSON per episode at runs/residual/[drill/]<stage>/<condition>/seed<k>.json;
-a run skips files that exist.
+conditions are compared pairwise. Evaluation seeds never overlap the base library's (base_library.LIBRARY_SEED0 up),
+so a policy is never scored on the randomization it was trained on. One JSON per episode at
+runs/residual/[drill/]<stage>/<condition>/seed<k>.json; a run skips files that exist.
 
 Conditions (E1): "base" (the residual's base alone: constant grip, no anticipation, residual zero), "template_oracle"
 (the human grip template timed by the sim-only impact flag), "reactive_taxel" (the slip-ablation taxel detector
-raising the grip), "squeeze" (a constant grip at the hand's pre-impact level), and one "residual:<name>" per policy
-given with --policy. The drill has no oracle template (its loads have no impact flag).
+raising the grip), "squeeze" (the base gripping at the hand's full rating, SQUEEZE_LEVEL times its constant grip,
+which the synergy caps at 1), and one "residual:<name>" per policy given with --policy. The drill has no oracle
+template (its loads have no impact flag).
 """
 
 from __future__ import annotations
@@ -40,7 +43,8 @@ ROOT = Path("runs/residual")
 STAGES = {"smoke": {"seeds": 2, "strikes": 3, "fast": True}, "E1": {"seeds": 20, "strikes": 10, "fast": False},
           "E1hold": {"seeds": 20, "strikes": 10, "fast": False}, "hold_smoke": {"seeds": 1, "strikes": 2, "fast": True},
           "E3": {"seeds": 20, "strikes": 10, "fast": False}, "E4": {"seeds": 20, "strikes": 10, "fast": False},
-          "E5": {"seeds": 10, "strikes": 10, "fast": False}, "E6": {"seeds": 20, "strikes": 10, "fast": False}}
+          "E5": {"seeds": 10, "strikes": 10, "fast": False}, "E6": {"seeds": 20, "strikes": 10, "fast": False},
+          "Efric": {"seeds": 12, "strikes": 10, "fast": False}, "fric_smoke": {"seeds": 1, "strikes": 2, "fast": True}}
 # E4: the observation blocks each sensing variant cannot see
 SENSING = {"touch": ("hand_current",), "current": ("taxel_codes", "patch_features", "board_status"),
            "proprio": ("hand_current", "taxel_codes", "patch_features", "board_status"), "both": ()}
@@ -66,8 +70,20 @@ HELD_OUT_DRILL = {"heavy_battery": {"drill": {"pistol_battery_mass": 0.35}},
                                                 "gear_ratio": 50.0}},
                   "soft_skin": {"gripper": {"hand_solref": (0.006, 1.0)}}}
 TASKS = ("hammer", "drill")
+HAMMER = "ycb"  # the hammer the residual trains and runs on (config.HAMMERS; the VLA's since 2026-10-09)
+# the squeeze baseline: the base's grip scalar times this (ResidualCfg.hold_level), capped at the full rating (1) by
+# the synergy; the constant grip is 0.69 of it, so this is the full rated grip (a grip_hold above the hand's
+# grip_hold_max, as before, is clipped back to the base's own hold: a no-op)
+SQUEEZE_LEVEL = 1.5
 # E1hold: the base at these fractions of its grip (the GPU curriculum's hold levels; ResidualCfg.hold_level)
 HOLDS = (0.3, 0.5, 0.8, 1.0)
+# Efric: the hand's friction on the tool fixed per condition (over each seed's draw; the grasp keyframe stays the one
+# synthesized at wuji_grasp.GRASP_FRICTION, so the grip's shape is the same), at two of the base's hold levels
+FRICTIONS = (0.2, 0.3, 0.4, 0.6, 1.0, 1.5)
+FRIC_HOLDS = (1.0, 0.5)
+# the residual's activity, per joint group (activity_groups): a joint's name -> its group
+ACTIVITY_GROUPS = ("knuckle flexion", "middle joints", "fingertip joints", "abduction", "thumb base", "thumb outer")
+SQUEEZE_MS = (-100, 300)  # the window around a blow's contact the squeeze curve covers
 LOST_MM, LOST_DEG = 20.0, 30.0  # the GPU env's lost grasp (terminations.tool_left_hand), from the swing's start
 SLIP_LPF_HZ = 30.0  # the slip path's low-pass, as the GPU runtime's
 DRILL_T_MAX = 10.0  # s per screw
@@ -88,7 +104,7 @@ def e1_conditions(policies: dict[str, str] | None = None, task: str = "hammer") 
                                       "controller": {"impact_sources": ("ft", "accel")}}),
         # the taxel detector without its accelerometer channel: the real hand has no accelerometer
         Condition("reactive_taxel", {**const, "reactive": {"mode": "taxel", "accel_thresh": 1e9}}),
-        Condition("squeeze", {**const, "controller": {"grip_hold": 60.0}}),
+        Condition("squeeze", {**const, "residual": {"hold_level": SQUEEZE_LEVEL}}),
     ]
     for name, path in (policies or {}).items():
         from tactile_sim.control.policy_io import PolicyMeta
@@ -106,6 +122,7 @@ class Job:
     condition: Condition
     seed: int
     task: str = "hammer"
+    hammer: str = HAMMER
 
     def path(self, root: Path) -> Path:
         safe = self.condition.name.replace(":", "_").replace("@", "__").replace("=", "-")
@@ -115,7 +132,7 @@ class Job:
         from tactile_sim.sim.randomize import apply_residual_dr, residual_dr
 
         st = STAGES[self.stage]
-        cfg = residual_config(base=fast_config() if st["fast"] else None, task=self.task)
+        cfg = residual_config(base=fast_config() if st["fast"] else None, task=self.task, hammer_kind=self.hammer)
         dr = residual_dr(cfg, np.random.default_rng(self.seed))
         cfg = apply_residual_dr(cfg, dr)
         if self.condition.overrides:
@@ -136,6 +153,12 @@ def stage_conditions(stage: str, policies: dict[str, str] | None = None, task: s
     and each policy under each held-out physics."""
     if stage in ("smoke", "E1", "E3"):
         return e1_conditions(policies, task)
+    if stage in ("Efric", "fric_smoke"):  # the base and each policy at each friction and hold level
+        conds = [c for c in e1_conditions(policies, task) if c.name == "base" or c.name.startswith("residual:")]
+        return [Condition(f"{c.name}@hold={h:g}@mu={mu:g}",
+                          _merge(c.overrides, {"residual": {"hold_level": h}, "gripper": {"hand_friction": mu}}),
+                          c.policy)
+                for mu in FRICTIONS for h in FRIC_HOLDS for c in conds]
     if stage in ("E1hold", "hold_smoke"):  # the base and each policy with the base at each hold level
         conds = [c for c in e1_conditions(policies, task) if c.name == "base" or c.name.startswith("residual:")]
         return [Condition(f"{c.name}@hold={h:g}", _merge(c.overrides, {"residual": {"hold_level": h}}), c.policy)
@@ -176,12 +199,17 @@ def _merge(a: dict, b: dict) -> dict:
 
 
 def make_jobs(stage: str, policies: dict[str, str] | None = None, only: str | None = None,
-              task: str = "hammer") -> list[Job]:
+              task: str = "hammer", hammer: str = HAMMER) -> list[Job]:
+    from tactile_sim.behaviors.base_library import LIBRARY_SEED0
+
     st = STAGES[stage]
+    if st["seeds"] > LIBRARY_SEED0:
+        raise ValueError(f"evaluation seeds 0-{st['seeds'] - 1} would overlap the base library's "
+                         f"(from {LIBRARY_SEED0})")
     conds = stage_conditions(stage, policies, task)
     if only:
         conds = [c for c in conds if c.name == only]
-    return [Job(stage, c, s, task) for c in conds for s in range(st["seeds"])]
+    return [Job(stage, c, s, task, hammer) for c in conds for s in range(st["seeds"])]
 
 
 def load_policy(spec: str):
@@ -197,6 +225,7 @@ class Recorder:
         self.tb = tb
         self.hand = tb.world.hand
         self.t, self.off = [], []
+        self.raw: list[np.ndarray] = []  # the residual's offsets (2, 20): dq (rad), dtau (Nm), per millisecond
         self.i2t = 0.0
         self.i_peak = 0.0
         # per millisecond: time, the tool's pose in the hand, the 30 Hz low-passed pose's step (mm, deg), the drives'
@@ -226,10 +255,11 @@ class Recorder:
         res = self.tb.residual
         if res is not None:
             sp, jp = res.spec, res.jp
-            n = np.concatenate([res.off[0] / np.asarray(sp.dq_max)[jp.group], res.off[1] / jp.kp_nom,
-                                res.off[2] / (sp.tau_frac * jp.tau_rated)])
+            n = np.concatenate([res.off[0] / np.asarray(sp.dq_max)[jp.group],
+                                res.off[1] / (sp.tau_frac * jp.tau_rated)])
             self.t.append(t)
             self.off.append(n)
+            self.raw.append(res.off.copy())
 
     def reaction_ms(self, t_contact: float, thresh: float = 0.05, window: float = 0.1) -> float:
         """Time from contact until the residual's normalized offsets first move by `thresh` (NaN if they do not
@@ -260,6 +290,99 @@ class Recorder:
         return {"path_mm": float(path[:, 0].sum()), "path_deg": float(path[:, 1].sum()),
                 "i2t_w": float(np.asarray(self.ms_i2)[m].sum()),
                 "lost_w": bool((dp > LOST_MM).any() or (dr > LOST_DEG).any())}
+
+
+def activity_groups(names: list[str]) -> dict[str, list[int]]:
+    """The hand's joints by ACTIVITY_GROUPS: the fingers' knuckle flexion, middle and fingertip joints and abduction,
+    the thumb's base (CMC flexion and abduction) and outer joints (MCP, IP)."""
+    def group(n: str) -> str:
+        if "thumb" in n:
+            return "thumb base" if "_cmc_" in n else "thumb outer"
+        for suffix, g in (("_mcp_flex", "knuckle flexion"), ("_pip", "middle joints"), ("_dip", "fingertip joints"),
+                          ("_mcp_abd", "abduction")):
+            if n.endswith(suffix):
+                return g
+        raise ValueError(n)
+
+    out: dict[str, list[int]] = {g: [] for g in ACTIVITY_GROUPS}
+    for i, n in enumerate(names):
+        out[group(n)].append(i)
+    return out
+
+
+def activity(rec: Recorder, strikes: list[dict]) -> dict:
+    """The residual's own activity over an episode's strikes (from each swing's start to its strike's end, or the
+    episode's end for a strike a drop interrupted):
+    - per joint group (activity_groups): mean and 95th percentile of |dq| (rad) and |dtau| (Nm) over the joints and
+      milliseconds;
+    - the squeeze around each blow's contact (SQUEEZE_MS): close_dir x dtau (Nm), the mean over the closing joints
+      (the grip synergy's: the fingers' knuckle and middle joints, the thumb's outer joints), and per closing group,
+      averaged over the episode's blows;
+    - the tool's pose in the hand around each blow (re-seating): its rotation (deg) and translation (mm) from its pose
+      at the episode's first swing start, 10 ms before contact, the largest within 100 ms after, 300 ms after, and at
+      the strike's end."""
+    if not rec.raw:
+        return {}
+    hand = rec.hand
+    t = np.asarray(rec.t)
+    raw = np.asarray(rec.raw)  # (T, 2, 20)
+    groups = activity_groups(list(hand.joint_names))
+    close = np.asarray(hand.synergy.close_dir, float)
+    win = np.zeros(len(t), bool)
+    for s in strikes:
+        t0 = s.get("t_swing_start", float("nan"))
+        t1 = s.get("t_end", float("nan"))
+        if np.isfinite(t0):
+            win |= (t >= t0) & (t <= (t1 if np.isfinite(t1) else t[-1]))
+    out: dict = {"groups": {}, "window_ms": int(win.sum())}
+    for g, idx in groups.items():
+        if not idx or not win.any():
+            continue
+        dq, dtau = np.abs(raw[win][:, 0][:, idx]).ravel(), np.abs(raw[win][:, 1][:, idx]).ravel()
+        out["groups"][g] = {"dq_mean": float(dq.mean()), "dq_p95": float(np.percentile(dq, 95)),
+                            "dtau_mean": float(dtau.mean()), "dtau_p95": float(np.percentile(dtau, 95))}
+    closing = {g: [i for i in idx if close[i] != 0] for g, idx in groups.items()}
+    closing = {g: idx for g, idx in closing.items() if idx}
+    every = [i for idx in closing.values() for i in idx]
+    lo, hi = SQUEEZE_MS
+    n = hi - lo + 1
+    curves = {g: [] for g in ["closing"] + list(closing)}
+    pose_t, pose = np.asarray(rec.ms_t), np.asarray(rec.ms_pose)
+    first = min((s["t_swing_start"] for s in strikes if np.isfinite(s.get("t_swing_start", np.nan))), default=None)
+    ref = pose[max(int(np.searchsorted(pose_t, first)) - 1, 0)] if first is not None and len(pose) else None
+    reseat = []
+    for s in strikes:
+        tc = s.get("t_contact", float("nan"))
+        if not np.isfinite(tc):
+            continue
+        k = int(np.searchsorted(t, tc))
+        rows = np.arange(k + lo, k + hi + 1)
+        ok = (rows >= 0) & (rows < len(t))
+        sq = close[None, :] * raw[np.clip(rows, 0, len(t) - 1), 1]  # (n, 20) closing torque offsets
+        for g, idx in [("closing", every)] + list(closing.items()):
+            c = np.where(ok, sq[:, idx].mean(axis=1), np.nan)
+            curves[g].append(c)
+        if ref is not None:
+            def at(tq):
+                j = min(max(int(np.searchsorted(pose_t, tq)) - 1, 0), len(pose) - 1)
+                d = pose[j] - ref
+                return float(np.degrees(np.linalg.norm(d[3:]))), float(1e3 * np.linalg.norm(d[:3]))
+
+            m = (pose_t >= tc) & (pose_t <= tc + 0.1)
+            if m.any():
+                d = pose[m] - ref
+                rots, trans = np.degrees(np.linalg.norm(d[:, 3:], axis=1)), 1e3 * np.linalg.norm(d[:, :3], axis=1)
+                peak = (float(rots.max()), float(trans.max()))
+            else:
+                peak = (float("nan"), float("nan"))
+            t_end = s.get("t_end", float("nan"))
+            reseat.append({"idx": s["idx"], "before": at(tc - 0.010), "peak": peak, "after": at(tc + 0.300),
+                           "end": at(t_end) if np.isfinite(t_end) else (float("nan"), float("nan"))})
+    out["squeeze"] = {g: (np.nanmean(np.stack(c), axis=0).tolist() if c else [float("nan")] * n)
+                      for g, c in curves.items()}
+    out["squeeze_blows"] = len(curves["closing"])
+    out["reseat"] = reseat
+    return out
 
 
 def _strike_row(r, rec: Recorder, t_end: float = float("nan")) -> dict:
@@ -322,11 +445,14 @@ def run_job(job: Job, root: str = str(ROOT)) -> dict:
     r = tb.residual
     payload = {
         "job": {"task": job.task, "stage": job.stage, "condition": job.condition.name,
-                "policy": job.condition.policy, "seed": job.seed},
+                "policy": job.condition.policy, "seed": job.seed, "hammer": job.hammer if job.task == "hammer" else ""},
         **result,
-        "residual": {"ticks": r.n_ticks, "stale": r.n_stale, "nonfinite": r.n_nonfinite, "i2t": rec.i2t,
+        "residual": {"ticks": r.n_ticks, "stale": r.n_stale, "nonfinite": r.n_nonfinite,
+                     "obs_nonfinite": r.n_obs_nonfinite, "base_nonfinite": r.n_base_nonfinite,
+                     "state_reset": r.n_state_reset, "i2t": rec.i2t,
                      "i_peak_ratio": rec.i_peak, "t_max_winding": float(tb.world.hand.drive.T.max())},
         "dropped": bool(tb.grip.dropped), "dr": dr, "wall_s": time.time() - t0,
+        "activity": activity(rec, result.get("strikes", [])) if job.task == "hammer" else {},
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".tmp")
@@ -397,13 +523,16 @@ def per_seed(results: list[dict]) -> dict[str, dict[int, dict]]:
                  "slip_rot_deg": math.degrees(s["max_slip_rot"]), "slip_trans_mm": 1e3 * s["max_slip_trans"],
                  "t_seat": float(s["t_done"]), "drops": float(s["lost"]), **effort}
         else:
+            # an episode that dropped the tool before its first strike still counts (a drop, no slip); a dropped
+            # strike's slip is NaN (Episode.run), so the slip means are over the strikes that kept the tool
             st = r["strikes"]
-            if not st:
-                continue
-            m = {"slip_rot_deg": float(np.mean([x["slip_rot_deg"] for x in st])),
-                 "slip_trans_mm": float(np.mean([x["slip_trans_mm"] for x in st])),
-                 "advance_mm": float(np.mean([x["advance_mm"] for x in st])), "drops": float(r["dropped"]),
-                 **effort}
+
+            def mean(key, st=st):
+                v = np.asarray([x[key] for x in st if x.get(key) is not None], dtype=float)
+                return float(np.nanmean(v)) if np.isfinite(v).any() else float("nan")
+
+            m = {"slip_rot_deg": mean("slip_rot_deg"), "slip_trans_mm": mean("slip_trans_mm"),
+                 "advance_mm": mean("advance_mm"), "drops": float(r["dropped"]), **effort}
         out.setdefault(r["job"]["condition"], {})[r["job"]["seed"]] = m
     return out
 
@@ -492,20 +621,23 @@ def hold_table(stage: str = "E1hold", root: Path = ROOT) -> tuple[str, list[dict
     return "\n".join(lines), rows
 
 
-HOLD_PAIRED = (("slip_trans_mm", "net slip mm"), ("slip_rot_deg", "net slip deg"), ("path_deg", "slip path deg"),
-               ("i2t_w", "I2t"), ("advance_mm", "advance mm"))
+HOLD_PAIRED = (("lost", "lost per strike"), ("slip_trans_mm", "net slip mm"), ("slip_rot_deg", "net slip deg"),
+               ("path_deg", "slip path deg"), ("i2t_w", "I2t"), ("advance_mm", "advance mm"))
 
 
 def hold_pairs(stage: str = "E1hold", root: Path = ROOT, ref_hold: float = 1.0) -> str:
     """E1hold paired by seed (each seed's randomization is shared across conditions): each condition against the
-    zero residual at `ref_hold`. A seed contributes the mean of its kept strikes; the cell is the mean difference
-    with its 95 % bootstrap interval (residual_experiment.paired_bootstrap), over the seeds where both are finite."""
+    zero residual at `ref_hold`. A seed contributes the share of its strikes lost (a drop, or the tool 2 cm / 30 deg
+    from its pose at the swing's start; an episode that dropped the tool before its first strike counts one lost
+    strike) and the mean of its kept strikes; the cell is the mean difference with its 95 % bootstrap interval
+    (residual_experiment.paired_bootstrap), over the seeds where both are finite."""
     per: dict[tuple[str, float], dict[int, dict[str, float]]] = {}
     for r in load_results(stage, root, "hammer"):
         name, _, h = r["job"]["condition"].rpartition("@hold=")
-        kept = [x for x in r["strikes"] if not (x.get("lost_w", False) or x["drop"])]
-        m = {}
-        for k, _ in HOLD_PAIRED:
+        lost = [bool(x.get("lost_w", False) or x["drop"]) for x in r["strikes"]]
+        kept = [x for x, lo in zip(r["strikes"], lost, strict=True) if not lo]
+        m = {"lost": float(np.mean(lost)) if lost else float(bool(r.get("dropped", False)))}
+        for k, _ in HOLD_PAIRED[1:]:
             v = [x[k] for x in kept if x.get(k) is not None and np.isfinite(x[k])]
             m[k] = float(np.mean(v)) if v else float("nan")
         per.setdefault((name, float(h)), {})[r["job"]["seed"]] = m
@@ -533,13 +665,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("cmd", choices=("list", "run", "report"))
     ap.add_argument("--stage", default="smoke", choices=sorted(STAGES))
     ap.add_argument("--task", default="hammer", choices=TASKS)
+    ap.add_argument("--hammer", default=HAMMER, help="the hammer (config.HAMMERS) of task hammer")
     ap.add_argument("--workers", type=int, default=14)
     ap.add_argument("--policy", action="append", default=[], help="NAME=PATH of an exported residual policy")
     ap.add_argument("--only", default=None, help="run one condition")
     ap.add_argument("--root", default=str(ROOT))
     a = ap.parse_args(argv)
     policies = dict(p.split("=", 1) for p in a.policy)
-    jobs = make_jobs(a.stage, policies, a.only, a.task)
+    jobs = make_jobs(a.stage, policies, a.only, a.task, a.hammer)
     root = Path(a.root)
     if a.cmd == "list":
         for j in jobs:

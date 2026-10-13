@@ -4,11 +4,12 @@ Each env's episode holds up to K events (slots in time order), drawn at reset as
 stream at LoadGenCfg.rate from t_start, each event's kind from p_kind and its parameters from the kind's ranges, the
 next gap counted from the end of the previous event. The kinds (impulse half-sine along a cone about the strike
 axis, periodic force along the feed or torque about the long axis with a drifting amplitude, breakthrough or
-appearing step, bind torque spike, steady push) and `value(t)` are LoadEvent's. `amp_scale` scales every amplitude
-(the curriculum's low-amplitude stage).
+appearing step, bind torque spike about the long axis or any tool axis, steady push, torque impulse about any tool
+axis) and `value(t)` are LoadEvent's; a torque's signed axis is `tax` (LoadEvent.axis, +x by default). `amp_scale`
+scales every amplitude (the curriculum's low-amplitude stage).
 
 Every physics substep (`apply`, before MuJoCo steps) the summed wrench is applied at the tool's working point through
-xfrc_applied: the force at the hammer face, the torque about the tool's long axis. The tool frame is LoadEvent's: x
+xfrc_applied: the force at the hammer face, the torque about its axis. The tool frame is LoadEvent's: x
 along the handle, z the strike axis pointing into the head (a blow's reaction on the face), y = z x x.
 
 `truth(t)` is forecast_truth: the next event or the one under way (a breakthrough step: when its push vanishes), its
@@ -24,10 +25,10 @@ import torch
 
 from tactile_sim.config import LoadGenCfg
 from tactile_sim.control.obs_spec import REGIMES
-from tactile_sim.model.loadgen import KINDS, REGIME_OF
+from tactile_sim.model.loadgen import KINDS, REGIME_OF, kind_probs
 
-IMPULSE, PERIODIC, STEP, BIND, PUSH = range(5)
-assert KINDS == ("impulse", "periodic", "step", "bind", "push")
+IMPULSE, PERIODIC, STEP, BIND, PUSH, TORQUE_IMPULSE = range(6)
+assert KINDS == ("impulse", "periodic", "step", "bind", "push", "torque_impulse")
 DRIFT_DT = 0.01  # s, LoadEvent.drift's sample period
 
 
@@ -57,6 +58,8 @@ class TorchLoadGen:
         self.dir = torch.zeros(N, K, 3, **f64)
         self.dir[..., 2] = 1.0
         self.torque = torch.zeros(N, K, dtype=torch.bool, device=dev)
+        self.tax = torch.zeros(N, K, 3, **f64)  # a torque's signed unit axis, tool frame
+        self.tax[..., 0] = 1.0
         self.freq = torch.zeros(N, K, **f64)
         self.phase = torch.zeros(N, K, **f64)
         self.sign = torch.ones(N, K, **f64)
@@ -66,8 +69,9 @@ class TorchLoadGen:
         self.overflow = torch.zeros(N, dtype=torch.long, device=dev)  # events beyond K slots (dropped)
         reg = [REGIMES.index(REGIME_OF[k]) for k in KINDS]
         self.regime_of_kind = torch.as_tensor(reg, dtype=torch.long, device=dev)
-        p = np.asarray(cfg.p_kind, float)
-        self.p_kind = torch.as_tensor(p / p.sum(), **f64)
+        self.p_kind = torch.as_tensor(kind_probs(cfg), **f64)
+        if cfg.bind_axes not in ("x", "xyz"):
+            raise ValueError(f"bind_axes {cfg.bind_axes!r} (expected 'x' or 'xyz')")
 
     # ------------------------------------------------------------------ draws
     def _u(self, n: int, lohi, shape=()) -> torch.Tensor:
@@ -80,6 +84,13 @@ class TorchLoadGen:
         s = torch.sqrt((1 - c * c).clamp(min=0.0))
         return torch.stack([s * torch.cos(phi), s * torch.sin(phi), c], dim=-1)
 
+    def _axis(self, n: int) -> torch.Tensor:
+        """(n, 3) a tool axis per row, either sign (loadgen._axis)."""
+        i = torch.randint(0, 3, (n,), device=self.dev, generator=self.generator)
+        sign = torch.where(torch.rand(n, dtype=torch.float64, device=self.dev, generator=self.generator) < 0.5,
+                           1.0, -1.0).double()
+        return torch.nn.functional.one_hot(i, 3).double() * sign[:, None]
+
     def sample(self, env_ids: torch.Tensor, t_end: float | torch.Tensor, t_start: float = 0.2,
                amp_scale: float | torch.Tensor = 1.0) -> None:
         """New schedules for env_ids from t_start to t_end (sample_schedule, batched)."""
@@ -88,7 +99,7 @@ class TorchLoadGen:
         f64 = dict(dtype=torch.float64, device=dev)
         t = torch.full((n,), float(t_start), **f64)
         t_end = torch.as_tensor(t_end, **f64).expand(n)
-        cols = {k: [] for k in ("valid", "kind", "t0", "dur", "amp", "dir", "torque", "freq", "phase", "sign",
+        cols = {k: [] for k in ("valid", "kind", "t0", "dur", "amp", "dir", "torque", "tax", "freq", "phase", "sign",
                                 "drift", "n_drift")}
         open_ = torch.ones(n, dtype=torch.bool, device=dev)
         for _ in range(K):
@@ -116,12 +127,19 @@ class TorchLoadGen:
             bind_amp = self._u(n, c.bind_nm)
             push_dur = self._u(n, c.push_s)
             push_amp = self._u(n, c.push_n)
-            dur = _pick(kind, [imp_dur, per_dur, hold, bind_dur, push_dur])
-            amp = _pick(kind, [imp_amp, per_amp, st_amp, bind_amp, push_amp])
+            ti_dur = self._u(n, c.torque_impulse_ms) * 1e-3
+            ti_amp = self._u(n, c.torque_impulse_nm)
+            axis = self._axis(n)
+            dur = _pick(kind, [imp_dur, per_dur, hold, bind_dur, push_dur, ti_dur])
+            amp = _pick(kind, [imp_amp, per_amp, st_amp, bind_amp, push_amp, ti_amp])
             z = torch.zeros(n, 3, **f64)
             z[:, 2] = 1.0
             direction = torch.where((kind == IMPULSE)[:, None], imp_dir, z)
-            torque = ((kind == PERIODIC) & per_torque) | (kind == BIND)
+            torque = ((kind == PERIODIC) & per_torque) | (kind == BIND) | (kind == TORQUE_IMPULSE)
+            ex = torch.zeros(n, 3, **f64)
+            ex[:, 0] = 1.0
+            any_axis = (kind == TORQUE_IMPULSE) | ((kind == BIND) & (c.bind_axes == "xyz"))
+            tax = torch.where(any_axis[:, None], axis, ex)
             freq = torch.where(kind == PERIODIC, per_f, torch.zeros_like(per_f))
             phase = torch.where(kind == PERIODIC, per_ph, torch.zeros_like(per_ph))
             sign = torch.where(kind == STEP, st_sign, torch.ones_like(st_sign))
@@ -130,8 +148,8 @@ class TorchLoadGen:
             n_drift = torch.where(kind == PERIODIC, per_nd, torch.ones_like(per_nd))
             end = torch.where((kind == STEP) & (sign > 0), t0, t0 + dur)
             for k, v in (("valid", ok), ("kind", kind), ("t0", t0), ("dur", dur), ("amp", amp), ("dir", direction),
-                         ("torque", torque), ("freq", freq), ("phase", phase), ("sign", sign), ("drift", drift),
-                         ("n_drift", n_drift)):
+                         ("torque", torque), ("tax", tax), ("freq", freq), ("phase", phase), ("sign", sign),
+                         ("drift", drift), ("n_drift", n_drift)):
                 cols[k].append(v)
             t = torch.where(ok, torch.maximum(t, end), t)
         # events past the K slots are dropped (counted)
@@ -154,6 +172,8 @@ class TorchLoadGen:
             self.amp[env, k] = ev.amp
             self.dir[env, k] = torch.as_tensor(np.asarray(ev.direction, float), dtype=torch.float64)
             self.torque[env, k] = bool(ev.torque)
+            ax = np.array([1.0, 0.0, 0.0]) if ev.axis is None else np.asarray(ev.axis, float)
+            self.tax[env, k] = torch.as_tensor(ax, dtype=torch.float64)
             self.freq[env, k] = ev.freq
             self.phase[env, k] = ev.phase
             self.sign[env, k] = ev.sign
@@ -177,7 +197,7 @@ class TorchLoadGen:
         idx = torch.minimum(torch.floor(tau / DRIFT_DT).long().clamp(min=0), self.n_drift - 1)
         m = self.drift.gather(2, idx[..., None]).squeeze(-1)
         per = self.amp * m * torch.sin(2 * math.pi * self.freq * tau + self.phase)
-        v = torch.where(k == IMPULSE, self.amp * s,
+        v = torch.where((k == IMPULSE) | (k == TORQUE_IMPULSE), self.amp * s,
                         torch.where(k == BIND, self.amp * s * s,
                                     torch.where(k == PERIODIC, per, self.amp)))
         v = torch.where(live, v, torch.zeros_like(v))
@@ -191,8 +211,7 @@ class TorchLoadGen:
         """Force (N, 3) and torque (N, 3) on the tool at time t, tool frame (loadgen.wrench)."""
         v = self.values(t)
         f = (torch.where(self.torque, torch.zeros_like(v), v)[..., None] * self.dir).sum(1)
-        tq = torch.zeros_like(f)
-        tq[:, 0] = torch.where(self.torque, v, torch.zeros_like(v)).sum(1)
+        tq = (torch.where(self.torque, v, torch.zeros_like(v))[..., None] * self.tax).sum(1)
         return f, tq
 
     def truth(self, t: torch.Tensor) -> dict[str, torch.Tensor]:

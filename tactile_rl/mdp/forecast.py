@@ -1,13 +1,14 @@
 """The load-regime forecast batched over environments: the torch mirror of tactile_sim.behaviors.forecast.ForecastModel
 (the reference). Per environment and episode: a mask (no forecast at all), a bias on the predicted event time and a
-regime confusion; updates on the update_rate grid (the first call at or after each grid point issues one), each lost
-with probability `dropout`, with per-update jitter on the event time and log-normal errors on the frequency and the
-amplitude; an update becomes visible `latency` after it was issued; "no event ahead" is issued explicitly. Output:
-obs_spec.forecast_vector (13-D), zero when masked or with no event ahead.
+regime confusion onto one wrong regime; updates on the update_rate grid (the first call at or after each grid point
+issues one), each lost with probability `dropout`, with per-update jitter on the event time (growing with the lead
+time by `horizon_err`) and log-normal errors on the frequency and the amplitude; an update becomes visible `latency`
+after it was issued; "no event ahead" is issued explicitly. Output: obs_spec.forecast_vector (13-D), zero when masked
+or with no event ahead; its sigma fields are the nominal ForecastCfg's claim, never the env's drawn error model.
 
 Every ForecastCfg field is a per-env tensor (set_params), so the forecast's error model can be randomized. `draw_fn`
-(tests) replaces the random draws: f(name, mask (N,) bool) -> (N,) with name in "mask", "bias", "confusion", "dropout",
-"freq", "amp", "jitter" (uniforms for the first three and "dropout", standard normals for the rest).
+(tests) replaces the random draws: f(name, mask (N,) bool) -> (N,) with name in "mask", "bias", "confusion", "wrong",
+"dropout", "freq", "amp", "jitter" (uniforms for the first four and "dropout", standard normals for the rest).
 """
 
 from __future__ import annotations
@@ -20,8 +21,9 @@ import torch
 from tactile_sim.config import ForecastCfg
 from tactile_sim.control.obs_spec import FORECAST_DIM, REGIMES
 
-FIELDS = ("mask_prob", "dropout", "bias_sigma", "jitter_sigma", "class_confusion", "freq_err", "amp_err",
-          "update_rate", "latency")
+FIELDS = ("mask_prob", "dropout", "bias_sigma", "jitter_sigma", "horizon_err", "class_confusion", "freq_err",
+          "amp_err", "update_rate", "latency")
+CLAIMED = ForecastCfg()  # the uncertainties the forecast reports (ForecastModel.claimed)
 
 
 class TorchForecastModel:
@@ -38,6 +40,7 @@ class TorchForecastModel:
         self.masked = torch.zeros(N, dtype=torch.bool, device=self.dev)
         self.bias = torch.zeros(N, **f64)
         self.confusion = torch.zeros(N, **f64)
+        self.wrong = torch.zeros(N, dtype=torch.long, device=self.dev)
         self.next_update = torch.full((N,), -math.inf, **f64)
         # pending updates (ring): issue time, regime probabilities + frequency + amplitude, event time (NaN: none)
         self.p_t = torch.zeros(N, self.D, **f64)
@@ -74,9 +77,11 @@ class TorchForecastModel:
         masked = self._draw("mask", sel, False) < self.mask_prob
         bias = self._draw("bias", sel, True) * self.bias_sigma
         conf = self._draw("confusion", sel, False) * self.class_confusion
+        wrong = torch.clamp((self._draw("wrong", sel, False) * (self.R - 1)).long(), max=self.R - 2)
         self.masked = torch.where(sel, masked, self.masked)
         self.bias = torch.where(sel, bias, self.bias)
         self.confusion = torch.where(sel, conf, self.confusion)
+        self.wrong = torch.where(sel, wrong, self.wrong)
         self.next_update[ids] = -math.inf
         self.head[ids] = 0
         self.count[ids] = 0
@@ -92,12 +97,14 @@ class TorchForecastModel:
         lost = self._draw("dropout", due & valid, False) < self.dropout
         push = due & (~valid | ~lost)
         n = self.R
-        p = (self.confusion / (n - 1))[:, None].expand(-1, n).clone()
+        p = torch.zeros(self.n_env, n, dtype=torch.float64, device=self.dev)
         k = regime.clamp(0, n - 1)
         p[self._ar, k] = 1.0 - self.confusion
+        p[self._ar, self.wrong + (self.wrong >= k).long()] = self.confusion
         f = f_dom.double() * torch.exp(self._draw("freq", due & valid & ~lost, True) * self.freq_err)
         a = amp.double() * torch.exp(self._draw("amp", due & valid & ~lost, True) * self.amp_err)
-        te = t_event.double() + self.bias + self._draw("jitter", due & valid & ~lost, True) * self.jitter_sigma
+        sigma = torch.hypot(self.jitter_sigma, self.horizon_err * torch.clamp(t_event.double() - t, min=0.0))
+        te = t_event.double() + self.bias + self._draw("jitter", due & valid & ~lost, True) * sigma
         v = torch.cat([p, f[:, None], a[:, None]], dim=1)
         v = torch.where(valid[:, None], v, torch.zeros_like(v))
         te = torch.where(valid, te, torch.full_like(te, float("nan")))
@@ -124,11 +131,11 @@ class TorchForecastModel:
         self.head = (self.head + m) % self.D
         self.count = self.count - m
         show = ~self.masked & self.vis & ~torch.isnan(self.v_e)
-        s_t = torch.hypot(self.bias_sigma, self.jitter_sigma)
+        s_t = torch.full_like(t, math.hypot(CLAIMED.bias_sigma, CLAIMED.jitter_sigma))
         fv, av = self.v_v[:, n], self.v_v[:, n + 1]
         out = torch.cat([torch.ones_like(t)[:, None], torch.clamp(self.v_e - t, -1.0, 1.0)[:, None], s_t[:, None],
-                         self.v_v[:, :n], (fv / 100.0)[:, None], (self.freq_err * fv / 100.0)[:, None],
-                         (av / 100.0)[:, None], (self.amp_err * av / 100.0)[:, None],
+                         self.v_v[:, :n], (fv / 100.0)[:, None], (CLAIMED.freq_err * fv / 100.0)[:, None],
+                         (av / 100.0)[:, None], (CLAIMED.amp_err * av / 100.0)[:, None],
                          torch.clamp(t - self.v_t, max=1.0)[:, None]], dim=1)
         assert out.shape[1] == FORECAST_DIM
         return torch.where(show[:, None], out, torch.zeros_like(out))

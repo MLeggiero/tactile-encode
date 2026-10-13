@@ -46,15 +46,19 @@ def training_config(timestep: float = 0.00025, noslip_iterations: int = 0, **sec
     return cfg.replace(**sections) if sections else cfg
 
 
+TRAINING_HAMMER = "ycb"  # the hammer the residual trains on (config.HAMMERS): the real claw hammer the VLA swings
+
+
 def residual_training_config(rate: float = 1000.0, timestep: float = 0.00025, noslip_iterations: int = 0,
-                             task: str = "hammer", **sections) -> SimConfig:
+                             task: str = "hammer", hammer_kind: str = TRAINING_HAMMER, **sections) -> SimConfig:
     """The residual experiments' configuration (config.residual_config: Vega U + WUJI Hand 2 with MIT drives, the
-    TaxelScan fast profile, the light hammer and its small nail, the residual at `rate` Hz) on the reduced scene at
-    the training physics: `timestep` (0.25 ms) and no noslip, as MuJoCo Warp runs it. The hammer training tasks
-    (tactile_rl) and the base library (tactile_sim.behaviors.base_library) are built from it; task "drill" puts the
-    pistol driver in the hand (residual_config's drill: the trigger pulled by the index finger, its friction capped).
-    """
-    cfg = residual_config(rate, base=fast_config(), task=task)
+    TaxelScan fast profile, the hammer `hammer_kind` (default the YCB claw hammer in its palm grip, its nail and
+    swing; "light": the primitive light hammer and its small nail) with the hands' grippy coverings, the residual at
+    `rate` Hz) on the reduced scene at the training physics: `timestep` (0.25 ms) and no noslip, as MuJoCo Warp runs
+    it. The hammer training tasks (tactile_rl) and the base library (tactile_sim.behaviors.base_library) are built
+    from it; task "drill" puts the pistol driver in the hand (residual_config's drill: the trigger pulled by the index
+    finger, its friction capped)."""
+    cfg = residual_config(rate, base=fast_config(), task=task, hammer_kind=hammer_kind)
     cfg = cfg.replace(physics={"timestep": timestep, "noslip_iterations": noslip_iterations}, scene={"reduced": True})
     return cfg.replace(**sections) if sections else cfg
 

@@ -71,9 +71,11 @@ def residual_dr(cfg: SimConfig, rng: np.random.Generator) -> dict[str, dict]:
         "plant": {"resistance_0": u(r.nail_resistance_0), "resistance_per_m": u(r.nail_resistance_per_m),
                   "vdr_zeta0": u(r.vdr_zeta0)},
         # the hammer's face time constant lives in HammerCfg
-        "wuji": {"cmd_latency": u(r.cmd_latency), "sdk_lpf_hz": lpf, "tau_i": u(r.tau_i),
-                 "i_rated": tuple(x * kt for x in cfg.wuji.i_rated), "effort_limit_ratio": u(r.effort_limit_ratio),
-                 "t_amb": u(r.t_amb)},
+        # the Kt error is the motors' (WujiDriveCfg.kt_scale): the SDK's current per commanded torque and the current
+        # ceiling stay nominal, the torque per amp does not (as a rated-current scale it changed nothing: the drive
+        # derives Kt = tau_rated / i_rated, and the observed current is divided by the same i_rated)
+        "wuji": {"cmd_latency": u(r.cmd_latency), "sdk_lpf_hz": lpf, "tau_i": u(r.tau_i), "kt_scale": kt,
+                 "effort_limit_ratio": u(r.effort_limit_ratio), "t_amb": u(r.t_amb)},
         "sensors": {"ts_gain_mismatch": u(r.ts_gain_mismatch), "ts_offset_lsb": u(r.ts_offset_lsb),
                     "ts_f_half": u(r.ts_f_half), "ts_bandwidth": u(r.ts_bandwidth),
                     "ts_skin_depth": u(r.ts_skin_depth), "ts_drop_prob": u(r.ts_drop_prob),

@@ -5,6 +5,8 @@ to 1e-5 over recorded sequences with episode resets."""
 import numpy as np
 import pytest
 
+from tactile_sim.control.obs_spec import ACTION_DIM
+
 pytestmark = [pytest.mark.rl]
 torch = pytest.importorskip("torch")
 pytest.importorskip("rsl_rl")
@@ -20,7 +22,7 @@ def _actor_checkpoint(path, d: int, seed: int = 0) -> str:
 
     torch.manual_seed(seed)
     actor = ZeroInitRNNModel(TensorDict({"teacher": torch.zeros(1, d)}, batch_size=[1]), {"actor": ["teacher"]},
-                             "actor", 60, hidden_dims=(256, 128), obs_normalization=True, rnn_type="gru",
+                             "actor", ACTION_DIM, hidden_dims=(256, 128), obs_normalization=True, rnn_type="gru",
                              rnn_hidden_dim=256, distribution_cfg={"class_name": "GaussianDistribution",
                                                                    "init_std": 0.3, "std_type": "scalar"})
     norm = actor.obs_normalizer
@@ -66,4 +68,4 @@ def test_teacher_export_matches_torch_and_runs_on_the_cpu_runner(tmp_path):
     pol = OnnxPolicy(out)
     a1 = pol(obs[0, 0])
     a2 = pol(obs[1, 0])
-    assert a1.shape == (60,) and np.all(np.abs(a1) <= 1.0) and not np.allclose(a1, a2)
+    assert a1.shape == (ACTION_DIM,) and np.all(np.abs(a1) <= 1.0) and not np.allclose(a1, a2)

@@ -4,11 +4,12 @@ draws per seed with sim.randomize.residual_dr) plus the plan's DR-table entries 
 
 Groups, each its own reset event (so a task picks what it randomizes), all writing one per-env state (`TactileDR`):
 
-- `pair_solref_solimp`: the hand-tool contact pairs' friction (mu, and the torsional coefficient), contact time
-  constant (solref, also on the hand's self pairs, as the testbed's gripper.hand_solref) and impedance d0 (solimp);
-- `randomize_wuji_drive`: command latency (+ jitter), SDK low-pass (or off), current-loop time constant, rated current
-  (Kt error, residual_dr's i_rated scale), effort limit, ambient temperature, current-readback noise scale; the hand
-  joints' friction loss, damping and armature;
+- `pair_solref_solimp`: the hand-tool contact pairs' friction (mu, from the event's `hand_friction` range when given,
+  else ResidualDRCfg's; and the torsional coefficient), contact time constant (solref, also on the hand's self pairs,
+  as the testbed's gripper.hand_solref) and impedance d0 (solimp);
+- `randomize_wuji_drive`: command latency (+ jitter), SDK low-pass (or off), current-loop time constant, the motors'
+  torque constant against the nominal one the SDK converts with (Kt error: WujiDriveCfg.kt_scale), effort limit,
+  ambient temperature, current-readback noise scale; the hand joints' friction loss, damping and armature;
 - `randomize_taxelscan`: per-taxel gain and offset errors (a new skin), the divider's f_half, skin bandwidth and
   depth, dead taxels, frame drops, the bridge latency's upper end, the residual loop's phase to the boards' SYNC;
 - `randomize_plant`: the hammer head's mass (the hammer body's inertial and the constants MuJoCo derives from it, from
@@ -62,7 +63,8 @@ class DRExtraCfg:
     # the forecast (behaviors.forecast's error model)
     fc_bias_sigma: tuple[float, float] = (0.005, 0.030)
     fc_jitter_sigma: tuple[float, float] = (0.005, 0.020)
-    fc_class_confusion: tuple[float, float] = (0.0, 0.20)
+    fc_horizon_err: tuple[float, float] = (0.0, 0.10)  # the event time's noise grows with the lead time
+    fc_class_confusion: tuple[float, float] = (0.0, 0.60)  # above 0.5 an episode's forecast names a wrong regime
     fc_freq_err: tuple[float, float] = (0.05, 0.20)
     fc_amp_err: tuple[float, float] = (0.10, 0.40)
     fc_latency: tuple[float, float] = (0.05, 0.25)  # s
@@ -128,7 +130,7 @@ class TactileDR:
             "ts_f_half", "ts_bandwidth", "ts_skin_depth", "ts_drop_prob", "ts_bridge_hi", "dead_taxel_frac",
             "rt_phase", "servo_p_mult", "arm_kd_scale", "nail_r0", "nail_r_per_m", "face_tc", "vdr_zeta0",
             "fc_bias_sigma", "fc_jitter_sigma", "fc_class_confusion", "fc_freq_err", "fc_amp_err", "fc_latency",
-            "fc_update_rate", "fc_dropout", "fc_mask_prob", "hold_level")
+            "fc_update_rate", "fc_dropout", "fc_mask_prob", "fc_horizon_err", "hold_level", "vla")
 
     def __init__(self, env: ManagerBasedRlEnv, scene_key: str, cfg: ResidualDRCfg | None = None,
                  extra: DRExtraCfg | None = None):
@@ -177,7 +179,8 @@ class TactileDR:
             "vdr_zeta0": float(p.vdr_zeta0),
             "fc_bias_sigma": 0.0, "fc_jitter_sigma": 0.0, "fc_class_confusion": 0.0, "fc_freq_err": 0.0,
             "fc_amp_err": 0.0, "fc_latency": 0.05, "fc_update_rate": 10.0, "fc_dropout": 0.0, "fc_mask_prob": 0.0,
-            "hold_level": 1.0}  # the base's grip (the load generator's command draws it)
+            "fc_horizon_err": 0.0, "hold_level": 1.0,  # the base's grip (the load generator's command draws it)
+            "vla": 0.0}  # the hand base runs VLA-style this episode (the base term draws it)
         self.v = {k: torch.full((N,), self.nominal[k], **f64) for k in self.KEYS}
         # model nominal arrays the scales multiply
         self.jf0 = torch.as_tensor(m.dof_frictionloss[parts_dofs(m, parts)], **f64)
@@ -221,11 +224,11 @@ class TactileDR:
                 v["ts_bandwidth"] / 500.0, v["ts_skin_depth"] / 0.003, v["ts_drop_prob"] / 0.01,
                 v["dead_taxel_frac"] / 0.02, v["rt_phase"] / 0.001, v["servo_p_mult"], v["arm_kd_scale"],
                 v["nail_r0"] / 100.0, v["nail_r_per_m"] / 5e3, v["face_tc"] / 0.003, v["vdr_zeta0"],
-                v["fc_bias_sigma"] / 0.03, v["fc_latency"] / 0.25, v["fc_mask_prob"], v["hold_level"]]
+                v["fc_bias_sigma"] / 0.03, v["fc_latency"] / 0.25, v["fc_mask_prob"], v["hold_level"], v["vla"]]
         return torch.stack(cols, dim=1).float()
 
 
-PARAM_DIM = 33
+PARAM_DIM = 34
 
 
 def parts_dofs(m, parts) -> np.ndarray:
@@ -258,12 +261,14 @@ PLANT_FIELDS = ("body_mass", "body_ipos", "body_iquat", "body_inertia", "body_in
 
 
 @requires_model_fields(*CONTACT_FIELDS)
-def pair_solref_solimp(env: ManagerBasedRlEnv, env_ids, scene_key: str) -> None:
-    """The hand-tool contact: friction (mu, torsion), time constant (also the hand's self pairs), impedance d0."""
+def pair_solref_solimp(env: ManagerBasedRlEnv, env_ids, scene_key: str,
+                       hand_friction: tuple[float, float] | None = None) -> None:
+    """The hand-tool contact: friction (mu from `hand_friction`, else the table's; torsion), time constant (also the
+    hand's self pairs), impedance d0."""
     dr = tactile_dr(env, scene_key)
     ids = _ids(env, env_ids)
     c, x = dr.cfg, dr.extra
-    mu = dr.draw(ids, "hand_friction", c.hand_friction).float()
+    mu = dr.draw(ids, "hand_friction", c.hand_friction if hand_friction is None else hand_friction).float()
     tor = dr.draw(ids, "hand_torsion", x.hand_torsion).float()
     tc = dr.draw(ids, "hand_solref_tc", c.hand_solref_tc).float()
     d0 = dr.draw(ids, "hand_solimp_d0", x.hand_solimp_d0).float()
@@ -303,7 +308,8 @@ def randomize_wuji_drive(env: ManagerBasedRlEnv, env_ids, scene_key: str) -> Non
     t_amb = dr.draw(ids, "t_amb", c.t_amb)
     ns = dr.draw(ids, "noise_scale", c.sensor_noise_scale, log=True)
     drive.set_params(ids, cmd_latency=lat, cmd_jitter=jit, sdk_lpf_hz=lpf, tau_i=tau_i,
-                     i_rated=dr.i_rated0[None].double() * kt[:, None], effort_limit_ratio=eff[:, None], t_amb=t_amb)
+                     i_rated=dr.i_rated0[None].double().expand(len(ids), -1), kt_scale=kt[:, None],
+                     effort_limit_ratio=eff[:, None], t_amb=t_amb)
     drive.T[ids] = t_amb[:, None]  # the windings start at ambient
     rt = getattr(env, "_tactile_rt", None)
     if rt is not None:
@@ -389,7 +395,7 @@ def randomize_forecast(env: ManagerBasedRlEnv, env_ids, scene_key: str) -> None:
     fc = cmd.forecaster
     if dr.forecast_mode == "clean":
         for k in ("fc_bias_sigma", "fc_jitter_sigma", "fc_class_confusion", "fc_freq_err", "fc_amp_err",
-                  "fc_dropout", "fc_mask_prob"):
+                  "fc_dropout", "fc_mask_prob", "fc_horizon_err"):
             dr.v[k][ids] = 0.0
         dr.v["fc_latency"][ids] = dr.nominal["fc_latency"]
         dr.v["fc_update_rate"][ids] = dr.nominal["fc_update_rate"]
@@ -398,7 +404,8 @@ def randomize_forecast(env: ManagerBasedRlEnv, env_ids, scene_key: str) -> None:
         for key, lohi in (("fc_bias_sigma", x.fc_bias_sigma), ("fc_jitter_sigma", x.fc_jitter_sigma),
                           ("fc_class_confusion", x.fc_class_confusion), ("fc_freq_err", x.fc_freq_err),
                           ("fc_amp_err", x.fc_amp_err), ("fc_latency", x.fc_latency),
-                          ("fc_update_rate", x.fc_update_rate), ("fc_dropout", x.fc_dropout)):
+                          ("fc_update_rate", x.fc_update_rate), ("fc_dropout", x.fc_dropout),
+                          ("fc_horizon_err", x.fc_horizon_err)):
             u = torch.rand(len(ids), dtype=torch.float64, device=dr.dev)
             dr.v[key][ids] = lohi[0] + u * (lohi[1] - lohi[0])
         dr.v["fc_mask_prob"][ids] = x.fc_mask_prob if dr.forecast_masking else 0.0
@@ -406,7 +413,8 @@ def randomize_forecast(env: ManagerBasedRlEnv, env_ids, scene_key: str) -> None:
     fc.set_params(ids, mask_prob=v["fc_mask_prob"][ids], dropout=v["fc_dropout"][ids],
                   bias_sigma=v["fc_bias_sigma"][ids], jitter_sigma=v["fc_jitter_sigma"][ids],
                   class_confusion=v["fc_class_confusion"][ids], freq_err=v["fc_freq_err"][ids],
-                  amp_err=v["fc_amp_err"][ids], update_rate=v["fc_update_rate"][ids], latency=v["fc_latency"][ids])
+                  amp_err=v["fc_amp_err"][ids], update_rate=v["fc_update_rate"][ids], latency=v["fc_latency"][ids],
+                  horizon_err=v["fc_horizon_err"][ids])
 
 
 __all__ = ["DRExtraCfg", "PARAM_DIM", "TactileDR", "hammer_inertial_table", "pair_solref_solimp", "randomize_forecast",

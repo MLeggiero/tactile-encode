@@ -1,7 +1,8 @@
 """Exported residual policies: an ONNX graph plus a sidecar JSON (<name>.onnx, <name>.json).
 
-The graph maps (obs [1, D], h_in [1, H]) to (action [1, 60], h_out [1, H]): the action already squashed into
-[-1, 1], the recurrent state carried by the caller between ticks. A feedforward policy has no h_in/h_out. The
+The graph maps (obs [1, D], h_in [1, H]) to (action [1, 40], h_out [1, H]): the action already squashed into
+[-1, 1], the recurrent state carried by the caller between ticks (a state that turns non-finite restarts from zero:
+the caller, ResidualHandL2, counts it). A feedforward policy has no h_in/h_out. The
 sidecar records the interface it was trained on (obs_spec.spec_hash with its stack depth), its rate, hidden size
 and provenance; a policy only runs where its hash and rate match (ResidualHandL2 checks).
 """

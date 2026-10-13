@@ -51,14 +51,14 @@ def parse_policies(spec: str) -> list[dict]:
 
 
 class ConstantGrip:
-    """The strongest constant residual toward closing (the authority bound): every joint's position offset, stiffness
-    and feedforward at their limits in the synergy's closing direction (pre-tanh actions of arctanh(0.999))."""
+    """The strongest constant residual toward closing (the authority bound): every joint's set-point offset and
+    feedforward at their limits in the synergy's closing direction (pre-tanh actions of arctanh(0.999))."""
 
     def __init__(self, env):
         act = env.action_manager.get_term("residual")
         cd = torch.as_tensor(np.asarray(act.parts.synergy.close_dir, float), dtype=torch.float32, device=env.device)
         big = float(np.arctanh(0.999))
-        self.a = torch.cat([big * cd, torch.full_like(cd, big), big * cd])[None].repeat(env.num_envs, 1)
+        self.a = torch.cat([big * cd, big * cd])[None].repeat(env.num_envs, 1)
 
     def reset(self) -> None:
         pass
@@ -95,7 +95,9 @@ class StudentPolicy:
         self.h = None
 
     def __call__(self, obs) -> torch.Tensor:
-        o = obs["student"]
+        from tactile_sim.control.obs_spec import OBS_SPEC_VERSION
+
+        o = obs["student" if self.net.version == OBS_SPEC_VERSION else f"student_v{self.net.version}"]
         if self.h is None:
             self.h = self.net.initial_state(o.shape[0], o.device)
         mu, self.h, _ = self.net.step(o, self.h)
@@ -129,9 +131,13 @@ def make_env(rate: float, library: str, num_envs: int, episode_s: float, device:
     from mjlab.envs import ManagerBasedRlEnv
 
     from tactile_rl.tasks.residual import residual_env_cfg
+    from tactile_sim.config import LoadGenCfg
 
+    # the evaluation's own conditions (not the training distribution's): the library entries' friction, the scripted
+    # base, LoadGenCfg's band
     cfg = residual_env_cfg(rate, library=library, num_envs=num_envs, start_stage=3, max_stage=3,
-                           obs_groups=("student", "teacher"), episode_s=episode_s)
+                           obs_groups=("student", "student_v2", "teacher"), episode_s=episode_s,
+                           hand_friction=None, vla_frac=0.0, loadgen=LoadGenCfg())
     cfg.terminations = {k: v for k, v in cfg.terminations.items() if k == "time_out"}  # one episode, no resets
     cfg.curriculum = {}  # C3's settings are set here
     cfg.metrics = {}  # (the training's read the terminations)

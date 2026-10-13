@@ -110,7 +110,7 @@ class GripperCfg:
     wrap_yaw: float = 0.0
     hand_joint_damping: float = 0.002  # Nms/rad, drive + gearbox viscous loss
     hand_joint_friction: float = 0.005  # Nm, drive friction
-    hand_friction: float = 1.0  # skin on the handle
+    hand_friction: float = 1.0  # skin on the handle (bare; residual_config: the WUJI's grippy coverings)
     hand_solref: tuple[float, float] = (0.002, 1.0)
     # thumb joints (CMC flex, CMC abd, MCP, IP): closing torque sign, 0 = held at thumb_preshape by PD
     thumb_close: tuple[int, int, int, int] = (1, -1, 1, 1)
@@ -171,6 +171,10 @@ class WujiDriveCfg:
     kp_nom: tuple[float, ...] = (0.37, 0.43, 0.22, 0.55, 0.22)  # Nm/rad, nominal Kp: the vendor MJCF gains (assumed)
     zeta: float = 0.8  # damping ratio when Kd is derived from Kp: Kd = 2 zeta sqrt(Kp I)
     i_rated: tuple[float, ...] = (1.0, 1.0, 1.0, 1.0, 1.0)  # A at each joint's rated torque (assumed)
+    # the motors' true torque constant over the nominal one the SDK converts torque commands with (tau_rated /
+    # i_rated): the joint delivers kt_scale x the commanded torque below the current ceiling, and the ceiling's torque
+    # moves with it, while the current the host reads back does not (ResidualDRCfg.kt_scale draws it)
+    kt_scale: float = 1.0
     i_peak_ratio: float = 2.0  # the driver's peak current / rated (assumed)
     effort_limit_ratio: float = 1.0  # SDK effort_limit (the current ceiling) / rated current
     r_wind: float = 2.0  # ohm, winding resistance (assumed)
@@ -715,7 +719,10 @@ class ForecastCfg:
     dropout: float = 0.05  # updates lost within an episode
     bias_sigma: float = 0.015  # s, per-episode bias of the predicted event time
     jitter_sigma: float = 0.010  # s, per-update noise on the predicted event time
-    class_confusion: float = 0.1  # up to this much probability moved off the true regime, per episode
+    horizon_err: float = 0.05  # per-update noise on the event time grows by this fraction of the lead time
+    # up to this much probability moved off the true regime onto one wrong regime, per episode (above 0.5 the
+    # forecast names the wrong regime)
+    class_confusion: float = 0.6
     freq_err: float = 0.1  # log-normal sigma of the predicted dominant frequency
     amp_err: float = 0.25  # log-normal sigma of the predicted amplitude
     update_rate: float = 10.0  # Hz the forecast is refreshed at
@@ -726,7 +733,8 @@ class ForecastCfg:
 class LoadGenCfg:
     """Synthetic loads at the tool's working point (tactile_sim.model.loadgen): the first training stage covers every
     load regime the residual will meet, before the nail and drill plants. Events are drawn per episode; forces are
-    in the tool frame (x along the handle or bit, z along the strike or feed), torques about the tool's long axis.
+    in the tool frame (x along the handle or bit, z along the strike or feed), torques about the tool's long axis
+    (binds about any tool axis with `bind_axes` "xyz"; torque impulses, a sixth entry of p_kind, about any).
 
     The amplitudes are the WUJI Hand 2's capacity with the light hammer (calibrated on the GPU env, zero residual, the
     full randomization: tactile_rl.bench.loadgen_calibration): at the settled hold no single event of the band loses
@@ -735,7 +743,8 @@ class LoadGenCfg:
     axis already slips the full hold 2.5 mm, and 60 N loses it. Each kind's range is the old one scaled by a factor."""
 
     rate: float = 2.0  # events per second (Poisson)
-    p_kind: tuple[float, float, float, float, float] = (0.35, 0.25, 0.15, 0.15, 0.10)  # impulse periodic step bind push
+    # impulse periodic step bind push [torque_impulse]: a sixth entry draws torque impulses (none without)
+    p_kind: tuple[float, ...] = (0.35, 0.25, 0.15, 0.15, 0.10)
     # impulse: half-sine force along the strike axis within cone_deg
     impulse_ms: tuple[float, float] = (0.5, 5.0)
     impulse_n: tuple[float, float] = (14.0, 200.0)  # the light hammer's own blows peak ~185 N
@@ -749,12 +758,16 @@ class LoadGenCfg:
     # step: a steady push that vanishes (breakthrough) or appears
     step_n: tuple[float, float] = (2.7, 12.0)
     step_hold_s: tuple[float, float] = (0.2, 1.0)
-    # bind: a torque spike about the long axis
+    # bind: a torque spike about the long axis ("x"), or about a tool axis drawn per event, either sign ("xyz")
     bind_ms: tuple[float, float] = (20.0, 80.0)
     bind_nm: tuple[float, float] = (0.1, 0.6)
+    bind_axes: str = "x"
     # push: a steady force along the feed
     push_n: tuple[float, float] = (1.5, 12.0)
     push_s: tuple[float, float] = (0.3, 1.5)
+    # torque impulse: a half-sine torque about a tool axis drawn per event, either sign (a glancing blow's twist)
+    torque_impulse_ms: tuple[float, float] = (0.5, 5.0)
+    torque_impulse_nm: tuple[float, float] = (0.2, 2.0)
 
 
 @dataclass
@@ -764,7 +777,7 @@ class ResidualDRCfg:
     unless noted."""
 
     head_mass: tuple[float, float] = (0.25, 0.70)  # kg
-    hand_friction: tuple[float, float] = (0.6, 1.4)
+    hand_friction: tuple[float, float] = (1.1, 2.0)  # the grippy coverings (GripperCfg.hand_friction)
     hand_solref_tc: tuple[float, float] = (0.0015, 0.004)  # s, hand-tool contact time constant
     nail_resistance_0: tuple[float, float] = (50.0, 150.0)  # N, around the light hammer's 80 N nail
     nail_resistance_per_m: tuple[float, float] = (2.5e3, 7.5e3)  # N/m
@@ -774,7 +787,7 @@ class ResidualDRCfg:
     sdk_lpf_hz: tuple[float, float] = (50.0, 300.0)  # used with probability sdk_lpf_prob, else off
     sdk_lpf_prob: float = 0.5
     tau_i: tuple[float, float] = (0.0001, 0.0005)  # s
-    kt_scale: tuple[float, float] = (0.85, 1.15)  # rated current scale (Kt error)
+    kt_scale: tuple[float, float] = (0.85, 1.15)  # the motors' true torque constant / nominal (WujiDriveCfg.kt_scale)
     effort_limit_ratio: tuple[float, float] = (0.9, 1.1)
     t_amb: tuple[float, float] = (20.0, 35.0)  # degC
     ts_gain_mismatch: tuple[float, float] = (0.05, 0.15)
@@ -840,6 +853,11 @@ class VlaCfg:
     # the head joints (head_j1, head_j2, head_j3) while the VLA works; None = aimed at the tool's working point
     # (vla.camera.aim_head), the way an operator would point the head before a task
     head_pose: tuple[float, float, float] | None = None
+    # where aim_head puts the task's look point in the image, as a fraction of its height from the top (0.5: the
+    # centre, datasets up to v4). Lower in the frame pitches the head less: at 0.7 the hammer task's head pitch is 25
+    # deg (44 at 0.5) and the robot's own body fills 13 % of the image (26 %), the drill's 2 % (9 %), the workpiece
+    # still well inside the frame (2026-10-12)
+    aim_v: float = 0.7
     # per-episode visual randomization (vla.camera.VisualDR); off = the nominal scene
     visual_dr: bool = True
     cam_pos_jitter: float = 0.01  # m, each axis
@@ -1098,6 +1116,9 @@ DRILL_12V_GENERIC_PRESET: dict[str, Any] = {"free_speed": 44.5, "stall_torque": 
                                             **PRIMITIVE_PISTOL}
 
 
+WUJI_COVERED_FRICTION = 1.5  # the hand coverings on the tool (ResidualDRCfg draws 1.1-2.0)
+
+
 def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfig | None = None,
                     task: str = "hammer", hammer_kind: str = "light", **sections: dict[str, Any]) -> SimConfig:
     """The residual experiments' configuration: WUJI Hand 2 with MIT-mode drives on the robot (default the Vega U),
@@ -1115,7 +1136,9 @@ def residual_config(rate: float = 1000.0, robot: str = "vega_1u", base: SimConfi
     cfg = hand_config("wuji2", base or SimConfig(), robot=robot)
     cfg = cfg.replace(**(HAMMERS[hammer_kind] if task == "hammer" else VEGA_DRILL_OVERRIDES)).replace(
         residual={"task": task}).replace(
-        gripper={"hand_control": "mit", "grasp_mass": "nominal"},
+        # the WUJI hands wear grippy (rubber/silicone) coverings (2026-10-12; before: bare skin, 1.0, drawn 0.6-1.4).
+        # Keyframes are still synthesized at bare skin (wuji_grasp.GRASP_FRICTION)
+        gripper={"hand_control": "mit", "grasp_mass": "nominal", "hand_friction": WUJI_COVERED_FRICTION},
         sensors={"ts_model": "rev3", "ts_taxel_time": 7.8e-6},
         residual={"enabled": True, "rate": rate},
         # the base has no impact flag: the arm switches to its post-impact reference on the clock

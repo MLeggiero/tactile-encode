@@ -6,11 +6,13 @@ with the hammer and drill teachers).
 | C0 | none: the hold | the settled hold | near nominal (scale 0.1) | clean |
 | C1 | load generator at a quarter of the amplitudes | 0.5-1.0 of it | scale 0.3 | clean (exact, timely, never masked) |
 | C2 | the full band | 0.3-0.8 of it (the plan's hold level) | the full table | noisy, 25 % of episodes masked |
-| C3 | 70 % hammer episodes (library swings), 30 % the full band | 0.3-0.8 | the full table | noisy, masked |
+| C3 | 70 % hammer episodes (library swings), 30 % the full band | 0.3-1.2 | the full table | noisy, masked |
 
 The base grip below the settled hold is what leaves the residual a job: at the hold the WUJI's closing joints already
 run near their current ceiling (the SDK effort limit is the rated current), and a residual that grips harder and
-stiffens cannot change the slip; at half the hold it recovers the hold's slip (tactile_rl/README.md).
+stiffens cannot change the slip; at half the hold it recovers the hold's slip (tactile_rl/README.md). C3 reaches past
+the hold (to 1.2 of it: a base that squeezes harder, as a VLA's may) so that the full hold, where the validator's
+headline comparison sits, is inside the training range of the teacher and of the students distilled in C3.
 
 A stage advances when, over the episodes that began in it and ended recently (at least `min_episodes`; each evaluation
 that does not pass halves the window's counts, so older episodes fade), drops stay below `drop_max` and, once there are
@@ -20,7 +22,9 @@ runs, the DR scale, the forecast's mode), so the episodes under way at a change 
 
 `stage_cap_s` (simulated seconds summed over the envs; None: the gates alone) bounds the time a stage may take: past
 it the stage advances at its next evaluation whether or not it passed, and `capped` counts the stages that did. A
-training budget then reaches the last stage in time (C3 keeps C2's load-generator episodes as its 30 %).
+training budget then reaches the last stage in time (C3 keeps C2's load-generator episodes as its 30 %). With
+`cap_ref_envs` the cap is stated for that many envs and scales with the env count, so a stage takes at most the same
+number of iterations at any count (half the envs: half the simulated seconds).
 """
 
 from __future__ import annotations
@@ -41,7 +45,7 @@ STAGES = (
      "mask": False},
     {"name": "C2", "loads": True, "amp_scale": 1.0, "hold": (0.3, 0.8), "dr_scale": 1.0, "forecast": "noisy",
      "mask": True},
-    {"name": "C3", "loads": True, "amp_scale": 1.0, "hold": (0.3, 0.8), "dr_scale": 1.0, "forecast": "noisy",
+    {"name": "C3", "loads": True, "amp_scale": 1.0, "hold": (0.3, 1.2), "dr_scale": 1.0, "forecast": "noisy",
      "mask": True, "hammer": 0.7},
 )
 
@@ -62,7 +66,8 @@ class TactileCurriculum:
         self.eval_every = int(p.get("eval_every", 100))
         self.drop_term = p.get("drop_term", "tool_dropped")
         cap = p.get("stage_cap_s")
-        self.stage_cap_s = None if cap is None else float(cap)
+        ref = p.get("cap_ref_envs")
+        self.stage_cap_s = None if cap is None else float(cap) * (env.num_envs / float(ref) if ref else 1.0)
         dev = env.device
         self.win = torch.zeros(4, dtype=torch.float64, device=dev)  # episodes, drops, events, events ok
         self.ep_stage = torch.full((env.num_envs,), self.stage, dtype=torch.long, device=dev)  # each episode's stage

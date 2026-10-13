@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,10 @@ from tactile_sim.model.hands import wuji
 from tactile_sim.model.xmlutil import sub
 
 VERSION = 2
+# The skin friction "nominal" keyframes are synthesized at: the grip shapes were searched and validated at bare
+# skin's 1.0, and at the grippy coverings' 1.5 (config.WUJI_COVERED_FRICTION) the fingers catch the tool before it
+# seats in the palm, a different grip. The coverings act when the task runs (the reset settle seats the tool under them)
+GRASP_FRICTION = 1.0
 
 
 @dataclass
@@ -112,7 +117,7 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
     """The configuration a grasp keyframe is synthesized and cached for. GripperCfg.grasp_mass = "nominal" puts the
     tool's nominal masses and the hand's nominal skin contact (friction, solref) in place of the configured ones,
     so randomized tools and skins share one keyframe (the reset settle then seats the tool under the actual
-    values); "actual" keys and synthesizes on the configured values."""
+    values), the friction GRASP_FRICTION's; "actual" keys and synthesizes on the configured values."""
     mode = cfg.gripper.grasp_mass
     if mode == "actual":
         return cfg
@@ -131,7 +136,7 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
         from tactile_sim.config import GripperCfg
 
         gd = GripperCfg()
-        return cfg.replace(drill=nom, gripper={"hand_friction": gd.hand_friction, "hand_solref": gd.hand_solref})
+        return cfg.replace(drill=nom, gripper={"hand_friction": GRASP_FRICTION, "hand_solref": gd.hand_solref})
     light = LIGHT_HAMMER_OVERRIDES["hammer"]
     h = cfg.hammer
     if h.model == light["model"] and h.head_radius == light["head_radius"] and h.handle_len == light["handle_len"]:
@@ -142,12 +147,16 @@ def grasp_config(cfg: SimConfig) -> SimConfig:
     from tactile_sim.config import GripperCfg
 
     g = GripperCfg()
-    return cfg.replace(hammer=nom, gripper={"hand_friction": g.hand_friction, "hand_solref": g.hand_solref})
+    return cfg.replace(hammer=nom, gripper={"hand_friction": GRASP_FRICTION, "hand_solref": g.hand_solref})
 
 
 def cache_path(cfg: SimConfig, hand_path: Path) -> Path:
+    """The keyframe's cache file: in $TACTILE_GRASP_CACHE when set (a pipeline's own keyframes, synthesized by its own
+    code), else ~/.cache/tactile_sim/grasps."""
     key = _cache_key(grasp_config(cfg), hand_path)
-    return Path.home() / ".cache" / "tactile_sim" / "grasps" / f"wuji2_{key}.json"
+    env = os.environ.get("TACTILE_GRASP_CACHE")
+    root = Path(env) if env else Path.home() / ".cache" / "tactile_sim" / "grasps"
+    return root / f"wuji2_{key}.json"
 
 
 def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:

@@ -8,7 +8,8 @@ Per environment and physics step, exactly as the reference:
         the newest command that has arrived: tau* = Kp (q* - q) + Kd (qd* - qd) + tau_ff (every physics step, or at
         servo_rate) -> current command tau*/Kt clamped to min(effort_limit_ratio, i_peak_ratio) x i_rated, derated
         linearly from t_warn to derate_floor at t_max, where the driver faults (latched until reset) -> first-order
-        current loop -> joint torque Kt i -> winding temperature C_th dT/dt = i^2 R - (T - T_amb) / R_th.
+        current loop -> joint torque kt_scale Kt i (Kt the nominal torque constant the SDK converts with, kt_scale
+        the motors' true one over it) -> winding temperature C_th dT/dt = i^2 R - (T - T_amb) / R_th.
 
 The gains travel with the command, so a stiffness change is delayed like a position change (mjlab's own actuator
 delay does not delay gains). Every parameter the plan randomizes is a per-environment tensor (`set_params`). Times
@@ -42,8 +43,8 @@ if TYPE_CHECKING:
 PARAMS_F64 = ("cmd_latency", "cmd_jitter", "r_wind", "r_th", "c_th", "t_amb", "t_warn", "t_max", "derate_floor")
 # ... (N,) float32 coefficients derived from sdk_lpf_hz and tau_i ...
 PARAMS_F32 = ("lpf_a", "i_a")
-# ... and (N, J) float32 per joint; i_limit = i_rated x min(effort_limit_ratio, i_peak_ratio)
-PARAMS_JOINT = ("kt", "i_rated", "effort_limit_ratio", "i_peak_ratio", "i_limit")
+# ... and (N, J) float32 per joint; i_limit = i_rated x min(effort_limit_ratio, i_peak_ratio), kt_true = kt x kt_scale
+PARAMS_JOINT = ("kt", "i_rated", "effort_limit_ratio", "i_peak_ratio", "i_limit", "kt_scale", "kt_true")
 STATE = ("t", "host", "host_valid", "filt", "filt_valid", "line_t", "line_cmd", "line_head", "line_n", "last_arrival",
          "active", "next_sdk", "next_servo", "tau_star", "i", "T", "fault", "n_sdk")
 
@@ -117,15 +118,17 @@ class TorchWujiDrive:
         """Per-environment parameters, for domain randomization. With `cfg`, every parameter of the selected envs is
         first set from that WujiDriveCfg; `values` then set individual parameters (the others keep their values):
         PARAMS_F64 and `tau_i` (scalar, or (n,) per env), `sdk_lpf_hz` (None = off, a scalar, or (n,) with 0 = off),
-        and `kt` / `i_rated` / `effort_limit_ratio` / `i_peak_ratio` (scalar, (J,) per joint, (n, 1) per env, or
-        (n, J)). Setting `i_rated` without `kt` keeps the torque constant at tau_rated / i_rated."""
+        and `kt` / `i_rated` / `effort_limit_ratio` / `i_peak_ratio` / `kt_scale` (scalar, (J,) per joint, (n, 1)
+        per env, or (n, J)). Setting `i_rated` without `kt` keeps the torque constant at tau_rated / i_rated; the
+        torque per amp the joints get is kt x kt_scale (WujiDriveCfg.kt_scale)."""
         ids = self._ids(env_ids)
         n = self.n_env if env_ids is None else len(env_ids)
         dev = self.device
         if cfg is not None:
             values = {**{k: getattr(cfg, k) for k in PARAMS_F64}, "sdk_lpf_hz": cfg.sdk_lpf_hz, "tau_i": cfg.tau_i,
                       "i_rated": np.asarray(cfg.i_rated, float)[self.group],
-                      "effort_limit_ratio": cfg.effort_limit_ratio, "i_peak_ratio": cfg.i_peak_ratio, **values}
+                      "effort_limit_ratio": cfg.effort_limit_ratio, "i_peak_ratio": cfg.i_peak_ratio,
+                      "kt_scale": cfg.kt_scale, **values}
 
         def col(v, dtype) -> torch.Tensor:
             t = torch.as_tensor(v, dtype=dtype, device=dev)
@@ -150,12 +153,13 @@ class TorchWujiDrive:
             tau_i = col(values.pop("tau_i"), torch.float64)
             self.i_a[ids] = torch.where(tau_i > 0, 1.0 - torch.exp(-self.dt / tau_i.clamp_min(1e-12)),
                                         torch.ones_like(tau_i)).float()
-        for k in ("i_rated", "effort_limit_ratio", "i_peak_ratio", "kt"):
+        for k in ("i_rated", "effort_limit_ratio", "i_peak_ratio", "kt", "kt_scale"):
             if k in values:
                 getattr(self, k)[ids] = mat(values.pop(k))
                 if k == "i_rated" and "kt" not in values:
                     self.kt[ids] = self.tau_rated[None] / self.i_rated[ids]
         self.i_limit[ids] = self.i_rated[ids] * torch.minimum(self.effort_limit_ratio[ids], self.i_peak_ratio[ids])
+        self.kt_true[ids] = self.kt[ids] * self.kt_scale[ids]
         if values:
             raise KeyError(f"unknown drive parameters {sorted(values)}")
         self._check_line()
@@ -220,7 +224,7 @@ class TorchWujiDrive:
     @property
     def torque(self) -> torch.Tensor:
         """Joint torque the drives apply now (Nm), (N, J)."""
-        return self.kt * self.i
+        return self.kt_true * self.i
 
     # ------------------------------------------------------------------ the physics step
     def step(self, q: torch.Tensor, qd: torch.Tensor) -> torch.Tensor:
@@ -270,7 +274,7 @@ class TorchWujiDrive:
         heat = self.i.double() ** 2 * self.r_wind[:, None] - (self.T - self.t_amb[:, None]) / self.r_th[:, None]
         self.T = self.T + (self.dt / self.c_th)[:, None] * heat
         self.t = t + self.dt
-        return self.kt * self.i
+        return self.kt_true * self.i
 
 
 # ---------------------------------------------------------------------- mjlab actuator

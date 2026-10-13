@@ -2,7 +2,7 @@
 
 The graph is the CPU's policy convention (tactile_sim.control.policy_io): inputs `obs` [B, D] (the teacher's
 observation: obs_spec's student layout followed by the privileged blocks) and `h_in` [B, H] (the GRU's state), outputs
-`action` [B, 60] (squashed: tanh of the policy's mean, as the env applies it) and `h_out` [B, H]. The robust
+`action` [B, 40] (squashed: tanh of the policy's mean, as the env applies it) and `h_out` [B, H]. The robust
 normalizer (scale floor, clip) is folded in; opset 17; the batch axis is dynamic.
 
 The sidecar JSON (PolicyMeta) records obs_spec's hash for the student part and its stack, the rate, the GRU's size and
@@ -220,9 +220,10 @@ def export_student(checkpoint: str, out: str, commit: str | None = None) -> dict
                       dynamic_axes={k: {0: "batch"} for k in ("obs", "h_in", "action", "h_out", "aux")},
                       opset_version=OPSET, dynamo=False)
     codec = CodecSpec()
-    meta = PolicyMeta(spec_hash=spec_hash(ActionSpec(), net.stack), rate=float(ck["rate"]), stack=net.stack,
-                      hidden=H, name=Path(out).stem,
-                      extra={"kind": "student", "obs_dim": D, "aux": AUX_LAYOUT, "params": count_parameters(net),
+    meta = PolicyMeta(spec_hash=spec_hash(ActionSpec(), net.stack, net.version), rate=float(ck["rate"]),
+                      stack=net.stack, hidden=H, name=Path(out).stem,
+                      extra={"kind": "student", "obs_version": net.version, "obs_dim": D, "aux": AUX_LAYOUT,
+                             "params": count_parameters(net),
                              "normalizer": {"std_floor": net.norm.std_floor, "clip": net.norm.clip},
                              "codec": {"bits": codec.bits, "mu": codec.mu, "f_max": codec.f_max,
                                        "version": "taxel_codec_v1"},
@@ -285,7 +286,8 @@ def record_student_inputs(checkpoint: str, num_envs: int = 64, steps: int = 160,
     ck = torch.load(checkpoint, map_location="cpu", weights_only=False)
     net = load_student(checkpoint, device=device)
     env = ManagerBasedRlEnv(residual_env_cfg(float(ck["rate"]), library=library, num_envs=num_envs,
-                                             start_stage=stage, max_stage=stage, obs_groups=("student",)),
+                                             start_stage=stage, max_stage=stage, obs_groups=("student",),
+                                             student_version=net.version),
                             device=device)
     obs_rec, done_rec = [], []
     try:

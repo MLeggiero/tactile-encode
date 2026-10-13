@@ -7,18 +7,24 @@ state and randomization, the perturbed arm stream, the hand base at the episode'
 each env runs: at reset an env plays the hammer with probability `hammer_frac` (the curriculum's: 0 before C3, 0.7
 in it) and the load generator otherwise. The hammer engine builds the runtime with the nail plant; a load-generator
 env keeps the nail idle, a hammer env gets no loads. The student's task block says which (obs_spec TASKS).
+
+`loadgen` is the load generator's configuration (None: LoadGenCfg's), `hand_friction` the hammer episodes' friction
+range (None: the library entries'), and in a share `vla_frac` of the episodes of either kind the hand base is
+VLA-style (action_map.TorchHandTable, drawn and applied here on the base each env runs).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import torch
 from mjlab.managers.command_manager import CommandTerm, CommandTermCfg
 
+from tactile_rl.mdp.action_map import vla_table
 from tactile_rl.mdp.commands import BaseTrajectoryCommand, BaseTrajectoryCommandCfg
 from tactile_rl.mdp.loadgen_command import LoadGenCommand, LoadGenCommandCfg
+from tactile_sim.config import LoadGenCfg
 
 if TYPE_CHECKING:
     from mjlab.envs import ManagerBasedRlEnv
@@ -32,6 +38,10 @@ class MixedBaseCommandCfg(CommandTermCfg):
     perturb: bool = True
     hold_level: tuple[float, float] = (1.0, 1.0)
     resampling_time_range: tuple[float, float] = (1.0e9, 1.0e9)
+    loadgen: LoadGenCfg = field(default_factory=LoadGenCfg)
+    hand_friction: tuple[float, float] | None = None
+    vla_frac: float = 0.0
+    vla_hz: float = 30.0
 
     def build(self, env: ManagerBasedRlEnv) -> MixedBaseCommand:
         return MixedBaseCommand(self, env)
@@ -57,9 +67,13 @@ class MixedBaseCommand(CommandTerm):
         # the hammer engine first: it creates the runtime with the nail plant
         self.ham = BaseTrajectoryCommand(BaseTrajectoryCommandCfg(scene_key=cfg.scene_key, library=cfg.library,
                                                                   perturb=cfg.perturb, task="hammer",
-                                                                  hold_level=cfg.hold_level), env)
-        self.lg = LoadGenCommand(LoadGenCommandCfg(scene_key=cfg.scene_key, hold_level=cfg.hold_level), env)
+                                                                  hold_level=cfg.hold_level,
+                                                                  hand_friction=cfg.hand_friction), env)
+        self.lg = LoadGenCommand(LoadGenCommandCfg(scene_key=cfg.scene_key, hold_level=cfg.hold_level,
+                                                   loadgen=cfg.loadgen), env)
         self.rt = self.ham.rt
+        self.vla = vla_table(self.rt, cfg.vla_hz) if cfg.vla_frac > 0 else None
+        self.ham.vla_top = self.lg.vla_top = False
         N, dev = self.num_envs, self.device
         self.is_hammer = torch.zeros(N, dtype=torch.bool, device=dev)
         self.hammer_frac = float(cfg.hammer_frac)
@@ -68,6 +82,7 @@ class MixedBaseCommand(CommandTerm):
         for k in ("hammer", "hammer_advance_mm", *self.lg.metrics):
             self.metrics[k] = torch.zeros(N, device=dev)
         self.trigger = torch.zeros(N, dtype=torch.bool, device=dev)
+        self._base = torch.zeros_like(self.ham.base)
 
     # ------------------------------------------------------------------ the curriculum's knobs
     @property
@@ -110,7 +125,7 @@ class MixedBaseCommand(CommandTerm):
 
     @property
     def base(self) -> torch.Tensor:
-        return self._pick(self.ham.base, self.lg.base)
+        return self._base
 
     @property
     def lookahead(self) -> torch.Tensor:
@@ -176,6 +191,11 @@ class MixedBaseCommand(CommandTerm):
     def _update_command(self, env_ids: torch.Tensor | None) -> None:
         self.ham._update_command(env_ids)
         self.lg._update_command(env_ids)
+        base = self._pick(self.ham.base, self.lg.base)
+        if self.vla is not None:
+            rb = self.rt.rb_q
+            base = self.vla.apply(base, rb.value, self.rt.t, rb.seq >= 0)
+        self._base = base
 
     # ------------------------------------------------------------------ resets
     def _resample_command(self, env_ids: torch.Tensor) -> None:
@@ -197,3 +217,8 @@ class MixedBaseCommand(CommandTerm):
             self.rt.obs.set_task(l_ids, "loadgen")
             if self.rt.nail is not None:
                 self.depth0[l_ids] = self.rt.nail.depth()[l_ids].double()
+        if self.vla is not None:
+            self.vla.reset(env_ids, self.cfg.vla_frac)
+            dr = getattr(self._env, "_tactile_dr", None)
+            if dr is not None:
+                dr.v["vla"][env_ids] = self.vla.active[env_ids].double()

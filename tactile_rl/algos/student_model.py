@@ -2,13 +2,15 @@
 GRU of 192 units, then an action head and auxiliary heads; 0.42 M parameters at 1 kHz, 0.46 M at 250 Hz.
 
 Per 1 kHz sample (a 250 Hz student reads `stack` = 4 of them, newest first, through the same weights): the palm's
-128 taxels as an 8 x 16 image through two convolutions, each finger patch's 32 taxels and 6 features through one
-shared MLP (10 patches), the palm's features, the boards' status, the joint angles and currents; each sample
-projected, then the stacked samples mixed; the policy-rate blocks (last action, the base's hand target and
-lookahead, the forecast, the task, the trigger enable) through a small MLP. Inputs are normalized first (running mean
-and variance, a floor on the scale, clipped, as the teacher's RobustNormalization), which the ONNX export folds in.
+128 taxels as an 8 x 16 image through two convolutions, each finger patch's 32 taxels (and, in observation layout 2,
+its 6 features) through one shared MLP (10 patches), the palm's features (layout 2), the boards' status, the joint
+angles and currents; each sample projected, then the stacked samples mixed; the policy-rate blocks of the layout
+(last action, the base's hand target, feedforward and lookahead, the task, the trigger enable; layout 2 also the
+forecast) through a small MLP. `version` picks the layout (obs_spec.OBS_LAYOUTS). Inputs are normalized first
+(running mean and variance, a floor on the scale, clipped, as the teacher's RobustNormalization), which the ONNX export
+folds in.
 
-Outputs per step: the action's pre-tanh mean (60; the env squashes it; the last layer starts at zero so a fresh
+Outputs per step: the action's pre-tanh mean (40; the env squashes it; the last layer starts at zero so a fresh
 student is the base) and the auxiliary predictions (AUX_LAYOUT): each patch's slip over the next 20 ms (mm), the
 load regime (5 regimes and none, logits), contact (each patch and the tool on the workpiece, logits).
 """
@@ -18,7 +20,17 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from tactile_sim.control.obs_spec import BOARDS, N_JOINTS, OBS_BLOCKS, TAXEL_PATCHES, TAXELS, obs_dim, obs_slices
+from tactile_sim.control.obs_spec import (
+    ACTION_DIM,
+    BOARDS,
+    N_JOINTS,
+    OBS_SPEC_VERSION,
+    TAXEL_PATCHES,
+    TAXELS,
+    obs_blocks,
+    obs_dim,
+    obs_slices,
+)
 
 PALM_GRID = (8, 16)
 FINGER_TAXELS = 32
@@ -26,7 +38,14 @@ N_FINGER_PATCHES = TAXEL_PATCHES - 1
 REGIME_CLASSES = 6  # obs_spec.REGIMES and "none"
 AUX_LAYOUT = {"slip_next_mm": TAXEL_PATCHES, "regime_logits": REGIME_CLASSES, "contact_logits": TAXEL_PATCHES + 1}
 AUX_DIM = sum(AUX_LAYOUT.values())
-SLOW_BLOCKS = tuple(name for name, _, fast, _ in OBS_BLOCKS if not fast)
+
+
+def slow_blocks(version: int = OBS_SPEC_VERSION) -> tuple[str, ...]:
+    """The layout's policy-rate blocks."""
+    return tuple(name for name, _, fast, _ in obs_blocks(version) if not fast)
+
+
+SLOW_BLOCKS = slow_blocks()
 
 
 class RunningNorm(nn.Module):
@@ -64,26 +83,29 @@ class RunningNorm(nn.Module):
 
 class StudentNet(nn.Module):
     def __init__(self, stack: int = 1, hidden: int = 192, fast_dim: int = 160, slow_dim: int = 64,
-                 sample_dim: int = 80):
+                 sample_dim: int = 80, version: int = OBS_SPEC_VERSION):
         super().__init__()
-        self.stack, self.hidden = int(stack), int(hidden)
-        self.obs_dim = obs_dim(self.stack)
-        sl = obs_slices(self.stack)
+        self.stack, self.hidden, self.version = int(stack), int(hidden), int(version)
+        self.obs_dim = obs_dim(self.stack, self.version)
+        sl = obs_slices(self.stack, self.version)
         self._sl = {k: (v.start, v.stop) for k, v in sl.items()}
+        self.features = "patch_features" in sl  # layout 2: the patches' features beside their codes
+        self.slow_blocks = slow_blocks(self.version)
         self.norm = RunningNorm(self.obs_dim)
         self.palm = nn.Sequential(nn.Conv2d(1, 8, 3, padding=1), nn.ELU(), nn.Conv2d(8, 16, 3, stride=2, padding=1),
                                   nn.ELU(), nn.Flatten(), nn.Linear(16 * (PALM_GRID[0] // 2) * (PALM_GRID[1] // 2), 64),
                                   nn.ELU())
-        self.finger = nn.Sequential(nn.Linear(FINGER_TAXELS + 6, 64), nn.ELU(), nn.Linear(64, 32), nn.ELU())
-        fast_in = 64 + N_FINGER_PATCHES * 32 + 6 + 2 * BOARDS + 2 * N_JOINTS
+        nf = 6 if self.features else 0
+        self.finger = nn.Sequential(nn.Linear(FINGER_TAXELS + nf, 64), nn.ELU(), nn.Linear(64, 32), nn.ELU())
+        fast_in = 64 + N_FINGER_PATCHES * 32 + nf + 2 * BOARDS + 2 * N_JOINTS
         self.fast = nn.Sequential(nn.Linear(fast_in, fast_dim), nn.ELU())
         # each sample to sample_dim, then the stack mixed: the size grows only with the stack's last layer
         self.proj = nn.Sequential(nn.Linear(fast_dim, sample_dim), nn.ELU())
         self.mix = nn.Sequential(nn.Linear(sample_dim * self.stack, fast_dim), nn.ELU())
-        slow_in = sum(self._sl[b][1] - self._sl[b][0] for b in SLOW_BLOCKS)
+        slow_in = sum(self._sl[b][1] - self._sl[b][0] for b in self.slow_blocks)
         self.slow = nn.Sequential(nn.Linear(slow_in, slow_dim), nn.ELU())
         self.gru = nn.GRU(fast_dim + slow_dim, self.hidden)
-        self.head = nn.Sequential(nn.Linear(self.hidden, 128), nn.ELU(), nn.Linear(128, 3 * N_JOINTS))
+        self.head = nn.Sequential(nn.Linear(self.hidden, 128), nn.ELU(), nn.Linear(128, ACTION_DIM))
         self.aux = nn.Linear(self.hidden, AUX_DIM)
         with torch.no_grad():
             self.head[-1].weight.zero_()
@@ -99,19 +121,22 @@ class StudentNet(nn.Module):
         lead = x.shape[:-1]
         s = self.stack
         codes = self._block(x, "taxel_codes").reshape(-1, s, TAXELS)  # (M, s, 448), newest sample first
-        feats = self._block(x, "patch_features").reshape(-1, s, TAXEL_PATCHES, 6)
         board = self._block(x, "board_status").reshape(-1, s, 2 * BOARDS)
         q = self._block(x, "hand_q").reshape(-1, s, N_JOINTS)
         cur = self._block(x, "hand_current").reshape(-1, s, N_JOINTS)
         M = codes.shape[0]
         n_palm = PALM_GRID[0] * PALM_GRID[1]
         palm = self.palm(codes[..., :n_palm].reshape(M * s, 1, *PALM_GRID)).reshape(M, s, -1)
-        fing = torch.cat([codes[..., n_palm:].reshape(M, s, N_FINGER_PATCHES, FINGER_TAXELS), feats[:, :, 1:]],
-                         dim=-1)
-        fing = self.finger(fing).reshape(M, s, -1)
-        per = self.fast(torch.cat([palm, fing, feats[:, :, 0], board, q, cur], dim=-1))  # (M, s, fast_dim)
+        fing = codes[..., n_palm:].reshape(M, s, N_FINGER_PATCHES, FINGER_TAXELS)
+        if self.features:
+            feats = self._block(x, "patch_features").reshape(-1, s, TAXEL_PATCHES, 6)
+            fing = self.finger(torch.cat([fing, feats[:, :, 1:]], dim=-1)).reshape(M, s, -1)
+            per = self.fast(torch.cat([palm, fing, feats[:, :, 0], board, q, cur], dim=-1))  # (M, s, fast_dim)
+        else:
+            fing = self.finger(fing).reshape(M, s, -1)
+            per = self.fast(torch.cat([palm, fing, board, q, cur], dim=-1))
         fast = self.mix(self.proj(per).reshape(M, -1))
-        slow = self.slow(torch.cat([self._block(x, b) for b in SLOW_BLOCKS], dim=-1).reshape(M, -1))
+        slow = self.slow(torch.cat([self._block(x, b) for b in self.slow_blocks], dim=-1).reshape(M, -1))
         return torch.cat([fast, slow], dim=-1).reshape(*lead, -1)
 
     # ------------------------------------------------------------------ inference and training

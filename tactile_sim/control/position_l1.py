@@ -55,6 +55,9 @@ class PositionL1:
             self.n_acc = max(1, int(round(sensors[self.acc_name].spec.rate_hz / c.rate)))
         self._d = mujoco.MjData(world.model)  # scratch data for the IK
         self.do_log = log
+        # exec_offset(t) -> (7,) rad added to the joint targets the servos get but not to q_ref, the target the
+        # controller means (vla.demos.DemoPerturbation: the arm pushed off its path, the recorded action unchanged)
+        self.exec_offset = None
         self.reset()
 
     def reset(self) -> None:
@@ -160,6 +163,8 @@ class PositionL1:
         if self.supervisor.frozen or self.supervisor.stale:
             qd = np.zeros_like(qd)
         self.q_ref = q
+        if self.exec_offset is not None:
+            q = q + np.asarray(self.exec_offset(t), float)
         droop = w.gravity_torque(q) / w.servo_kp
         w.set_arm_position(q, qd, droop)
         w.hold_others()

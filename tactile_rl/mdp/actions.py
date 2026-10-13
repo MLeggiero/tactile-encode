@@ -1,15 +1,18 @@
 """Action terms of the tactile residual env.
 
-- `ResidualHandAction` (60-D), once per policy step, as the testbed's ResidualHandL2.tick: a non-finite action vector
-  counts as zero; the actions are squashed by tanh (the exported policy carries the tanh) and become the residual's
-  offsets (obs_spec.offsets); on the drill task the trigger interlock caps the index finger's offsets (only opening
-  while the base disables the trigger; no interlock elsewhere: residual_l2.trigger_indices); if any input is stale
-  (the TaxelScan boards' newest frames older than stale_taxel, the joint readback older than stale_joint) the offsets
+- `ResidualHandAction` (40-D: a set-point offset and a feedforward offset per joint), once per policy step, as the
+  testbed's ResidualHandL2.tick: a non-finite action vector counts as zero; the actions are squashed by tanh (the
+  exported policy carries the tanh) and become the residual's offsets (obs_spec.offsets); on the drill task the
+  trigger interlock caps the index finger's offsets (only opening while the base disables the trigger; no interlock
+  elsewhere: residual_l2.trigger_indices); if any input is stale (the TaxelScan boards' newest frames older than
+  stale_taxel, the joint readback older than stale_joint) the offsets
   decay toward zero with decay_tau instead; the offsets' slew is limited per second over the policy period
   (obs_spec.slew); the result is composed with the base hand command (obs_spec.compose) into the MIT command the host
   sends the WUJI drives. The base: with a base-trajectory command (the hammer tasks), the grip synergy at the
-  library's scalar from the joint angles the host last read (the readback); without one (the hold tasks of milestone
-  1), the synergy at the constant hold scalar World.reset ends with, from the joints' true angles, and no sensors.
+  library's scalar from the joint angles the host last read (the readback), VLA-style in the episodes the base term
+  draws (its runtime's TorchHandTable: the targets the term's observation shows); without one (the hold tasks of
+  milestone 1), the synergy at the constant hold scalar World.reset ends with, from the joints' true angles, and no
+  sensors.
 - `SubstepHooks` (0-D), every physics substep before MuJoCo steps (mjlab runs every action term's apply_actions
   there): the arm's servo targets (the base's 100 Hz stream, or the hover pose + gravity droop), the plant's pre-step
   hook (the tactile runtime's) and one step of the WUJI drives (TorchWujiDrive.step), whose torque the hand actuator
@@ -99,7 +102,7 @@ class ResidualHandAction(ActionTerm):
         self.trigger = torch.zeros(n, dtype=torch.bool, device=dev)
         self._raw = torch.zeros(n, self.action_dim, device=dev)
         self.a_sq = torch.zeros(n, self.action_dim, device=dev)  # the squashed action the policy took (last_action)
-        self.off = torch.zeros(n, 3, N_JOINTS, device=dev)
+        self.off = torch.zeros(n, 2, N_JOINTS, device=dev)
         self.base = torch.zeros(n, 5, N_JOINTS, device=dev)
         self.command = torch.zeros(n, 5, N_JOINTS, device=dev)
         self.n_nonfinite = torch.zeros(n, dtype=torch.long, device=dev)
@@ -119,8 +122,13 @@ class ResidualHandAction(ActionTerm):
         """The base MIT command now (see the module doc)."""
         if self.base_cmd is not None:
             # a drill base also sets the trigger finger's own level (WrapSynergy.levels)
-            return self.synergy.mit_command(self.base_cmd.s_now, self.rt.rb_q.value.float(),
+            rb = self.rt.rb_q
+            base = self.synergy.mit_command(self.base_cmd.s_now, rb.value.float(),
                                             getattr(self.base_cmd, "s_trig_now", None))
+            vla = getattr(self.rt, "vla", None)
+            if vla is not None:  # VLA-style episodes: the targets the base term refreshed at this time
+                base = vla.apply(base, rb.value, self.rt.t, rb.seq >= 0)
+            return base
         q = self._entity.data.joint_pos[:, self.hand_ids]
         return self.synergy.mit_command(self.s, q)
 

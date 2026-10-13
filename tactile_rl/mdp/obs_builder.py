@@ -5,9 +5,11 @@ Every millisecond (`sample`, then `push`) the fast inputs are scaled into one ro
 taxel codes / (levels - 1); per patch the features sum / 100, CoP row / (256 rows) and column / (256 columns) (-1
 while the patch reads no load), area / taxels, peak / 1000, rate / 100; per board the age of its newest frame in 5 ms
 units (1 before any) and the frames received since the previous sample; the hand's encoder angles; the motor currents
-over the rated currents. A ring keeps the newest `stack` rows (newest first). `observe` lays them out by block (each
-fast block holds its `stack` samples, newest first), then the policy-rate blocks (last action, the base's hand target
-now, the lookahead, the forecast, the task, trigger_enable) and zeroes the masked blocks.
+over the rated currents (obs_spec.FAST_SAMPLE: every fast block any layout reads). A ring keeps the newest `stack`
+rows (newest first). `observe` lays out a layout's blocks (obs_spec.OBS_LAYOUTS; the current one by default; each fast
+block holds its `stack` samples, newest first): the fast blocks it reads, then its policy-rate blocks (last action,
+the base's hand target and its feedforward over the rated torques now, the arm's lookahead, the task,
+trigger_enable; layout 2 also the forecast), and zeroes the masked blocks.
 """
 
 from __future__ import annotations
@@ -15,35 +17,48 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from tactile_sim.control.obs_spec import BOARDS, N_JOINTS, OBS_BLOCKS, TASKS, obs_dim, obs_slices
+from tactile_sim.control.obs_spec import (
+    BLOCKS,
+    BOARDS,
+    FAST_SAMPLE,
+    N_JOINTS,
+    OBS_LAYOUTS,
+    OBS_SPEC_VERSION,
+    TASKS,
+    obs_dim,
+    obs_slices,
+)
 
-FAST_BLOCKS = [(name, d) for name, d, fast, _ in OBS_BLOCKS if fast]
+FAST_BLOCKS = [(name, BLOCKS[name][0]) for name in FAST_SAMPLE]
 FAST_DIM = sum(d for _, d in FAST_BLOCKS)
 
 
 class StudentObs:
     def __init__(self, num_envs: int, stack: int, grids: list[tuple[int, int]], levels: int,
-                 mask_blocks: tuple[str, ...] = (), task: str = "hammer", device: str | torch.device = "cpu"):
+                 mask_blocks: tuple[str, ...] = (), task: str = "hammer", device: str | torch.device = "cpu",
+                 tau_rated=None):
         self.n_env, self.stack, self.dev = int(num_envs), int(stack), torch.device(device)
+        # the hand joints' rated torques (the base_hand_tau block's scale; obs_spec.base_tau_obs)
+        self.tau_rated = torch.as_tensor(np.ones(N_JOINTS) if tau_rated is None else np.asarray(tau_rated, float),
+                                         dtype=torch.float32, device=self.dev)
         self.levels = int(levels)
         self.rows = torch.as_tensor([g[0] for g in grids], dtype=torch.float64, device=self.dev)
         self.cols = torch.as_tensor([g[1] for g in grids], dtype=torch.float64, device=self.dev)
         self.P = len(grids)
-        slices = obs_slices(self.stack)
-        unknown = set(mask_blocks) - set(slices)
+        unknown = set(mask_blocks) - set(BLOCKS)
         if unknown:
             raise ValueError(f"unknown observation blocks to mask: {sorted(unknown)}")
         self.mask_blocks = tuple(mask_blocks)
-        self.masked = [slices[b] for b in mask_blocks]
         if task not in TASKS:
             raise ValueError(f"unknown task {task!r}")
         self.task_idx = torch.full((self.n_env,), TASKS.index(task), dtype=torch.long, device=self.dev)
         self._eye = torch.eye(len(TASKS), device=self.dev)
-        self.dim = obs_dim(self.stack)
+        self.dim = obs_dim(self.stack)  # the current layout's
         self.ring = torch.zeros(self.n_env, self.stack, FAST_DIM, device=self.dev)
         self.last_seq = torch.full((self.n_env, BOARDS), -1, dtype=torch.long, device=self.dev)
         edges = np.cumsum([0] + [d for _, d in FAST_BLOCKS])
-        self.fast_slices = [slice(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:], strict=True)]
+        self.fast_slices = {n: slice(int(a), int(b))
+                            for (n, _), a, b in zip(FAST_BLOCKS, edges[:-1], edges[1:], strict=True)}
 
     def set_task(self, env_ids, task: str) -> None:
         """These envs' task (the one-hot block; the C3 mix runs hammer and load-generator episodes side by side)."""
@@ -84,16 +99,41 @@ class StudentObs:
         rolled = torch.cat([row[:, None], self.ring[:, :-1]], dim=1)
         self.ring = rolled if mask is None else torch.where(mask[:, None, None], rolled, self.ring)
 
-    def observe(self, last_action: torch.Tensor, base_q: torch.Tensor, lookahead: torch.Tensor,
-                forecast: torch.Tensor, trigger: torch.Tensor) -> torch.Tensor:
-        """The student's observation (N, obs_dim(stack)), obs_spec order."""
-        parts = [self.ring[:, :, sl].reshape(self.n_env, -1) for sl in self.fast_slices]
-        obs = torch.cat(parts + [last_action.float(), base_q.float(), lookahead.float(), forecast.float(),
-                                 self._eye[self.task_idx], trigger.float().reshape(-1, 1)], dim=1)
-        if obs.shape[1] != self.dim:
-            raise ValueError(f"observation has {obs.shape[1]} entries, the spec {self.dim}")
-        for sl in self.masked:
-            obs[:, sl] = 0.0
+    def observe(self, last_action: torch.Tensor, base: torch.Tensor, lookahead: torch.Tensor,
+                forecast: torch.Tensor, trigger: torch.Tensor, version: int | None = None) -> torch.Tensor:
+        """The student's observation (N, obs_dim(stack, version)), obs_spec order of layout `version` (None: the current
+        one), from the base's MIT command (N, 5, J) and the arm's lookahead (N, 7 x len(LOOKAHEAD))."""
+        v = OBS_SPEC_VERSION if version is None else int(version)
+        names = OBS_LAYOUTS[v]
+        blocks = {}
+        for n in names:
+            if n in self.fast_slices:
+                blocks[n] = self.ring[:, :, self.fast_slices[n]].reshape(self.n_env, -1)
+            elif n == "last_action":
+                blocks[n] = last_action.float()
+            elif n == "base_hand_now":
+                blocks[n] = base[:, 0].float()
+            elif n == "base_hand_tau":
+                blocks[n] = base[:, 4].float() / self.tau_rated
+            elif n == "base_lookahead":
+                blocks[n] = lookahead.float()
+            elif n == "forecast":
+                blocks[n] = forecast.float()
+            elif n == "task":
+                blocks[n] = self._eye[self.task_idx]
+            elif n == "trigger_enable":
+                blocks[n] = trigger.float().reshape(-1, 1)
+            else:
+                raise KeyError(n)
+        obs = torch.cat([blocks[n] for n in names], dim=1)
+        dim = obs_dim(self.stack, v)
+        if obs.shape[1] != dim:
+            raise ValueError(f"observation has {obs.shape[1]} entries, the spec {dim}")
+        if self.mask_blocks:
+            slices = obs_slices(self.stack, v)
+            for b in self.mask_blocks:
+                if b in slices:
+                    obs[:, slices[b]] = 0.0
         return obs
 
 

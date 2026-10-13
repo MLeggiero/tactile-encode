@@ -16,7 +16,7 @@ if not torch.cuda.is_available():
 from tactile_rl.mdp.observations import PRIVILEGED  # noqa: E402
 from tactile_rl.tasks.hammer import hammer_env_cfg, hammer_task_id  # noqa: E402
 from tactile_rl.tasks.hold import RATES, decimation_for  # noqa: E402
-from tactile_sim.control.obs_spec import obs_dim, obs_slices, stack_for  # noqa: E402
+from tactile_sim.control.obs_spec import ACTION_DIM, obs_dim, obs_slices, stack_for  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -59,7 +59,7 @@ def test_observation_groups_and_a_zero_residual(library, rate):
         assert torch.equal(obs["teacher"][:, :obs_dim(stack)], obs["student"])
         term = env.action_manager.get_term("residual")
         assert term.map.trig.numel() == 0  # the trigger interlock is the drill task's only (trigger_indices)
-        zero = torch.zeros(4, 60, device=env.device)
+        zero = torch.zeros(4, ACTION_DIM, device=env.device)
         for _ in range(int(0.03 * rate)):
             obs, *_ = env.step(zero)
             assert torch.equal(term.command, term.base) and torch.equal(term.drive.host, term.command)
@@ -89,20 +89,21 @@ def test_unperturbed_base_outputs_are_the_librarys(library):
 
     cfg = hammer_env_cfg(1000.0, library=library, num_envs=4, perturb=False, assign="sequential")
     cfg.commands["base"].forecast = replace(ForecastCfg(), mask_prob=0.0, dropout=0.0, bias_sigma=0.0,
-                                            jitter_sigma=0.0, class_confusion=0.0, freq_err=0.0, amp_err=0.0)
+                                            jitter_sigma=0.0, horizon_err=0.0, class_confusion=0.0, freq_err=0.0,
+                                            amp_err=0.0)
     env = ManagerBasedRlEnv(cfg, device="cuda:0")
     try:
         env.reset()
         cmd = env.command_manager.get_term("base")
         lib = cmd.lib
-        zero = torch.zeros(4, 60, device=env.device)
+        zero = torch.zeros(4, ACTION_DIM, device=env.device)
         seen_forecast = False
         for k in range(1, 1000):
             env.step(zero)
             i = torch.full((4,), k, device=env.device)
             e = cmd.entry
             assert torch.equal(cmd.s_now, lib.s[e, i])
-            arm = cmd.lookahead.reshape(4, 3, 27)[:, :, 20:]
+            arm = cmd.lookahead.reshape(4, 3, 7)
             assert torch.allclose(arm, lib.look[e, i], atol=1e-6)
             fc = cmd.forecast
             on = fc[:, 0] == 1
@@ -130,7 +131,7 @@ def test_the_base_grips_at_the_episodes_hold_level(library):
         env.reset()
         cmd = env.command_manager.get_term("base")
         act = env.action_manager.get_term("residual")
-        zero = torch.zeros(4, 60, device=env.device)
+        zero = torch.zeros(4, ACTION_DIM, device=env.device)
         for k in range(1, 50):
             env.step(zero)
             i = torch.full((4,), k, device=env.device)
@@ -147,7 +148,7 @@ def test_stale_inputs_decay_the_residual(library):
         env.reset()
         term = env.action_manager.get_term("residual")
         rt = env._tactile_rt
-        push = torch.full((2, 60), 0.5, device=env.device)
+        push = torch.full((2, ACTION_DIM), 0.5, device=env.device)
         for _ in range(30):
             env.step(push)
         built = term.off.abs().max().item()
@@ -190,7 +191,7 @@ def test_nail_plant_writes_its_fields_per_world(library):
         env.reset()
         rt = env._tactile_rt
         nail = rt.nail
-        zero = torch.zeros(3, 60, device=env.device)
+        zero = torch.zeros(3, ACTION_DIM, device=env.device)
         seen_contact = torch.zeros(3, dtype=torch.bool, device=env.device)
         depths = []  # the nail's depth after the last two substeps: a substep's pre-step reads the previous one's
 
@@ -232,12 +233,12 @@ def test_a_perturbed_base(library):
         want = (lib.arm_q[e, 0] + lib.arm_droop[e, 0] + cmd.kd_kp * cmd.amp[:, None] * cmd.warp[:, None] *
                 lib.arm_qd[e, 0]).float()
         assert torch.allclose(first, want, atol=1e-6)  # the base holds its first sample through the delay
-        zero = torch.zeros(64, 60, device=env.device)
+        zero = torch.zeros(64, ACTION_DIM, device=env.device)
         for _ in range(200):
             obs, *_ = env.step(zero)
         for g in obs.values():
             assert torch.isfinite(g).all()
-        look = cmd.lookahead.reshape(64, 3, 27)[:, :, 20:]
+        look = cmd.lookahead.reshape(64, 3, 7)
         assert torch.isfinite(look).all() and float(look.abs().max()) > 0
     finally:
         env.close()

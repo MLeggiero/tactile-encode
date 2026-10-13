@@ -7,8 +7,10 @@ Every physics step, for every hand joint:
         -> driver servo law (every physics step, or at servo_rate): tau* = Kp (q* - q) + Kd (qd* - qd) + tau_ff
         -> current command i* = tau* / Kt, clamped to the effort limit (the SDK's current ceiling, at most the
            driver's peak current) and derated linearly with winding temperature from t_warn (full) to t_max
-           (derate_floor), where the driver faults and stays off until reset
-        -> current loop (first order, tau_i) -> joint torque Kt i
+           (derate_floor), where the driver faults and stays off until reset; Kt is the nominal torque constant
+           (tau_rated / i_rated) the SDK converts with
+        -> current loop (first order, tau_i) -> joint torque kt_scale Kt i: the motor's true torque constant
+           (WujiDriveCfg.kt_scale; the host reads back the current, not the torque)
         -> winding temperature: C_th dT/dt = i^2 R_wind - (T - T_amb) / R_th
 
 Until its first command arrives a drive applies no torque. What the host reads back (encoder angle, current) goes
@@ -53,7 +55,8 @@ class WujiMitDrive:
         self.group = gi
         self.tau_rated = np.asarray(tau_rated, dtype=float)
         self.i_rated = np.asarray(cfg.i_rated, dtype=float)[gi]
-        self.kt = self.tau_rated / self.i_rated  # Nm/A
+        self.kt = self.tau_rated / self.i_rated  # Nm/A, nominal: the SDK's torque -> current map
+        self.kt_true = self.kt * float(cfg.kt_scale)  # Nm/A, the motors' (current -> torque)
         self.kp_nom = np.asarray(cfg.kp_nom, dtype=float)[gi]
         self.period = 1.0 / cfg.sdk_rate
         unknown = set(cfg.sdk_lpf_fields) - set(HandCommand.FIELDS)
@@ -136,9 +139,9 @@ class WujiMitDrive:
         i_cmd = np.clip(self.tau_star / self.kt, -lim, lim)
         self.i = self.i + self.i_a * (i_cmd - self.i)
         self.T = self.T + self.dt / c.c_th * (self.i**2 * c.r_wind - (self.T - c.t_amb) / c.r_th)
-        return self.kt * self.i
+        return self.kt_true * self.i
 
     @property
     def torque(self) -> np.ndarray:
         """Joint torque the drives apply now (Nm)."""
-        return self.kt * self.i
+        return self.kt_true * self.i

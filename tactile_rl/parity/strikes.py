@@ -85,7 +85,7 @@ def gpu_replay(library: str, entries: list[int], device: str = "cuda:0", rate: f
 
         rt.recorders.append(rec)
         hih[:, 0] = rt.hammer_in_hand()
-        zero = torch.zeros(n, 60, device=dev)
+        zero = torch.zeros(n, env.action_manager.total_action_dim, device=dev)
         t0 = time.time()
         for s in range(steps):
             env.step(zero)

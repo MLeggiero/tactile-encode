@@ -45,13 +45,16 @@ from tactile_sim.config import SimConfig
 from tactile_sim.control.interface import HandCommand
 from tactile_sim.control.obs_spec import LOOKAHEAD, N_ARM, N_JOINTS, REGIMES
 
-LIBRARY_VERSION = 1
+LIBRARY_VERSION = 2  # 2: kt_scale among the episode parameters (the Kt error is the motors')
+# the library's episodes draw their randomization from seeds LIBRARY_SEED0 up; the CPU validator's experiments
+# (residual_experiment) evaluate on seeds below it, so no evaluation episode reuses a training draw
+LIBRARY_SEED0 = 1_000_000
 PHASES = ("approach", "windup", "swing", "post", "settle", "done")
 # per-episode randomization, flat: what tactile_rl applies per env (see episode_params)
 PARAM_KEYS = ("head_mass", "hand_friction", "hand_solref_tc", "nail_r0", "nail_r_per_m", "vdr_zeta0", "face_tc",
               "cmd_latency", "sdk_lpf_hz", "tau_i", "effort_limit_ratio", "t_amb", "ts_gain_mismatch", "ts_offset_lsb",
               "ts_f_half", "ts_bandwidth", "ts_skin_depth", "ts_drop_prob", "ts_bridge_lo", "ts_bridge_hi",
-              "servo_p_mult", "noise_scale")
+              "servo_p_mult", "noise_scale", "kt_scale")
 DRIVE_STATE = ("t", "host", "host_valid", "filt", "filt_valid", "line_t", "line_cmd", "line_head", "line_n",
                "last_arrival", "active", "next_sdk", "next_servo", "tau_star", "i", "T", "fault", "n_sdk")
 MAX_INFLIGHT = 8  # commands in transit kept in a drive state (tactile_rl's TorchWujiDrive line length)
@@ -88,7 +91,8 @@ def episode_params(cfg: SimConfig, draw: dict | None) -> dict[str, float]:
             "ts_bandwidth": s.ts_bandwidth, "ts_skin_depth": s.ts_skin_depth, "ts_drop_prob": s.ts_drop_prob,
             "ts_bridge_lo": s.ts_bridge_latency[0], "ts_bridge_hi": s.ts_bridge_latency[1],
             "servo_p_mult": cfg.arm.servo_p_mult,
-            "noise_scale": float(draw["_runtime"]["sensor_noise_scale"]) if draw else 1.0}
+            "noise_scale": float(draw["_runtime"]["sensor_noise_scale"]) if draw else 1.0,
+            "kt_scale": float(w.kt_scale)}
 
 
 def base_signature(cfg: SimConfig) -> dict:
@@ -334,7 +338,8 @@ def _record_job(args) -> dict:
     return record_episode(*args)
 
 
-def export_library(out: str | Path, episodes: int = 20, strikes: int = 10, workers: int = 14, seed0: int = 0,
+def export_library(out: str | Path, episodes: int = 20, strikes: int = 10, workers: int = 14,
+                   seed0: int = LIBRARY_SEED0,
                    rate: float = 1000.0, timestep: float = 0.00025, randomize: bool = True) -> dict[str, np.ndarray]:
     """Record `episodes` episodes of `strikes` swings (seeds seed0 ...) in parallel and write the library."""
     from tactile_sim.assets.fetch_hands import hand_xml
@@ -535,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--episodes", type=int, default=20)
     ap.add_argument("--strikes", type=int, default=10)
     ap.add_argument("--workers", type=int, default=14)
-    ap.add_argument("--seed0", type=int, default=0)
+    ap.add_argument("--seed0", type=int, default=LIBRARY_SEED0)
     ap.add_argument("--no-randomize", action="store_true")
     ap.add_argument("--entries", default=None, help="a:b range of entries to replay")
     ap.add_argument("--validator", action="store_true", help="replay at the 8 kHz validator physics (noslip 5)")

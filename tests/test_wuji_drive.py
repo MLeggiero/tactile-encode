@@ -118,6 +118,21 @@ def test_current_is_clamped_at_the_effort_limit_and_lags_the_command():
     assert out[k][0] == pytest.approx(0.1 * (1 - np.exp(-(k + 1) * DT / tau_i)), rel=1e-9)
 
 
+def test_a_torque_constant_error_reaches_the_joint_not_the_current():
+    """WujiDriveCfg.kt_scale: the SDK converts with the nominal Kt, the motors deliver kt_scale x the torque per amp;
+    the current (what the host reads back) and its ceiling do not move."""
+    ref, err = drive(), drive(kt_scale=1.2)
+    for d in (ref, err):
+        d.set_host_command(cmd(tau=0.1))
+    a, b = run(ref, 0.0, 4)[-1], run(err, 0.0, 4)[-1]
+    assert b == pytest.approx(1.2 * a, rel=1e-12) and err.i == pytest.approx(ref.i, rel=1e-12)
+    ref, err = drive(), drive(kt_scale=0.85)
+    for d in (ref, err):
+        d.set_host_command(cmd(tau=100.0))  # at the current ceiling
+    a, b = run(ref, 0.0, 2)[-1], run(err, 0.0, 2)[-1]
+    assert a == pytest.approx(TAU) and b == pytest.approx(0.85 * TAU) and err.i == pytest.approx(ref.i)
+
+
 def test_winding_heats_derates_and_faults():
     c = dict(effort_limit_ratio=2.0, i_peak_ratio=2.0, c_th=0.05, r_th=50.0, t_warn=40.0, t_max=60.0)
     dr = drive(**c)

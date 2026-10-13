@@ -40,6 +40,9 @@ APPROACH_TIME = 0.05  # s, the swing's hold before the first windup (its default
 DRILL_T_MAX = 10.0  # s: a screw that has not seated by then is a failed demo
 VIDEO_KEY = "observation.images.ego_view"
 START = 0.02  # s: recording starts after the grip loop and the arm's first commands have run
+# DemoPerturbation: per joint scale of a push (rad; shoulders and elbow, then the wrist) and its duration (s)
+PUSH_SCALE = np.array([0.06, 0.06, 0.06, 0.06, 0.10, 0.10, 0.10])
+PUSH_TIME = (0.30, 0.55)
 
 
 def ffmpeg_exe() -> str:
@@ -150,6 +153,54 @@ class DemoRecorder:
         self.k += 1
 
 
+class DemoPerturbation:
+    """DART-style recoveries for the demos: now and then the arm's servos get a smooth push (a raised-cosine bump in
+    joint space, PUSH_SCALE x U(0.4, 1) along a random direction, PUSH_TIME long) that the scripted base does not
+    know about, while the recorded action stays the base's own target (PositionL1.q_ref, through exec_offset). The
+    demos then show the arm off its path and the expert's target pulling it back.
+
+    Pushes start only where the task can take them: for the hammer, at the start of a strike's settle, ending before
+    the next downswing (settle + windup); for the drill, in the approach, ending before the bit meets the screw. Each
+    such window starts a push with probability `p`."""
+
+    def __init__(self, task: str, base, p: float, rng: np.random.Generator):
+        self.task, self.base, self.p, self.rng = task, base, p, rng
+        self.bumps: list[tuple[float, float, np.ndarray]] = []
+        self._window: object = None  # the window the last decision was made in
+
+    def _window_now(self, t: float) -> tuple[object, float] | None:
+        """(an id for the current window, the time left in it) if pushes may start now."""
+        if self.task == "hammer":
+            sw = self.base.swing
+            c = self.base.tb.cfg.swing
+            if sw.phase == "settle":
+                left = c.settle_time - (t - sw.phase_t0) + c.windup_time + 0.05
+                return (sw.k, sw.phase_t0), left - 0.05
+            return None
+        feed = self.base.feed
+        if feed.phase == "approach":
+            left = self.base.tb.cfg.drill.approach_time - (t - feed.t_phase)
+            return ("approach", feed.t_phase), left - 0.05
+        return None
+
+    def __call__(self, t: float) -> np.ndarray:
+        w = self._window_now(t)
+        if w is not None and w[0] != self._window:
+            self._window = w[0]
+            if self.rng.uniform() < self.p and w[1] >= PUSH_TIME[0]:
+                d = self.rng.normal(size=len(PUSH_SCALE))
+                dq = PUSH_SCALE * self.rng.uniform(0.4, 1.0) * d / np.linalg.norm(d)
+                self.bumps.append((t, float(min(self.rng.uniform(*PUSH_TIME), w[1])), dq))
+        off = np.zeros(len(PUSH_SCALE))
+        for t0, dur, dq in self.bumps:
+            if t0 <= t <= t0 + dur:
+                off += dq * 0.5 * (1.0 - np.cos(2.0 * np.pi * (t - t0) / dur))
+        return off
+
+    def to_list(self) -> list[dict]:
+        return [{"t0": t0, "duration": dur, "dq": dq.tolist()} for t0, dur, dq in self.bumps]
+
+
 @dataclass(frozen=True)
 class DemoJob:
     task: str
@@ -158,6 +209,7 @@ class DemoJob:
     out: str
     fast: bool = False
     hammer: str = "ycb"  # config.HAMMERS: the real YCB hammer, or "light" (datasets v1-v3)
+    perturb: float = 0.0  # DemoPerturbation's chance of a push per window (0: none, datasets up to v4)
 
     @property
     def stem(self) -> Path:
@@ -234,6 +286,10 @@ def run_demo(job: DemoJob) -> dict:
     tb, base, run = EPISODES[job.task](cfg, job.seed)
     tb.sensors.set_noise_scale(draw["dr"]["_runtime"]["sensor_noise_scale"])
     tb.residual.base_fn = base
+    pert = None
+    if job.perturb > 0:
+        pert = DemoPerturbation(job.task, base, job.perturb, np.random.default_rng(30_000 + job.seed))
+        tb.l1.exec_offset = pert
     cam = EgoCamera(tb.world.model, cfg)
     visual = cam.randomize(np.random.default_rng(20_000 + job.seed)) if cfg.vla.visual_dr else None
     table = HandTable.for_hand(tb.world.hand, cfg)
@@ -251,7 +307,8 @@ def run_demo(job: DemoJob) -> dict:
     meta = {"task": job.task, "instruction": INSTRUCTIONS[job.task], "seed": job.seed, "fps": v.fps, **outcome,
             "depth": float(tb.world.plant.depth), "draw": draw, "visual": visual, "hand_table": table.to_dict(),
             "hand_joints": list(tb.world.hand.joint_names),
-            "head_pose": list(cfg.arm.head_pose), "config": cfg.to_dict(), "wall_s": time.time() - t_wall}
+            "head_pose": list(cfg.arm.head_pose), "config": cfg.to_dict(), "wall_s": time.time() - t_wall,
+            "perturb": job.perturb, "pushes": pert.to_list() if pert is not None else []}
     mp4.with_suffix(".mp4.part").rename(mp4)
     tmp = npz.with_suffix(".part.npz")
     np.savez(tmp, state=np.asarray(rec.state, np.float32), action=np.asarray(rec.action, np.float32),
@@ -323,10 +380,13 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--hammer", default="ycb", choices=("ycb", "light"),
                     help="the hammer task's hammer: the real YCB claw hammer, or the light primitive one "
                          "(datasets v1-v3)")
+    ap.add_argument("--perturb", type=float, default=0.0,
+                    help="DemoPerturbation: chance of a recovery push per window (0: none)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
     out = a.out or f"runs/vla_demos/{a.task}"
-    jobs = [DemoJob(a.task, i, a.seed0 + i, out, a.fast, a.hammer) for i in range(a.first, a.first + a.episodes)]
+    jobs = [DemoJob(a.task, i, a.seed0 + i, out, a.fast, a.hammer, a.perturb)
+            for i in range(a.first, a.first + a.episodes)]
     run_all(jobs, a.workers)
 
 

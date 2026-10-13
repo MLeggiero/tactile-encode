@@ -40,7 +40,8 @@ def look_point(cfg: SimConfig, rise: float = 0.10) -> np.ndarray:
 
 
 def aim_head(cfg: SimConfig, rise: float = 0.10) -> tuple[float, float, float]:
-    """Head joints (pitch head_j1, yaw head_j2; head_j3 level) that centre look_point(cfg, rise) in the ego image."""
+    """Head joints (pitch head_j1, yaw head_j2; head_j3 level) that put look_point(cfg, rise) in the ego image's
+    middle column, VlaCfg.aim_v of the way down."""
     return _aim_head(cfg.to_json(), rise)
 
 
@@ -67,7 +68,7 @@ def _aim_head(cfg_json: str, rise: float) -> tuple[float, float, float]:
     hi = np.array([m.joint(j).range[1] for j in HEAD_JOINTS[:2]])
     target = look_point(cfg, rise)
     w, h = cfg.vla.cam_width, cfg.vla.cam_height
-    centre = np.array([w / 2, h / 2])
+    centre = np.array([w / 2, cfg.vla.aim_v * h])
 
     def err(x):
         d.qpos[adr] = [x[0], x[1], 0.0]

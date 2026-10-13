@@ -13,17 +13,20 @@ torch = pytest.importorskip("torch")
 
 from tactile_rl.plants.loadgen import TorchLoadGen  # noqa: E402
 from tactile_sim.config import LoadGenCfg  # noqa: E402
-from tactile_sim.control.obs_spec import REGIMES  # noqa: E402
-from tactile_sim.model.loadgen import KINDS, forecast_truth, sample_schedule, wrench  # noqa: E402
+from tactile_sim.control.obs_spec import ACTION_DIM, REGIMES  # noqa: E402
+from tactile_sim.model.loadgen import KINDS, forecast_truth, kind_probs, sample_schedule, wrench  # noqa: E402
 
 needs_gpu = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+# the residual's training loads (loadgen_command.wide_loads without a band)
+WIDE = dict(p_kind=(0.30, 0.21, 0.13, 0.13, 0.08, 0.15), cone_deg=60.0, bind_axes="xyz")
 
 
 # ---------------------------------------------------------------------------------------------- the load generator
 
 
-def test_batched_schedules_match_the_cpu_sampler_statistically():
-    cfg = LoadGenCfg()
+@pytest.mark.parametrize("over", [{}, WIDE], ids=["default", "wide"])
+def test_batched_schedules_match_the_cpu_sampler_statistically(over):
+    cfg = LoadGenCfg(**over)
     n, t_end = 4000, 3.0
     g = TorchLoadGen(cfg, n, "cpu", slots=24, generator=torch.Generator().manual_seed(0))
     g.sample(torch.arange(n), t_end, t_start=0.2)
@@ -33,16 +36,34 @@ def test_batched_schedules_match_the_cpu_sampler_statistically():
     n_cpu = np.mean([len(s) for s in cpu])
     n_gpu = float(g.valid.sum(1).double().mean())
     assert abs(n_gpu - n_cpu) / n_cpu < 0.05
-    kinds_cpu = np.bincount([KINDS.index(e.kind) for s in cpu for e in s], minlength=5) / sum(len(s) for s in cpu)
+    kinds_cpu = np.bincount([KINDS.index(e.kind) for s in cpu for e in s], minlength=6) / sum(len(s) for s in cpu)
     kv = g.kind[g.valid]
-    kinds_gpu = torch.bincount(kv, minlength=5).double().numpy() / len(kv)
+    kinds_gpu = torch.bincount(kv, minlength=6).double().numpy() / len(kv)
     assert np.abs(kinds_gpu - kinds_cpu).max() < 0.02
     for k, name in enumerate(KINDS):  # per-kind amplitude and duration means
+        if kind_probs(cfg)[k] == 0:
+            assert not bool((g.valid & (g.kind == k)).any())
+            continue
         a_cpu = np.mean([e.amp for s in cpu for e in s if e.kind == name])
         d_cpu = np.mean([e.duration for s in cpu for e in s if e.kind == name])
         sel = g.valid & (g.kind == k)
         assert abs(float(g.amp[sel].mean()) - a_cpu) / a_cpu < 0.05
         assert abs(float(g.dur[sel].mean()) - d_cpu) / d_cpu < 0.05
+    # torques' axes: +x unless the kind takes any axis (each of the six signed axes alike)
+    for k, name in enumerate(KINDS):
+        sel = g.valid & g.torque & (g.kind == k)
+        if not bool(sel.any()):
+            continue
+        ax = g.tax[sel].numpy()
+        assert np.all(np.abs(ax).sum(1) == 1.0)
+        if name == "torque_impulse" or (name == "bind" and cfg.bind_axes == "xyz"):
+            share = np.array([np.mean(ax[:, i] == s) for i in range(3) for s in (1.0, -1.0)])
+            assert share == pytest.approx(np.full(6, 1 / 6), abs=0.04)
+        else:
+            assert np.all(ax[:, 0] == 1.0)
+    imp = g.valid & (g.kind == 0)
+    off = torch.rad2deg(torch.acos(g.dir[imp][:, 2].clamp(-1, 1)))
+    assert float(off.max()) <= cfg.cone_deg + 1e-6 and float(off.max()) > 0.9 * cfg.cone_deg
     # events never overlap within an episode and stay inside it
     t0, end = g.t0.clone(), g.end()
     start = torch.where((g.kind == 2) & (g.sign > 0), t0 - g.dur, t0)
@@ -51,8 +72,9 @@ def test_batched_schedules_match_the_cpu_sampler_statistically():
     assert bool((t0[g.valid] >= 0.2).all()) and bool((t0[g.valid] < t_end + 1.0).all())
 
 
-def test_wrench_and_forecast_truth_match_the_cpu_schedule():
-    cfg = LoadGenCfg()
+@pytest.mark.parametrize("over", [{}, WIDE], ids=["default", "wide"])
+def test_wrench_and_forecast_truth_match_the_cpu_schedule(over):
+    cfg = LoadGenCfg(**over)
     rng = np.random.default_rng(3)
     scheds = [sample_schedule(cfg, rng, 4.0) for _ in range(8)]
     g = TorchLoadGen(cfg, len(scheds), "cpu", slots=24)
@@ -93,11 +115,12 @@ def test_zero_initialized_gru_actor_and_the_entropy_schedule():
     from tactile_rl.tasks.rl_cfg import discount, teacher_runner_cfg
 
     obs = TensorDict({"teacher": torch.randn(5, 888)}, batch_size=[5])
-    m = ZeroInitRNNModel(obs, {"actor": ["teacher"]}, "actor", 60, hidden_dims=(256, 128), obs_normalization=True,
+    m = ZeroInitRNNModel(obs, {"actor": ["teacher"]}, "actor", ACTION_DIM, hidden_dims=(256, 128),
+                         obs_normalization=True,
                          rnn_type="gru", rnn_hidden_dim=256,
                          distribution_cfg={"class_name": "GaussianDistribution", "init_std": 0.3})
     assert m.is_recurrent and isinstance(m.rnn.rnn, torch.nn.GRU) and m.rnn.rnn.hidden_size == 256
-    assert torch.equal(m(obs), torch.zeros(5, 60))  # a = 0: the base
+    assert torch.equal(m(obs), torch.zeros(5, ACTION_DIM))  # a = 0: the base
     # the normalizer: a feature that never moved is not blown up when it does
     from tactile_rl.algos.models import RobustNormalization
 
@@ -228,8 +251,8 @@ def test_reset_randomization_writes_per_world_parameters():
         hm = dr.v["head_mass"]
         assert float(hm.min()) >= c.head_mass[0] and float(hm.max()) <= c.head_mass[1]
         mass = m.body_mass[:, dr.hammer_bid]
-        # the hammer body's mass is the head's plus the handle's (0.10 kg)
-        torch.testing.assert_close(mass.double(), hm + 0.10, atol=2e-3, rtol=0)
+        # the hammer body's mass is the head's plus the handle's (the YCB's 0.215 kg, the light hammer's 0.10)
+        torch.testing.assert_close(mass.double(), hm + dr.parts.cfg.hammer.handle_mass, atol=2e-3, rtol=0)
         drive = hand_drive(env.scene["robot"])
         lat = drive.cmd_latency
         assert float(lat.min()) >= c.cmd_latency[0] - 1e-9 and float(lat.max()) <= c.cmd_latency[1] + 1e-9
@@ -239,7 +262,9 @@ def test_reset_randomization_writes_per_world_parameters():
         fc = env.command_manager.get_term("base").forecaster
         assert float(fc.latency.min()) >= 0.05 - 1e-9 and float(fc.latency.max()) <= 0.25 + 1e-9
         assert float(fc.mask_prob.mean()) == pytest.approx(0.25)
-        assert dr.param_vector().shape == (64, 33)
+        from tactile_rl.mdp.randomization import PARAM_DIM
+
+        assert dr.param_vector().shape == (64, PARAM_DIM) == (64, 34)
     finally:
         env.close()
 
@@ -333,13 +358,13 @@ def test_c3_mixes_hammer_and_load_generator_episodes(library):
         cmd = env.command_manager.get_term("base")
         ham = cmd.is_hammer
         assert 0.4 < float(ham.float().mean()) < 0.95  # 70 % hammer
-        assert cmd.hold_level == (0.3, 0.8) and env._tactile_dr.scale == 1.0
+        assert cmd.hold_level == (0.3, 1.2) and env._tactile_dr.scale == 1.0
         # the task block says which, a hammer env has no loads, its hold level is drawn
         task = obs["student"][:, obs_slices(1)["task"]]
         assert torch.equal(task.argmax(1), torch.where(ham, TASKS.index("hammer"), TASKS.index("loadgen")))
         assert not bool(cmd.lg.gen.valid[ham].any())
         lv = torch.where(ham, cmd.ham.level, cmd.lg.level)
-        assert float(lv.min()) >= 0.3 - 1e-6 and float(lv.max()) <= 0.8 + 1e-6
+        assert float(lv.min()) >= 0.3 - 1e-6 and float(lv.max()) <= 1.2 + 1e-6
         act = env.action_manager.get_term("residual")
         zero = torch.zeros(64, env.action_manager.total_action_dim, device=env.device)
         total = torch.zeros(64, device=env.device)
@@ -353,6 +378,71 @@ def test_c3_mixes_hammer_and_load_generator_episodes(library):
             assert not bool((env.termination_manager.get_term("base_done") & ~ham_now).any())
             assert bool(torch.isfinite(obs["teacher"]).all())
         assert bool(torch.isfinite(total).all())
+    finally:
+        env.close()
+
+
+@needs_gpu
+@pytest.mark.gpu
+def test_c3_training_distribution(library):
+    """The training distribution of 2026-10-13: every episode's hand/tool friction drawn from TRAIN_HAND_FRICTION (a
+    hammer episode's too, over its library entry's), VLA-style hand bases in a share of the episodes (the observation
+    shows the base the residual composes on; the table's gains; targets held between the 30 Hz grid's points), the
+    wide loads, and the stage cap per env count."""
+    pytest.importorskip("mjlab")
+    from mjlab.envs import ManagerBasedRlEnv
+
+    from tactile_rl.mdp.randomization import PARAM_DIM
+    from tactile_rl.tasks.residual import CAP_REF_ENVS, STAGE_CAP_S, TRAIN_HAND_FRICTION, residual_env_cfg
+    from tactile_sim.control.obs_spec import obs_slices
+
+    N = 64
+    env = ManagerBasedRlEnv(residual_env_cfg(1000.0, library=library, num_envs=N, start_stage=3, max_stage=3,
+                                             vla_frac=0.5, nan_policy="error"), device="cuda:0")
+    try:
+        obs, _ = env.reset()
+        cmd = env.command_manager.get_term("base")
+        dr, rt, m = env._tactile_dr, env._tactile_rt, env.sim.model
+        cur = env.curriculum_manager._term_cfgs[0].func
+        assert cur.stage_cap_s == pytest.approx(STAGE_CAP_S * N / CAP_REF_ENVS)
+        mu = m.pair_friction[:, dr.skin_pairs, 0]
+        lo, hi = TRAIN_HAND_FRICTION
+        assert float(mu.min()) >= lo - 1e-6 and float(mu.max()) <= hi + 1e-6
+        assert bool((mu == mu[:, :1]).all())  # one friction per env, on every skin pair
+        torch.testing.assert_close(mu[:, 0].double(), dr.v["hand_friction"], atol=1e-6, rtol=0)
+        ham = cmd.is_hammer
+        assert float(mu[ham, 0].min()) < 1.1  # below the library's range: the hammer's own draw
+        torch.testing.assert_close(cmd.ham.mu[ham], dr.v["hand_friction"][ham])
+        vla = rt.vla
+        assert 0.2 < float(vla.active.float().mean()) < 0.8
+        pv = dr.param_vector()
+        assert pv.shape == (N, PARAM_DIM) and torch.equal(pv[:, -1].bool(), vla.active)
+        g = cmd.lg.gen.cfg
+        assert g.cone_deg == 60.0 and g.bind_axes == "xyz" and len(g.p_kind) == 6
+        act = env.action_manager.get_term("residual")
+        zero = torch.zeros(N, env.action_manager.total_action_dim, device=env.device)
+        sl = obs_slices(1)
+        refreshes = torch.zeros(N, device=env.device)
+        reset = torch.zeros(N, dtype=torch.bool, device=env.device)
+        prev_q, prev_next, prev_t = None, None, None
+        for _ in range(100):
+            obs, *_ = env.step(zero)
+            base = act.base_command()  # what the residual composes on at the next step
+            torch.testing.assert_close(obs["student"][:, sl["base_hand_now"]], base[:, 0])
+            on = vla.active & (rt.rb_q.seq >= 0)
+            assert torch.equal(base[on][:, 2], vla.kp.expand(int(on.sum()), -1))
+            assert torch.equal(base[on][:, 4], vla.tau.expand(int(on.sum()), -1))
+            if prev_q is not None:
+                t = rt.t
+                same_ep = t > prev_t  # (an env that reset restarted its clock)
+                held = on & same_ep & (t < prev_next - 1e-9)
+                assert torch.equal(base[held][:, 0], prev_q[held])
+                refreshes += (on & same_ep & (vla.next_t != prev_next)).float()  # (a refresh may keep the value)
+                reset |= ~same_ep
+            prev_q, prev_next, prev_t = base[:, 0].clone(), vla.next_t.clone(), rt.t.clone()
+        # VLA-style for the whole 100 ms: after the first reading's refresh (at 1 ms, not counted) the grid's points
+        whole = vla.active & ~reset
+        assert bool(whole.any()) and float(refreshes[whole].max()) <= 3.0 and float(refreshes[whole].min()) >= 2.0
     finally:
         env.close()
 
@@ -380,6 +470,6 @@ def test_the_curriculum_reaches_c3(library):
         cur.win = torch.tensor([100.0, 0.0, 200.0, 150.0], dtype=torch.float64, device=env.device)
         cur._evaluate()
         assert cur.stage == 3 and cur.capped == 1 and cur.history[-1]["how"] == "capped"
-        assert cmd.hammer_frac == pytest.approx(0.7) and cmd.hold_level == (0.3, 0.8)
+        assert cmd.hammer_frac == pytest.approx(0.7) and cmd.hold_level == (0.3, 1.2)
     finally:
         env.close()
