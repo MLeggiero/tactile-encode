@@ -4,8 +4,8 @@
 - Tactile-Hammer-VegaWuji-{rate}Hz (the base library's swings; the GRU teacher);
 - Tactile-LoadGen-VegaWuji-{rate}Hz (the hold under synthetic loads, curriculum C0-C2; the GRU teacher);
 - Tactile-Residual-VegaWuji-{rate}Hz (the curriculum C0-C3: the load generator, then 70 % hammer episodes; the GRU
-  teacher at desired KL 0.02), also at SLOW_RATES (~30.08 and ~59.70 Hz: Tactile-Residual-VegaWuji-30.0752Hz and
-  -59.7015Hz) for the decision-rate sweep.
+  teacher at desired KL 0.02), also at SLOW_RATES (33 and 17 ms steps: Tactile-Residual-VegaWuji-30.303Hz and
+  -58.8235Hz) for the decision-rate sweep.
 
 The scene export (and, for the hammer tasks, loading the base library) runs when an env is built, not here."""
 
@@ -41,5 +41,6 @@ for _rate in (*RATES, *SLOW_RATES):
                             play_env_cfg=residual_env_cfg(_rate, num_envs=16, start_stage=3, obs_groups=TEACHER_GROUPS),
                             rl_cfg=teacher_runner_cfg(_rate, "residual", desired_kl=0.02))
 
-__all__ = ["RATES", "SLOW_RATES", "hammer_env_cfg", "hammer_task_id", "hold_env_cfg", "loadgen_env_cfg", "loadgen_task_id",
-           "ppo_runner_cfg", "residual_env_cfg", "residual_task_id", "task_id", "teacher_runner_cfg"]
+__all__ = ["RATES", "SLOW_RATES", "hammer_env_cfg", "hammer_task_id", "hold_env_cfg", "loadgen_env_cfg",
+           "loadgen_task_id", "ppo_runner_cfg", "residual_env_cfg", "residual_task_id", "task_id",
+           "teacher_runner_cfg"]

@@ -64,9 +64,9 @@ STAGE_CAP_S = 120_000.0  # simulated s (all envs) a gated stage may take, at CAP
 CAP_REF_ENVS = 4096
 TRAIN_HAND_FRICTION = (0.2, 2.0)  # the hand/tool friction drawn per episode (the CPU's ResidualDRCfg: 1.1-2.0)
 VLA_FRAC = 0.4  # the share of episodes whose hand base is VLA-style
-# decision rates below the plan's four, on whole 0.25 ms physics steps (and so on the validator's 0.125 ms ones):
-# ~30.08 Hz (133 steps) and ~59.70 Hz (67 steps), a VLA's chunk rates
-SLOW_RATES = (1.0 / (133 * 0.00025), 1.0 / (67 * 0.00025))
+# decision rates below the plan's four, a VLA's chunk rates: a policy step must last whole milliseconds (the
+# runtime's 1 kHz sample clock), so ~30 Hz is 33 ms (30.30 Hz) and ~60 Hz is 17 ms (58.82 Hz)
+SLOW_RATES = (1.0 / 0.033, 1.0 / 0.017)
 
 
 def _hammer(env):

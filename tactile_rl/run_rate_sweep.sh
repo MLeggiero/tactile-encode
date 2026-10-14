@@ -9,7 +9,7 @@
 #
 # then $OUT/RATES_DONE. Every step leaves a marker; a rerun skips finished steps (and finished validator episodes) and
 # resumes a teacher from its furthest checkpoint and a student from its last. Rates are label=hz pairs; ~30 and ~60 Hz
-# are SLOW_RATES' whole-step rates (tactile_rl.tasks.residual).
+# are SLOW_RATES' whole-millisecond rates, 33 and 17 ms (tactile_rl.tasks.residual).
 # Settings: environment variables or $RATES_ENV (VAR=value lines).
 set -u
 
@@ -26,7 +26,7 @@ PY_RL=${PY_RL:-$HOME/tactile-encode/.venv-rl/bin/python}
 PY_VAL=${PY_VAL:-$HOME/tactile-encode/.venv/bin/python}
 WORKERS=${WORKERS:-10}
 STAGE=${STAGE:-Efric}
-RATES=${RATES:-"30=30.075187969924812 100=100.0 500=500.0 60=59.70149253731343"}
+RATES=${RATES:-"30=30.3030303030303 100=100.0 500=500.0 60=58.8235294117647"}
 TEACHER_ITERS=${TEACHER_ITERS:-1000}
 TEACHER_ENVS=${TEACHER_ENVS:-2048}
 STUDENT_ITERS=${STUDENT_ITERS:-300}
