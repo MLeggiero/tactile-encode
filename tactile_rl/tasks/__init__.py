@@ -4,7 +4,8 @@
 - Tactile-Hammer-VegaWuji-{rate}Hz (the base library's swings; the GRU teacher);
 - Tactile-LoadGen-VegaWuji-{rate}Hz (the hold under synthetic loads, curriculum C0-C2; the GRU teacher);
 - Tactile-Residual-VegaWuji-{rate}Hz (the curriculum C0-C3: the load generator, then 70 % hammer episodes; the GRU
-  teacher at desired KL 0.02).
+  teacher at desired KL 0.02), also at SLOW_RATES (~30.08 and ~59.70 Hz: Tactile-Residual-VegaWuji-30.0752Hz and
+  -59.7015Hz) for the decision-rate sweep.
 
 The scene export (and, for the hammer tasks, loading the base library) runs when an env is built, not here."""
 
@@ -14,7 +15,7 @@ from tactile_rl.tasks.common import TEACHER_GROUPS
 from tactile_rl.tasks.hammer import hammer_env_cfg, hammer_task_id
 from tactile_rl.tasks.hold import RATES, hold_env_cfg, task_id
 from tactile_rl.tasks.loadgen import loadgen_env_cfg, loadgen_task_id
-from tactile_rl.tasks.residual import residual_env_cfg, residual_task_id
+from tactile_rl.tasks.residual import SLOW_RATES, residual_env_cfg, residual_task_id
 from tactile_rl.tasks.rl_cfg import ppo_runner_cfg, teacher_runner_cfg
 
 # the registered hammer and load-generator tasks train the teacher: their envs return the teacher's group only
@@ -33,11 +34,12 @@ for _rate in RATES:
                             play_env_cfg=loadgen_env_cfg(_rate, num_envs=16, start_stage=2, curriculum=False,
                                                          obs_groups=TEACHER_GROUPS),
                             rl_cfg=teacher_runner_cfg(_rate, "loadgen"))
+for _rate in (*RATES, *SLOW_RATES):
     if residual_task_id(_rate) not in list_tasks():
         register_mjlab_task(task_id=residual_task_id(_rate),
                             env_cfg=residual_env_cfg(_rate, obs_groups=TEACHER_GROUPS),
                             play_env_cfg=residual_env_cfg(_rate, num_envs=16, start_stage=3, obs_groups=TEACHER_GROUPS),
                             rl_cfg=teacher_runner_cfg(_rate, "residual", desired_kl=0.02))
 
-__all__ = ["RATES", "hammer_env_cfg", "hammer_task_id", "hold_env_cfg", "loadgen_env_cfg", "loadgen_task_id",
+__all__ = ["RATES", "SLOW_RATES", "hammer_env_cfg", "hammer_task_id", "hold_env_cfg", "loadgen_env_cfg", "loadgen_task_id",
            "ppo_runner_cfg", "residual_env_cfg", "residual_task_id", "task_id", "teacher_runner_cfg"]

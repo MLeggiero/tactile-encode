@@ -64,6 +64,9 @@ STAGE_CAP_S = 120_000.0  # simulated s (all envs) a gated stage may take, at CAP
 CAP_REF_ENVS = 4096
 TRAIN_HAND_FRICTION = (0.2, 2.0)  # the hand/tool friction drawn per episode (the CPU's ResidualDRCfg: 1.1-2.0)
 VLA_FRAC = 0.4  # the share of episodes whose hand base is VLA-style
+# decision rates below the plan's four, on whole 0.25 ms physics steps (and so on the validator's 0.125 ms ones):
+# ~30.08 Hz (133 steps) and ~59.70 Hz (67 steps), a VLA's chunk rates
+SLOW_RATES = (1.0 / (133 * 0.00025), 1.0 / (67 * 0.00025))
 
 
 def _hammer(env):
@@ -164,4 +167,5 @@ def residual_task_id(rate: float) -> str:
     return f"Tactile-Residual-VegaWuji-{rate:g}Hz"
 
 
-__all__ = ["CAP_REF_ENVS", "TRAIN_HAND_FRICTION", "VLA_FRAC", "residual_env_cfg", "residual_task_id"]
+__all__ = ["CAP_REF_ENVS", "SLOW_RATES", "TRAIN_HAND_FRICTION", "VLA_FRAC", "residual_env_cfg",
+           "residual_task_id"]
