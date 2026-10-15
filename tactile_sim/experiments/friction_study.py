@@ -2,7 +2,7 @@
 base at two hold levels, the zero residual and each student; outcomes and the residual's own activity.
 
     python -m tactile_sim.experiments.friction_study --root runs/friction/e --out runs/friction/reports [--stage Efric] \
-        [--pair s250:s250v3 ...]
+        [--pair s250:s250v3 ...] [--exclude s250,s250v3a]
 
 Writes report.md (the tables below) and four figures:
 - outcomes.png: per friction level and hold, lost strikes, net slip, slip path, nail advance and I2t per policy
@@ -87,6 +87,19 @@ def mean_ci(x, n: int = 4000, seed: int = 0) -> tuple[float, float, float]:
         return float(x[0]), float("nan"), float("nan")
     b = x[np.random.default_rng(seed).integers(0, len(x), (n, len(x)))].mean(axis=1)
     return float(x.mean()), float(np.percentile(b, 2.5)), float(np.percentile(b, 97.5))
+
+
+# each policy keeps its colour whichever others a figure shows (the zero residual dark grey; the rate sweep's
+# students after the friction study's); a policy not named here takes the next free one of FALLBACK_COLORS
+POLICY_COLORS = {"zero": "#444444", "s1k": "#1f77b4", "s250": "#d62728", "s250v3": "#2ca02c", "s250v3a": "#9467bd",
+                 "s30v3": "#ff7f0e", "s60v3": "#8c564b", "s100v3": "#e377c2", "s500v3": "#17becf",
+                 "s1kv3": "#bcbd22"}
+FALLBACK_COLORS = ("#7f7f7f", "#393b79", "#637939", "#8c6d31", "#843c39", "#7b4173")
+
+
+def policy_colors(pols: list[str]) -> dict[str, str]:
+    free = iter(c for c in FALLBACK_COLORS * (1 + len(pols) // len(FALLBACK_COLORS)) if c not in POLICY_COLORS.values())
+    return {p: POLICY_COLORS.get(p) or next(free) for p in pols}
 
 
 def policies_of(data) -> list[str]:
@@ -225,8 +238,7 @@ def figures(data, out: Path) -> list[str]:
     import matplotlib.pyplot as plt
 
     pols, mus, holds = policies_of(data), sorted({k[2] for k in data}), sorted({k[1] for k in data}, reverse=True)
-    colors = {p: c for p, c in zip(pols, ["#444444", "#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e"],
-                                    strict=False)}
+    colors = policy_colors(pols)
     written = []
     # outcomes
     keys = (("lost", "lost per strike (%)", 100.0), ("slip_rot_deg", "net slip per strike (deg)", 1.0),
@@ -357,8 +369,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--stage", default="Efric")
     ap.add_argument("--no-figures", action="store_true")
     ap.add_argument("--pair", action="append", default=[], help="A:B, B paired against A (besides the zero residual)")
+    ap.add_argument("--exclude", default="", help="policies to leave out of the tables and figures, comma-separated")
     a = ap.parse_args(argv)
     data = collect(Path(a.root), a.stage)
+    drop = {x.strip() for x in a.exclude.split(",") if x.strip()}
+    data = {k: v for k, v in data.items() if k[0] not in drop}
     out = Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     pairs = tuple(tuple(p.split(":", 1)) for p in a.pair)
