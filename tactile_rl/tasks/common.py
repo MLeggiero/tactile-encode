@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from mjlab.envs.mdp import time_out
 from mjlab.managers.event_manager import EventTermCfg
 from mjlab.managers.observation_manager import ObservationGroupCfg, ObservationTermCfg
@@ -78,8 +80,11 @@ def _all_groups(task: str, student_version: int = OBS_SPEC_VERSION) -> dict[str,
 
 def reward_terms(task: str) -> dict[str, RewardTermCfg]:
     """The plan's rewards for `task`, substep-integrated (tactile_rl.mdp.rewards): the effort penalties, the task's
-    terms, the drop's and the thermal fault's penalties."""
-    out = {k: RewardTermCfg(func=getattr(R, k), weight=w) for k, w in R.WEIGHTS_EFFORT.items()}
+    terms, the drop's and the thermal fault's penalties. $TACTILE_EFFORT_SCALE (default 1) multiplies the I^2 t
+    penalty's weight: the heating-price experiment (heating dearer against slip)."""
+    effort = float(os.environ.get("TACTILE_EFFORT_SCALE", "1"))
+    out = {k: RewardTermCfg(func=getattr(R, k), weight=w * (effort if k == "effort_i2t" else 1.0))
+           for k, w in R.WEIGHTS_EFFORT.items()}
     weights = R.WEIGHTS_HAMMER if task in ("hammer", "mixed") else R.WEIGHTS_LOADGEN
     out.update({k: RewardTermCfg(func=getattr(R, k), weight=w) for k, w in weights.items()})
     out["drop"] = RewardTermCfg(func=R.termination_penalty, weight=R.DROP_PENALTY, params={"term": "tool_dropped"})
