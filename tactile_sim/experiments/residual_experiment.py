@@ -231,6 +231,7 @@ class Recorder:
         # per millisecond: time, the tool's pose in the hand, the 30 Hz low-passed pose's step (mm, deg), the drives'
         # mean (i / i_rated)^2 (the GPU runtime's I^2 t integrand)
         self.ms_t, self.ms_pose, self.ms_path, self.ms_i2 = [], [], [], []
+        self.ms_ia: list[float] = []  # the hand's total current draw: |i| summed over its motors (A)
         self._lp = None
         self._a = 1.0 - math.exp(-2.0 * math.pi * SLIP_LPF_HZ * 1e-3)
 
@@ -252,6 +253,7 @@ class Recorder:
         self.ms_pose.append(x)
         self.ms_path.append(step)
         self.ms_i2.append(float(np.mean(r * r)) * 1e-3)
+        self.ms_ia.append(float(np.sum(np.abs(d.i))))
         res = self.tb.residual
         if res is not None:
             sp, jp = res.spec, res.jp
@@ -276,12 +278,14 @@ class Recorder:
         return float(1e3 * (t[k0 + ks[0]] - t_contact)) if len(ks) else float("nan")
 
     def window(self, t0: float, t1: float) -> dict:
-        """From the swing's start t0 to the strike's end t1: the slip path (mm, deg), I^2 t (mean over the joints),
-        and whether the tool moved 2 cm or 30 degrees from its pose at t0 (the GPU env's lost grasp)."""
+        """From the swing's start t0 to the strike's end t1: the slip path (mm, deg), I^2 t (mean over the joints), the
+        hand's mean total current draw (A), and whether the tool moved 2 cm or 30 degrees from its pose at t0 (the GPU
+        env's lost grasp)."""
         t = np.asarray(self.ms_t)
         m = (t > t0) & (t <= t1)
         if not m.any() or not np.isfinite(t1):
-            return {"path_mm": float("nan"), "path_deg": float("nan"), "i2t_w": float("nan"), "lost_w": False}
+            return {"path_mm": float("nan"), "path_deg": float("nan"), "i2t_w": float("nan"), "iabs_w": float("nan"),
+                    "lost_w": False}
         path = np.asarray(self.ms_path)[m]
         pose = np.asarray(self.ms_pose)
         k0 = max(int(np.searchsorted(t, t0)) - 1, 0)
@@ -289,6 +293,7 @@ class Recorder:
         dr = np.degrees(np.linalg.norm(pose[m, 3:] - pose[k0, 3:], axis=1))
         return {"path_mm": float(path[:, 0].sum()), "path_deg": float(path[:, 1].sum()),
                 "i2t_w": float(np.asarray(self.ms_i2)[m].sum()),
+                "iabs_w": float(np.asarray(self.ms_ia)[m].mean()),
                 "lost_w": bool((dp > LOST_MM).any() or (dr > LOST_DEG).any())}
 
 

@@ -34,7 +34,7 @@ from tactile_sim.experiments.residual_experiment import (
 )
 
 STRIKE_KEYS = (("slip_trans_mm", "net slip mm"), ("slip_rot_deg", "net slip deg"), ("path_deg", "slip path deg"),
-               ("advance_mm", "advance mm"), ("i2t_w", "I2t"))
+               ("advance_mm", "advance mm"), ("i2t_w", "I2t"), ("iabs_w", "current A"))
 
 
 def parse(cond: str) -> tuple[str, float, float]:

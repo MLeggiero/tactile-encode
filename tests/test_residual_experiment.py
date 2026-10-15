@@ -178,3 +178,17 @@ def test_rerun_check_compares_payloads_wall_time_aside():
     b = {**a, "summary": {**a["summary"], "slip": 1.75}, "strikes": [{"t": 0.1}]}
     n, diff, worst = compare(a, b)
     assert diff == ["/strikes[1]/t", "/summary/slip"] and worst == 0.25
+
+
+def test_a_strike_window_reports_the_hands_mean_total_current():
+    from tactile_sim.experiments.residual_experiment import Recorder
+
+    rec = object.__new__(Recorder)  # the window needs only the per-millisecond logs
+    rec.ms_t = [0.001 * k for k in range(1, 11)]
+    rec.ms_pose = [np.zeros(6)] * 10
+    rec.ms_path = [(0.0, 0.0)] * 10
+    rec.ms_i2 = [0.0] * 10
+    rec.ms_ia = [float(k) for k in range(1, 11)]  # A
+    w = rec.window(0.0045, 0.0085)  # milliseconds 5-8
+    assert w["iabs_w"] == pytest.approx(6.5)
+    assert np.isnan(rec.window(0.0045, float("nan"))["iabs_w"])
