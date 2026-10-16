@@ -54,7 +54,7 @@ def test_batched_dyno_matches_the_cpu_dyno():
         c = dy.clutch_test(p)
         assert ct["mean_torque"][k] == pytest.approx(c["mean_torque"], rel=1e-12)
         assert ct["click_rate"][k] == pytest.approx(c["click_rate"], rel=1e-12)
-    assert nl[0] * 60 / (2 * np.pi) == pytest.approx(424.0, abs=5.0)  # the 12 V drill's low gear, ~425 rpm
+    assert nl[0] * 60 / (2 * np.pi) == pytest.approx(450.0, abs=5.0)  # the DF333D's low gear, 450 rpm
 
 
 @pytest.mark.slow

@@ -21,7 +21,10 @@ The tool's ray geoms are analytic:
   hull, as MuJoCo makes them from a vertex cloud): the ray's entry into the intersection of the hull's face planes
   (Cyrus-Beck), which is where mj_rayMesh meets the hull's first triangle (its exit, for a ray starting inside), in a
   Warp kernel that only casts the rays a refresh needs and skips a hull whose bounding sphere the ray misses (the
-  testbed's cut).
+  testbed's cut);
+- a mix (the DF333D: its grip's two capsules and the housing's, the trigger a box): the capsules as the light hammer's,
+  a box as the hull of its six faces in the same kernel (where mju_rayGeom's ray_box meets the same face), the nearest
+  hit over the geoms the patch pairs with.
 
 Contacts come from MuJoCo Warp's pooled contact buffer: valid hand/tool contacts are sorted by (world, patch) into at
 most `max_per_patch` slots per patch (overflow is counted, never silently dropped), without a host synchronization.
@@ -123,6 +126,12 @@ def hull_planes(m: mujoco.MjModel, geom_id: int, tol: float = 1e-9) -> np.ndarra
     return planes
 
 
+def box_planes(m: mujoco.MjModel, geom_id: int) -> np.ndarray:
+    """A box geom's six face planes (n, h) in its frame (n . x <= h inside), float64 (6, 4)."""
+    size = np.asarray(m.geom_size[geom_id], float)
+    return np.array([[*(s * np.eye(3)[i]), size[i]] for i in range(3) for s in (1.0, -1.0)])
+
+
 _KERNEL = None
 
 
@@ -196,7 +205,7 @@ class TaxelLoadModel:
         """`parts`: tactile_sim.sim.training_parts.TrainingParts (its `skin`, `tool_geoms`); `mj_model`: the compiled
         model the contacts come from, its names prefixed by `prefix` (mjlab: "robot/"). `max_per_patch` contact slots
         per patch; None: 4 against a capsule handle (MuJoCo Warp makes one contact per convex pair, a distal pad has
-        two hulls), 12 against hull slices (a palm along the handle touches several)."""
+        two hulls), 12 against hull slices or a mix of geoms (a palm along the handle touches several)."""
         s = parts.cfg.sensors
         self.dev = dev = torch.device(device)
         self.n_env = int(num_envs)
@@ -227,27 +236,35 @@ class TaxelLoadModel:
             raise ValueError("no skin patch has contact pairs with the tool")
         self.ray_geoms = torch.as_tensor(ray_geoms, dtype=torch.long, device=dev)
         self.G = G = len(ray_geoms)
-        types = {int(m.geom_type[g]) for g in ray_geoms}
-        if types == {int(mujoco.mjtGeom.mjGEOM_CAPSULE)} and G == 1:
+        types = [int(m.geom_type[g]) for g in ray_geoms]
+        CAPSULE, BOX, MESH = (int(t) for t in (mujoco.mjtGeom.mjGEOM_CAPSULE, mujoco.mjtGeom.mjGEOM_BOX,
+                                               mujoco.mjtGeom.mjGEOM_MESH))
+        if set(types) - {CAPSULE, BOX, MESH}:
+            raise NotImplementedError(f"the GPU taxel load model ray-casts capsules, boxes and convex mesh hulls, not "
+                                      f"geom types {sorted(set(types))}")
+        self.caps: list[tuple[int, float, float]] = []  # the mixed mode's capsules: (ray index, radius, half length)
+        if types == [CAPSULE]:
             self.mode = "capsule"
             h = ray_geoms[0]
             self.radius = torch.tensor(float(m.geom_size[h, 0]), device=dev)
             self.half = torch.tensor(float(m.geom_size[h, 1]), device=dev)
-        elif types == {int(mujoco.mjtGeom.mjGEOM_MESH)}:
-            self.mode = "hull"
-            pl = [hull_planes(m, g) for g in ray_geoms]
-            Fm = max(len(p) for p in pl)
-            planes = np.zeros((G, Fm, 4))
+        else:
+            # "hull": convex meshes only; "mixed": capsules too (cast in torch) and boxes (hulls in the kernel)
+            self.mode = "hull" if set(types) == {MESH} else "mixed"
+            flat = [i for i, ty in enumerate(types) if ty != CAPSULE]
+            self.caps = [(i, float(m.geom_size[ray_geoms[i], 0]), float(m.geom_size[ray_geoms[i], 1]))
+                         for i, ty in enumerate(types) if ty == CAPSULE]
+            pl = [hull_planes(m, ray_geoms[i]) if types[i] == MESH else box_planes(m, ray_geoms[i]) for i in flat]
+            Fm = max((len(p) for p in pl), default=1)
+            planes = np.zeros((len(pl), Fm, 4))
             planes[..., 3] = 1.0  # padding: 0 . x <= 1, never binding
             for i, p in enumerate(pl):
                 planes[i, :len(p)] = p
+            self.flat = torch.as_tensor(flat, dtype=torch.long, device=dev)  # the kernel's geoms among the ray geoms
             self.planes = torch.as_tensor(planes, dtype=torch.float32, device=dev)
             self.nplanes = torch.as_tensor([len(p) for p in pl], dtype=torch.int32, device=dev)
-            self.rbound = torch.as_tensor([float(m.geom_rbound[g]) for g in ray_geoms], dtype=torch.float32,
+            self.rbound = torch.as_tensor([float(m.geom_rbound[ray_geoms[i]]) for i in flat], dtype=torch.float32,
                                           device=dev)
-        else:
-            raise NotImplementedError(f"the GPU taxel load model ray-casts one capsule or convex mesh hulls, not geom "
-                                      f"types {sorted(types)}")
         self.K = int(max_per_patch) if max_per_patch else (4 if self.mode == "capsule" else 12)
         ray_index = -np.ones(m.ngeom, dtype=np.int64)
         ray_index[ray_geoms] = np.arange(G)
@@ -264,6 +281,9 @@ class TaxelLoadModel:
         self.T = int(sum(n_of))
         self.patch = torch.as_tensor(np.repeat(np.arange(P), n_of), device=dev)
         self.patch_i32 = self.patch.to(torch.int32)
+        if self.mode != "capsule":
+            self.flat_tool = self.patch_tool[:, self.flat].contiguous()  # the pairs with the kernel's geoms (P, Gf)
+            self.cap_pair = [self.patch_tool[self.patch, i].bool() for i, _, _ in self.caps]  # per capsule (T,)
         f32 = dict(dtype=torch.float32, device=dev)
         self.pos_b = torch.as_tensor(np.concatenate([p.taxel_pos for p in skin]), **f32)
         self.nrm_b = torch.as_tensor(np.concatenate([p.taxel_normal for p in skin]), **f32)
@@ -378,10 +398,12 @@ class TaxelLoadModel:
             due = due | (geoms != self.shape_geoms).any(-1)
         refresh = loaded & due
         r_t = refresh[:, self.patch]
-        if self.mode == "hull":
+        if self.mode == "capsule":
+            gap = None
+        elif len(self.flat):
             gap = self._hull_gaps(org, ray, near & r_t, gpos, gmat)
         else:
-            gap = None
+            gap = torch.full_like(org[..., 0], math.inf)
         shape_fn = self._shape_c if self.compiled else self._shape
         new_shape, new_fallback = shape_fn(near, org, ray, gpos, gmat, self.skin_depth, gap)
         self.shape = torch.where(r_t, new_shape, self.shape)
@@ -433,7 +455,8 @@ class TaxelLoadModel:
 
     def _shape(self, near, org, ray, gpos, gmat, skin_depth, gap):
         """A fresh foundation shape (with whether it found the tool) from the taxels near the contacts and their gaps
-        to the tool (`gap` (N, T), inf where no ray hits; None: the capsule's rays, cast here)."""
+        to the tool (`gap` (N, T), inf where no ray hits; None: the capsule's rays, cast here; a mix's capsules are
+        cast here too)."""
         N, P, dev = near.shape[0], self.P, near.device
         if gap is None:
             cpos, cmat = gpos[:, 0], gmat[:, 0]
@@ -441,6 +464,8 @@ class TaxelLoadModel:
             lvec = torch.einsum("nji,ntj->nti", cmat, ray)
             hit = ray_capsule_local(lpnt, lvec, self.radius, self.half)
             gap = torch.where(hit >= 0, hit - BACK, torch.full_like(hit, float("inf")))
+        elif self.caps:
+            gap = torch.minimum(gap, self._capsule_gaps(org, ray, gpos, gmat))
         new_shape = torch.zeros(N, self.T, dtype=torch.float32, device=dev)
         new_fallback = torch.zeros(N, P, dtype=torch.bool, device=dev)
         for (ks, idx), _ in zip(self.groups, self.group_taxels, strict=True):
@@ -455,18 +480,32 @@ class TaxelLoadModel:
             new_fallback[:, ks] = sw <= 0
         return new_shape, new_fallback
 
+    def _capsule_gaps(self, org, ray, gpos, gmat) -> torch.Tensor:
+        """(N, T) gaps from every taxel's ray to the capsules of a mix its patch pairs with (inf: no hit); `gpos` /
+        `gmat` are all the ray geoms' poses."""
+        gap = torch.full(org.shape[:2], math.inf, dtype=org.dtype, device=org.device)
+        for (i, radius, half), pair in zip(self.caps, self.cap_pair, strict=True):
+            lpnt = torch.einsum("nji,ntj->nti", gmat[:, i], org - gpos[:, i, None])
+            lvec = torch.einsum("nji,ntj->nti", gmat[:, i], ray)
+            hit = ray_capsule_local(lpnt, lvec, radius, half)
+            gap = torch.where((hit >= 0) & pair, torch.minimum(gap, hit - BACK), gap)
+        return gap
+
     def _hull_gaps(self, org, ray, need, gpos, gmat) -> torch.Tensor:
-        """(N, T) gaps from each needed taxel's ray to the hulls its patch pairs with (inf: none needed or no hit)."""
+        """(N, T) gaps from each needed taxel's ray to the hulls (and a mix's boxes) its patch pairs with (inf: none
+        needed or no hit); `gpos` / `gmat` are all the ray geoms' poses."""
         import warp as wp
 
         kernel = _hull_kernel()  # built (and Warp initialized) once
         N, T = self.n_env, self.T
+        if self.mode == "mixed":
+            gpos, gmat = gpos[:, self.flat], gmat[:, self.flat]
         out = torch.empty(N, T, dtype=torch.float32, device=self.dev)
         args = [wp.from_torch(org.contiguous(), dtype=wp.vec3), wp.from_torch(ray.contiguous(), dtype=wp.vec3),
                 wp.from_torch(need.to(torch.int32).contiguous()), wp.from_torch(self.patch_i32),
-                wp.from_torch(self.patch_tool), wp.from_torch(gpos.contiguous(), dtype=wp.vec3),
+                wp.from_torch(self.flat_tool), wp.from_torch(gpos.contiguous(), dtype=wp.vec3),
                 wp.from_torch(gmat.contiguous(), dtype=wp.mat33), wp.from_torch(self.planes, dtype=wp.vec4),
-                wp.from_torch(self.nplanes), wp.from_torch(self.rbound), float(BACK), int(self.G)]
+                wp.from_torch(self.nplanes), wp.from_torch(self.rbound), float(BACK), int(len(self.flat))]
         kw = {}
         if self.dev.type == "cuda":  # on torch's stream, ordered with the tensors it reads and writes
             ts = torch.cuda.current_stream(self.dev)

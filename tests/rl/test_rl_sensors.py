@@ -508,3 +508,79 @@ def test_hull_rays_match_mujocos_ray_mesh():
                 assert gap[i, j] == pytest.approx(best, abs=2e-5), (i, j)
                 hits += 1
     assert hits > 50  # the palm and the pads see the handle
+
+
+def test_mixed_rays_match_mujocos_ray_geom():
+    """The DF333D's grip (two capsules), housing (a capsule) and trigger (a box): each taxel's ray against the geoms its
+    patch pairs with, the capsules in torch and the box in the Warp kernel, against mju_rayGeom on the CPU model at the
+    settled hold and with the drill shifted and turned about it, the trigger pulled; the taxels' normals, then rays
+    aimed at the trigger (so the box's faces are hit)."""
+    import mujoco
+
+    from tactile_rl.sensors.taxel_load import BACK, TaxelLoadModel
+    from tactile_sim.sim.training_parts import residual_training_config, training_parts
+
+    parts = training_parts(residual_training_config(task="drill"))
+    m = mujoco.MjModel.from_xml_string(parts.xml)
+    d = mujoco.MjData(m)
+    a = int(m.joint(parts.hammer_joint).qposadr[0])
+    tj = m.joint(parts.drill.trigger_joint)
+    rng = np.random.default_rng(0)
+    states = [parts.qpos_settled.copy()]
+    for _ in range(3):
+        q = parts.qpos_settled.copy()
+        q[a:a + 3] += rng.normal(0, 0.004, 3)
+        dq = rng.normal(0, 0.1, 3)
+        quat = np.zeros(4)
+        mujoco.mju_axisAngle2Quat(quat, dq / np.linalg.norm(dq), np.linalg.norm(dq))
+        mujoco.mju_mulQuat(q[a + 3:a + 7], quat, q[a + 3:a + 7].copy())
+        q[int(tj.qposadr[0])] = rng.uniform(*tj.range)
+        states.append(q)
+    n = len(states)
+    lm = TaxelLoadModel(parts, m, n, DEV)
+    ray_ids = lm.ray_geoms.cpu().numpy()
+    types = m.geom_type[ray_ids]
+    CAPSULE, BOX = int(mujoco.mjtGeom.mjGEOM_CAPSULE), int(mujoco.mjtGeom.mjGEOM_BOX)
+    assert lm.mode == "mixed" and set(types) == {CAPSULE, BOX} and len(lm.caps) >= 2
+    box = int(np.flatnonzero(types == BOX)[0])
+    xp, xm, gp, gm = [], [], [], []
+    for q in states:
+        d.qpos[:] = q
+        mujoco.mj_forward(m, d)
+        xp.append(d.xpos[lm.body.cpu().numpy()].copy())
+        xm.append(d.xmat[lm.body.cpu().numpy()].reshape(-1, 3, 3).copy())
+        gp.append(d.geom_xpos[ray_ids].copy())
+        gm.append(d.geom_xmat[ray_ids].reshape(-1, 3, 3).copy())
+
+    def t(x):
+        return torch.as_tensor(np.asarray(x), dtype=torch.float32, device=DEV)
+
+    P, K = lm.P, lm.K
+    _, _, _, _, _, org, ray = lm._contacts(torch.zeros(n, P, K, device=DEV), torch.zeros(n, P, K, 3, device=DEV),
+                                           torch.zeros(n, P, K, dtype=torch.bool, device=DEV), t(xp), t(xm))
+    aim = t(gp)[:, box, None] - org
+    need = torch.ones(n, lm.T, dtype=torch.bool, device=DEV)
+    patch, pt = lm.patch.cpu().numpy(), lm.patch_tool.cpu().numpy()
+    hits = {"normal": 0, "aimed": 0}
+    for kind, dirs in (("normal", ray), ("aimed", aim / aim.norm(dim=-1, keepdim=True))):
+        gap = torch.minimum(lm._hull_gaps(org, dirs, need, t(gp), t(gm)),
+                            lm._capsule_gaps(org, dirs, t(gp), t(gm))).cpu().numpy()
+        o, v = org.cpu().numpy().astype(float), dirs.cpu().numpy().astype(float)
+        for i, q in enumerate(states):
+            d.qpos[:] = q
+            mujoco.mj_forward(m, d)
+            for j in range(lm.T):
+                if kind == "aimed" and not pt[patch[j], box]:
+                    continue
+                best = np.inf
+                for gi in np.flatnonzero(pt[patch[j]]):
+                    g = int(ray_ids[gi])
+                    h = mujoco.mju_rayGeom(d.geom_xpos[g], d.geom_xmat[g], m.geom_size[g], o[i, j],
+                                           v[i, j] / np.linalg.norm(v[i, j]), int(m.geom_type[g]))
+                    if h >= 0:
+                        best = min(best, h - BACK)
+                if np.isfinite(best) or np.isfinite(gap[i, j]):
+                    assert np.isfinite(best) and np.isfinite(gap[i, j]), (kind, i, j, best, gap[i, j])
+                    assert gap[i, j] == pytest.approx(best, abs=2e-5), (kind, i, j)
+                    hits[kind] += 1
+    assert hits["normal"] > 50 and hits["aimed"] > 50, hits  # the pads see the grip; the trigger finger's its box

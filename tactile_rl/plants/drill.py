@@ -58,6 +58,9 @@ class TorchDrillLaws:
         self.bit_local = torch.as_tensor([0.0, -1.0, 0.0] if dc.form == "pistol" else [0.0, 0.0, 1.0], **f64)
         c0 = torch.tensor([1.0, 0.0, 0.0], **f64)
         self.cross_local = (c0, torch.linalg.cross(self.bit_local, c0))
+        from tactile_sim.model.tools import pistol_bit_out
+
+        self.bit_out = pistol_bit_out(dc)  # the chuck, where the motor's unbalance acts, behind the tip (DrillPlant's)
         self.drive = TorchDrivetrain(DrivetrainParams.from_cfg(dc), self.n_env, self.dev)
         for k in PLANT_PARAMS:
             setattr(self, k, torch.full((self.n_env,), float(getattr(dc, k)), **f64))
@@ -276,7 +279,7 @@ class TorchDrillLaws:
         gr = self.drive.gear_ratio
         phi = (gr * self.drive.theta)[:, None]
         f_unb = (dc.vib_unbalance * (gr * self.drive.w) ** 2)[:, None]
-        chuck = tip - a_t * dc.bit_len
+        chuck = tip - a_t * self.bit_out
         F_unb = f_unb * (torch.cos(phi) * e1 + torch.sin(phi) * e2)
         # the housing: the load's reaction through the gears plus the internals' angular momentum change and its turn
         self.tau_hand = self.drive.tau_housing
