@@ -159,14 +159,27 @@ tool.
     teeth resist the stroke with $\mu_c F_n$ plus drag; on the cutting stroke the kerf deepens at
     $\dot c = F_n|v_s|/k_c(c)$, with a knot raising $k_c$ over a depth range; once the kerf is started its walls push
     the blade back beyond the side clearance, adding binding friction.
-  \item \emph{Driver and screw.} A motor $\tau_m = \tau_s(u - \omega/\omega_0)$ with a soft-start trigger and an
-    electronic brake drives the spindle through a clutch that slips above its setting with a detent ripple. The
-    screw advances one pitch per turn against a torque growing with depth and rising steeply once the head is flush.
-    The bit cams out of the recess when the torque exceeds $c_{\mathrm{cam}}F_a(1-\theta/\theta_{\max})$ ($F_a$ the
-    axial push, $\theta$ the bit's misalignment), with a kick and ripple; repeated cam-outs strip the recess. The
-    housing carries the output torque plus the rotor's acceleration.
-  \item \emph{Driver and hole.} Thrust above a threshold sets the feed per revolution and the torque; over the last
-    \SI{2}{\milli\metre} the support fades and the bit grabs; once through, the tool loses its support.
+  \item \emph{Driver.} The Makita DF333D 12\,V drill/driver, its body measured from the maker's data and renders (a
+    \SI{10.7}{\degree}-raked $30\times\SI{40}{\milli\metre}$ oval grip, a touchable motor housing, the battery
+    pack; \SI{1.15}{\kilogram}), on low gear, its drivetrain modelled at the chuck: a brushed motor
+    $\tau_m = \tau_s(u - \omega/\omega_0)$ (a PWM trigger, a dynamic brake on release) on a reflected spindle inertia
+    $J_s = J_r N^2 + J_c$, driving the chuck through a ball-detent clutch on the last planetary stage's ring gear. Below
+    its breakaway the clutch is rigid; above it the chuck stops and the ring turns, each detent's torque climbing a
+    ramp and dropping, so the ratchet's rate follows the motor's speed under the clutch's load. The housing carries the
+    chuck torque plus the internals' angular-momentum change $J_a\dot\omega$, $J_a = J_r N + J_c \approx J_s/N$: a free
+    spin-up kicks the hand with about the motor shaft's torque. Its values reproduce the DF333D's ratings in
+    simulated ISO~5393 tests (\SI{450}{rpm}; \SI{14}{\newton\metre} soft and \SI{30}{\newton\metre} hard joint, which
+    sets $J_s \approx \SI{5.5e-3}{\kilogram\metre\squared}$; the motor line's peak power, \SI{165}{\watt}, then
+    matches the rated \SI{170}{\watt}), and the randomization spans the 12\,V class.
+  \item \emph{Driver and screw.} A Torx bit engages a pre-started wood screw when pressed within the recess, turns
+    free until its lobes catch, and leaves the recess only when tilted or unpressed; the screw advances one pitch per
+    turn against a torque growing with depth and rising steeply once the head is flush, until the clutch slips. A
+    clutch set too high strips the wood or twists the screw off. (A Phillips variant cams out when the torque exceeds
+    $c_{\mathrm{cam}}F_a(1-\theta/\theta_{\max})$, $F_a$ the axial push and $\theta$ the bit's misalignment.)
+  \item \emph{Driver and hole.} A \SI{4}{\milli\metre} bit with the clutch engaged: the thrust
+    $F = F_0 + k_t D f$ sets the feed $f$ per revolution and the torque $k_c D^2 f/8$ plus flute friction; over the
+    last \SI{2}{\milli\metre} the support fades and the bit grabs; once through, the tool loses its support. The
+    motor's unbalance, the bit's runout and a band-limited load noise add the tool's vibration.
 \end{itemize}
 
 \paragraph{Tasks with scripted layers} Until the learned layers exist, scripted stand-ins issue the same L2 commands.
@@ -229,9 +242,9 @@ the baselines the learned layers will be compared against.
     & Saw, crosscut & Driver, screw & Driver, hole \\
     \midrule
     Goal                  & \SI{20}{\milli\metre} cut & seated & \SI{38}{\milli\metre} through \\
-    Reached at (s)        & 23.1 (54 strokes) & 2.16 & 7.14 \\
-    Peak load             & \SI{49}{\newton} normal &  \SI{1.88}{\newton\metre}, \SI{87}{\newton} & \SI{2.41}{\newton\metre}, \SI{90}{\newton} \\
-    Net slip in grasp     & \SI{1.0}{\milli\metre}, \SI{4.8}{\degree} & \SI{0.2}{\milli\metre}, \SI{2.4}{\degree} & \SI{0.1}{\milli\metre}, \SI{0.6}{\degree} \\
+    Reached at (s)        & 23.1 (54 strokes) & 2.12 & 11.6 \\
+    Peak load             & \SI{49}{\newton} normal &  \SI{1.57}{\newton\metre}, \SI{82}{\newton} & \SI{0.60}{\newton\metre}, \SI{89}{\newton} \\
+    Net slip in grasp     & \SI{1.0}{\milli\metre}, \SI{4.8}{\degree} & \SI{0.04}{\milli\metre}, \SI{0.6}{\degree} & \SI{0.3}{\milli\metre}, \SI{0.5}{\degree} \\
     Untimed events        & binding (\SI{23}{\newton}) & 0 cam-outs & breakthrough \\
     Arm limits            & held & held & held \\
     \bottomrule
@@ -244,8 +257,8 @@ dexterous power wrap at the WUJI hand's rated torques does not hold a blow: the 
 \SIrange{2}{31}{\degree} per strike and finger joints hit their stops at up to 16$\times$ their rating; with
 self-locking drives the tool holds (\SIrange{0.1}{0.5}{\degree}) but the gearboxes carry up to 32--40$\times$ their
 rating. Holding by squeeze alone is therefore not available to a dexterous hand; holding must come from geometry,
-timing and locking. (iii) At a fixed grip, a parallel gripper holding a driver by its body yields \SI{2.4}{\degree} about the bit when
-the clutch ratchets at seating, and a saw handle flexes the pads by up to \SI{9}{\degree} each stroke and creeps
+timing and locking. (iii) At a fixed grip, a parallel gripper holding a driver by its body yields about the bit when the clutch
+ratchets at seating (\SI{0.6}{\degree} at a \SI{1.5}{\newton\metre} setting, \SI{2.4}{\degree} at \SI{1.8}{\newton\metre}), and a saw handle flexes the pads by up to \SI{9}{\degree} each stroke and creeps
 \SI{4.8}{\degree} over 27 strokes: the jerk and periodic loads that Eq.~\eqref{eq:grip} and the cycle-to-cycle
 margin update are meant to anticipate.
 

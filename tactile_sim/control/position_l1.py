@@ -14,6 +14,10 @@ and tracks them with its own PD servos; it takes no torque commands. So the host
 
 Stiffness is whatever the servos have (factory gains x dexcontrol's P multiplier); the L2 command's
 Cartesian stiffness is not applied.
+
+A joint stream (set_joint_stream, e.g. a VLA's action chunk interpolated to the command rate) replaces the
+Cartesian reference and the IK: each command tick takes the stream's joint targets and velocities one command
+period ahead, and keeps the rate limit, the droop offset and the holds.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ import numpy as np
 
 from tactile_sim.config import SimConfig
 from tactile_sim.control.interface import L2Command, Mode
-from tactile_sim.control.kinematics import pose_error, site_jacobian, site_pose
+from tactile_sim.control.kinematics import pose_error
 from tactile_sim.control.l1 import L1Log
 from tactile_sim.control.momentum_observer import ImpactDetector
 from tactile_sim.control.supervisor import Supervisor
@@ -51,6 +55,9 @@ class PositionL1:
             self.n_acc = max(1, int(round(sensors[self.acc_name].spec.rate_hz / c.rate)))
         self._d = mujoco.MjData(world.model)  # scratch data for the IK
         self.do_log = log
+        # exec_offset(t) -> (7,) rad added to the joint targets the servos get but not to q_ref, the target the
+        # controller means (vla.demos.DemoPerturbation: the arm pushed off its path, the recorded action unchanged)
+        self.exec_offset = None
         self.reset()
 
     def reset(self) -> None:
@@ -60,6 +67,7 @@ class PositionL1:
         self.detector.reset()
         self.supervisor.reset()
         self.cmd: L2Command | None = None
+        self.stream = None
         self.last_event = None
         self.gate_until = -np.inf
         self.grip_setpoint = self.cfg.controller.grip_hold
@@ -74,8 +82,13 @@ class PositionL1:
     def set_command(self, cmd: L2Command) -> None:
         self.cmd = cmd
 
+    def set_joint_stream(self, stream) -> None:
+        """Joint targets from `stream(t) -> (q, qd)` (rad, rad/s; before droop compensation) instead of the Cartesian
+        command; None returns to the Cartesian command."""
+        self.stream = stream
+
     def hold_here(self, t: float, F_grip: float | None = None) -> L2Command:
-        p, R = self.world.tcp_pose()
+        p, R = self.world.ctrl_pose()
         c = self.cfg.controller
         cmd = L2Command(t, p, R, K=np.array(c.k_trans + c.k_rot, dtype=float),
                         F_grip=c.grip_hold if F_grip is None else F_grip)
@@ -89,8 +102,8 @@ class PositionL1:
         d.qpos[w.arm_qadr] = q
         mujoco.mj_kinematics(w.model, d)
         mujoco.mj_comPos(w.model, d)
-        p, R = site_pose(d, w.tcp_site)
-        return p, R, site_jacobian(w.model, d, w.tcp_site, w.arm_dofs)
+        p, R = w.ctrl_pose(d)
+        return p, R, w.ctrl_jacobian(w.arm_dofs, d)
 
     def _ik(self, x: np.ndarray, R: np.ndarray, xd: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
         q = self.q_ref.copy()
@@ -110,10 +123,11 @@ class PositionL1:
     def tick(self, t: float) -> None:
         """Host loop at controller.rate: impact detection every tick, a position command every n_cmd ticks."""
         w = self.world
-        ft = self._sensor("ft")
+        src = self.cfg.controller.impact_sources
+        ft = self._sensor("ft") if "ft" in src else None
         f_ft_world = None if ft is None else w.data.site_xmat[w.site["ft_site"]].reshape(3, 3) @ ft[:3]
         t_ft = self.sensors["ft"].latest().t_sample if ft is not None else None
-        acc = self.sensors[self.acc_name].window(self.n_acc) if self.sensors is not None and \
+        acc = self.sensors[self.acc_name].window(self.n_acc) if "accel" in src and self.sensors is not None and \
             self.acc_name in self.sensors else None
         ev = self.detector.update(t, None, f_ft_world, acc, t_ft)
         if ev is not None:
@@ -126,17 +140,21 @@ class PositionL1:
 
     def _command(self, t: float, flagged: bool) -> None:
         w = self.world
-        x_now, R_now = w.tcp_pose()
-        cmd = self.supervisor.filter(self.cmd, t, x_now, R_now)
-        if cmd.ref is not None and not self.supervisor.frozen:
-            t_flag = None
-            if self.last_event is not None and self.last_event.t_flag >= getattr(cmd.ref, "t_armed", -np.inf):
-                t_flag = self.last_event.t_flag
-            # one command period ahead: the target holds (ZOH) until the next tick
-            x, xd, _, mode = cmd.ref.evaluate(t + self.dt_cmd, t_flag, x_now)
-            cmd.x_eq, cmd.xd_eq, cmd.mode = x, xd, mode
-            cmd.R_eq = getattr(cmd.ref, "R", cmd.R_eq)
-        q, qd = self._ik(cmd.x_eq, cmd.R_eq, cmd.xd_eq)
+        x_now, R_now = w.ctrl_pose()
+        if self.stream is not None:
+            q, qd = (np.asarray(v, float) for v in self.stream(t + self.dt_cmd))
+            cmd = self.cmd if self.cmd is not None else self.hold_here(t)
+        else:
+            cmd = self.supervisor.filter(self.cmd, t, x_now, R_now)
+            if cmd.ref is not None and not self.supervisor.frozen:
+                t_flag = None
+                if self.last_event is not None and self.last_event.t_flag >= getattr(cmd.ref, "t_armed", -np.inf):
+                    t_flag = self.last_event.t_flag
+                # one command period ahead: the target holds (ZOH) until the next tick
+                x, xd, _, mode = cmd.ref.evaluate(t + self.dt_cmd, t_flag, x_now)
+                cmd.x_eq, cmd.xd_eq, cmd.mode = x, xd, mode
+                cmd.R_eq = getattr(cmd.ref, "R", cmd.R_eq)
+            q, qd = self._ik(cmd.x_eq, cmd.R_eq, cmd.xd_eq)
         # never command a joint faster than 90 % of its velocity limit (a reference step, e.g. an aim
         # correction, would otherwise become a servo step)
         v_lim = 0.9 * w.arm_spec.velocity
@@ -145,6 +163,8 @@ class PositionL1:
         if self.supervisor.frozen or self.supervisor.stale:
             qd = np.zeros_like(qd)
         self.q_ref = q
+        if self.exec_offset is not None:
+            q = q + np.asarray(self.exec_offset(t), float)
         droop = w.gravity_torque(q) / w.servo_kp
         w.set_arm_position(q, qd, droop)
         w.hold_others()

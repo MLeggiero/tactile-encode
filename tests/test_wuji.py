@@ -183,3 +183,24 @@ def test_tendon_synergy_closes_in_the_human_ratio():
     assert syn.torque(0.0, q, np.zeros(4))[3] > 0
     rated = WrapSynergy.for_wuji(joints, (1, 0, 1, 1), synergy="rated").torque(1.0, np.zeros(4), np.zeros(4))
     assert rated[0] == pytest.approx(2.0)
+
+
+def test_held_fingertip_joints_let_the_middle_joints_close_on():
+    from tactile_sim.control.hand import WrapSynergy
+
+    joints = [("r_thumb_cmc_flex", 0.6), ("r_thumb_cmc_abd", 0.6), ("r_thumb_mcp", 0.3), ("r_thumb_ip", 0.3),
+              ("r_index_finger_mcp_flex", 2.0), ("r_index_finger_mcp_abd", 0.2), ("r_index_finger_pip", 0.3),
+              ("r_index_finger_dip", 0.3)]
+    for synergy in ("rated", "tendon"):
+        syn = WrapSynergy.for_wuji(joints, (1, 0, 1, 1), synergy=synergy, finger_dip=0.7)
+        # the finger's fingertip joint is held at 0.7 rad (a PD, as the shaping joints are), the thumb's closes on
+        assert syn.close_dir[7] == 0 and syn.q_hold[7] == pytest.approx(0.7) and syn.close_dir[3] == 1
+        assert not syn.coupled
+        q = np.zeros(8)
+        q[7] = 0.6
+        tau = syn.torque(1.0, q, np.zeros(8))
+        assert tau[7] == pytest.approx(syn.kp * 0.1) and tau[6] > 0  # pulled toward the hold; the PIP closes
+        q_t, _, kp, _, ff = syn.mit_command(1.0, q)
+        assert q_t[7] == pytest.approx(0.7) and kp[7] == syn.kp and ff[7] == 0.0
+    plain = WrapSynergy.for_wuji(joints, (1, 0, 1, 1), synergy="rated")
+    assert plain.close_dir[7] == 1

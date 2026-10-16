@@ -34,6 +34,10 @@ FINGERS = ("thumb", "index_finger", "middle_finger", "ring_finger", "pinky")
 # TCP (= hammer grasp frame) axes in the hand frame: handle along -x (head on the thumb side), striking
 # face toward the fingertips (-z), hammer z along the palm normal
 R_HAND_TCP = np.array([[-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]])
+# the pistol driver held as a person holds a drill (DrillCfg.pistol_grasp = "pistol"): the grip across the palm as the
+# hammer's handle (the housing on the thumb side), turned about it so the bit points out from the palm; the fingers
+# wrap around the grip's front and the index finger, next to the housing, comes round to the trigger
+R_HAND_TCP_PISTOL = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
 PALM_SURFACE_Y = 0.0173  # palm hull's +y face, hand frame
 PALM_PATCH_NOMINAL = (-0.003, PALM_SURFACE_Y - 0.00025, -0.085 + 0.0285)  # palm body frame, under the handle
 
@@ -99,11 +103,33 @@ def mount_quat(yaw: float) -> tuple[float, float, float, float]:
     return _quat_mul(qy, flip)
 
 
-def tcp_quat() -> tuple[float, float, float, float]:
+def hand_tcp_rotation(cfg=None) -> np.ndarray:
+    """The tool (grasp) frame's axes in the hand frame for this configuration's wrap. The hammer's wrap turns in the
+    palm's plane by GripperCfg.wrap_yaw (about the palm normal, the hand's y). A raked pistol grip (the DF333D's,
+    model.df333d) lies across the palm as a straight one does: the wrap turns by the rake about the tool's z, so the
+    grip's axis, not the tool's x, runs along the hand's -x. DrillCfg.pistol_wrap_roll then rolls the wrap about the
+    grip, from the side wrap (0) toward the pistol one (-pi/2: the same as pistol_grasp "pistol")."""
+    if cfg is None or cfg.plant.kind != "drill" or cfg.drill.form != "pistol":
+        a = cfg.gripper.wrap_yaw if cfg is not None and cfg.plant.kind != "drill" else 0.0
+        if a == 0.0:
+            return R_HAND_TCP
+        return np.array([[np.cos(a), 0.0, np.sin(a)], [0.0, 1.0, 0.0], [-np.sin(a), 0.0, np.cos(a)]]) @ R_HAND_TCP
+    R = R_HAND_TCP_PISTOL if cfg.drill.pistol_grasp == "pistol" else R_HAND_TCP
+    a = cfg.drill.pistol_wrap_roll  # about the grip: from the side wrap toward the pistol one (-pi/2)
+    R = R @ np.array([[1.0, 0.0, 0.0], [0.0, np.cos(a), -np.sin(a)], [0.0, np.sin(a), np.cos(a)]])
+    r = cfg.drill.pistol_wrap_tilt  # the hand tilted in the tool's side view, about its z
+    if cfg.drill.pistol_body == "df333d":
+        from tactile_sim.model.df333d import body
+
+        r += body(cfg.drill).rake
+    return R @ np.array([[np.cos(r), np.sin(r), 0.0], [-np.sin(r), np.cos(r), 0.0], [0.0, 0.0, 1.0]])
+
+
+def tcp_quat(R: np.ndarray | None = None) -> tuple[float, float, float, float]:
     import mujoco
 
     q = np.zeros(4)
-    mujoco.mju_mat2Quat(q, R_HAND_TCP.reshape(-1))
+    mujoco.mju_mat2Quat(q, (R_HAND_TCP if R is None else R).reshape(-1))
     return tuple(float(x) for x in q)
 
 
@@ -202,15 +228,20 @@ def add_wuji_hand(parent: ET.Element, scene_root: ET.Element, g: GripperCfg, han
 
 
 def contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], handle_geoms: list[str],
-                  g: GripperCfg) -> None:
-    skin = dict(condim=4, friction=(g.hand_friction, g.hand_friction, g.pad_torsion, 0.0001, 0.0001),
-                solref=g.hand_solref, solimp=g.pad_solimp)
+                  g: GripperCfg, self_pairs: bool = True, caps: dict[str, float] | None = None) -> None:
+    """Hand-tool skin pairs at the hand friction; a body whose name contains a key of `caps` at most that
+    friction. Then (self_pairs) the pairs that keep the wrap from passing through itself."""
     for bname, geoms in col_geoms.items():
         if bname.endswith("_mount"):
             continue
+        mu = min([g.hand_friction] + [c for k, c in (caps or {}).items() if k in bname])
+        skin = dict(condim=4, friction=(mu, mu, g.pad_torsion, 0.0001, 0.0001), solref=g.hand_solref,
+                    solimp=g.pad_solimp)
         for gm in geoms:
             for hg in handle_geoms:
                 sub(contact, "pair", geom1=gm, geom2=hg, **skin)
+    if not self_pairs:
+        return
     # the wrap must not pass through itself: thumb on the index/middle fingers, fingertips on the palm
     thumb = [gm for b, gs in col_geoms.items() if "thumb_middle" in b or "thumb_distal" in b for gm in gs]
     fingers = [gm for b, gs in col_geoms.items() if ("index" in b or "middle_finger" in b) and
@@ -223,4 +254,30 @@ def contact_pairs(contact: ET.Element, col_geoms: dict[str, list[str]], handle_g
             sub(contact, "pair", geom1=a, geom2=b, **self_contact)
     for a in tips:
         for b in palm:
+            sub(contact, "pair", geom1=a, geom2=b, **self_contact)
+    if not g.finger_self_contact:
+        return
+    # neighbouring fingers: every segment and fingertip pad against the next finger's (no two overlap with the hand
+    # open), the thumb against the index and middle fingertip pads, and its outer segments against the ring and
+    # little fingers' outer ones
+    segs = ("proximal_abd", "middle", "distal", "tip_sensor_frame")
+
+    def links(finger, parts):
+        return [gm for b, gs in col_geoms.items() for p in parts if b.endswith(f"_{finger}_{p}") for gm in gs]
+
+    order = ("index_finger", "middle_finger", "ring_finger", "pinky")
+    for f1, f2 in zip(order, order[1:], strict=False):
+        for a in links(f1, segs):
+            for b in links(f2, segs):
+                sub(contact, "pair", geom1=a, geom2=b, **self_contact)
+    for a in links("thumb", ("middle", "distal", "tip_sensor_frame")):
+        for b in links("index_finger", ("tip_sensor_frame",)) + links("middle_finger", ("tip_sensor_frame",)):
+            sub(contact, "pair", geom1=a, geom2=b, **self_contact)
+    for a in links("thumb", ("tip_sensor_frame",)):
+        for b in links("index_finger", ("middle", "distal")) + links("middle_finger", ("middle", "distal")):
+            sub(contact, "pair", geom1=a, geom2=b, **self_contact)
+    # and the ring and little fingers, which a thumb wrapped round a thick grip (the DF333D's) meets on its far side
+    for a in links("thumb", ("middle", "distal", "tip_sensor_frame")):
+        for b in links("ring_finger", ("middle", "distal", "tip_sensor_frame")) + \
+                links("pinky", ("middle", "distal", "tip_sensor_frame")):
             sub(contact, "pair", geom1=a, geom2=b, **self_contact)

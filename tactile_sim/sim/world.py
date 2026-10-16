@@ -47,6 +47,8 @@ class World:
         self.hand_source = spec.hand_source
         self.hammer_source = spec.hammer_source
         self.model = mujoco.MjModel.from_xml_string(spec.xml)
+        if not getattr(self.cfg.physics, "multiccd", True):
+            self.model.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_MULTICCD)
         self.data = mujoco.MjData(self.model)
         self.plant = spec.plant
         self.tcp_R_nominal = tcp_rotation(self.cfg)  # tool orientation at the nominal contact
@@ -77,12 +79,14 @@ class World:
         if self.position_arm:
             from tactile_sim.model.robots import vega_hold_pose
 
-            # every joint of the robot other than the striking arm holds a pose on its own servo
-            self.held = {n: v for n, v in vega_hold_pose(self.cfg.arm).items()}
-            self.held_qadr = np.array([m.joint(n).qposadr[0] for n in self.held])
-            self.held_dofs = np.array([m.joint(n).dofadr[0] for n in self.held])
-            self.held_act = np.array([m.actuator(f"m_{n}").id for n in self.held])
-            self.held_q = np.array(list(self.held.values()))
+            # every joint of the robot other than the striking arm holds a pose on its own servo (the reduced scene
+            # has none of them)
+            self.held = {n: v for n, v in vega_hold_pose(self.cfg.arm).items()
+                         if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n) >= 0}
+            self.held_qadr = np.array([m.joint(n).qposadr[0] for n in self.held], dtype=int)
+            self.held_dofs = np.array([m.joint(n).dofadr[0] for n in self.held], dtype=int)
+            self.held_act = np.array([m.actuator(f"m_{n}").id for n in self.held], dtype=int)
+            self.held_q = np.array(list(self.held.values()), dtype=float)
             self.servo_kp = m.actuator_gainprm[self.arm_act, 0].copy()
             self.servo_kd = -m.actuator_biasprm[self.arm_act, 2].copy()
             self.left_hand_act = np.array([m.actuator(i).id for i in range(m.nu)
@@ -102,6 +106,19 @@ class World:
         self.tcp_site = self.site[names.TCP_SITE]
         self.wrist_dofs = np.array([m.joint(n).dofadr[0] for n in names.WRIST_FLEX_JOINTS
                                     if mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_JOINT, n) >= 0], dtype=int)
+        # the frame the arm controller servoes (ArmCfg.wrist_control): the TCP itself, or its zero-deflection pose
+        # carried by the F/T body (computed at qpos0, where the wrist hinges sit at zero)
+        self.ctrl_body: int | None = None
+        if self.cfg.arm.wrist_control not in ("tcp", "flange"):
+            raise ValueError(f"unknown wrist_control {self.cfg.arm.wrist_control!r} (expected 'tcp' or 'flange')")
+        if self.cfg.arm.wrist_control == "flange" and len(self.wrist_dofs):
+            dz = mujoco.MjData(m)
+            mujoco.mj_kinematics(m, dz)
+            b = m.body(names.FT_BODY).id
+            R_b = dz.xmat[b].reshape(3, 3).copy()
+            p_t, R_t = site_pose(dz, self.tcp_site)
+            self.ctrl_body = b
+            self._ctrl_off = (R_b.T @ (p_t - dz.xpos[b]), R_b.T @ R_t)
         self.sensor_slices: dict[str, slice] = {}
         for i in range(m.nsensor):
             s = m.sensor(i)
@@ -126,6 +143,25 @@ class World:
     def tcp_pose(self) -> tuple[np.ndarray, np.ndarray]:
         return site_pose(self.data, self.tcp_site)
 
+    def ctrl_pose(self, data: mujoco.MjData | None = None) -> tuple[np.ndarray, np.ndarray]:
+        """Pose of the frame the arm controller servoes (the TCP unless wrist_control = "flange")."""
+        d = self.data if data is None else data
+        if self.ctrl_body is None:
+            return site_pose(d, self.tcp_site)
+        R_b = d.xmat[self.ctrl_body].reshape(3, 3)
+        return d.xpos[self.ctrl_body] + R_b @ self._ctrl_off[0], R_b @ self._ctrl_off[1]
+
+    def ctrl_jacobian(self, dofs: np.ndarray, data: mujoco.MjData | None = None) -> np.ndarray:
+        """6 x n Jacobian [linear; angular] of the controlled frame over `dofs`."""
+        d = self.data if data is None else data
+        if self.ctrl_body is None:
+            return site_jacobian(self.model, d, self.tcp_site, dofs)
+        p, _ = self.ctrl_pose(d)
+        jp = np.zeros((3, self.model.nv))
+        jr = np.zeros((3, self.model.nv))
+        mujoco.mj_jac(self.model, d, jp, jr, p, self.ctrl_body)
+        return np.vstack([jp, jr])[:, dofs]
+
     def site_velocity(self, sid: int) -> np.ndarray:
         """[linear; angular] velocity of a site in the world frame."""
         mujoco.mj_objectVelocity(self.model, self.data, mujoco.mjtObj.mjOBJ_SITE, sid, self._vel6, 0)
@@ -135,11 +171,12 @@ class World:
         m, d = self.model, self.data
         full_inertia(m, d, self._Mfull)
         dofs = self.arm_dofs
-        p, R = self.tcp_pose()
-        J = site_jacobian(m, d, self.tcp_site, dofs)
+        p, R = self.ctrl_pose()
+        J = self.ctrl_jacobian(dofs)
+        vel = self.site_velocity(self.tcp_site) if self.ctrl_body is None else J @ d.qvel[dofs]
         return ArmState(
             t=self.t, q=d.qpos[self.arm_qadr].copy(), qd=d.qvel[dofs].copy(), tcp_pos=p, tcp_R=R,
-            tcp_vel=self.site_velocity(self.tcp_site), J=J, M=self._Mfull[np.ix_(dofs, dofs)].copy(),
+            tcp_vel=vel, J=J, M=self._Mfull[np.ix_(dofs, dofs)].copy(),
             bias=d.qfrc_bias[dofs].copy(), passive=d.qfrc_passive[dofs].copy(),
             tau_cmd=self.arm_torque())
 
@@ -312,6 +349,7 @@ class World:
     def step(self, n: int = 1) -> None:
         for _ in range(n):
             self.plant.pre_step()
+            self.hand.actuate()
             mujoco.mj_step(self.model, self.data)
             self.step_count += 1
 
@@ -329,6 +367,12 @@ class World:
     # ------------------------------------------------------------------ reset
     def reset(self, seed: int | None = None, settle_weld: float = 0.15, settle_free: float = 0.25) -> None:
         """Put the arm at the hover pose with the hammer grasped and settled; time restarts at 0."""
+        self.reset_pose()
+        self.settle(settle_weld, settle_free)
+
+    def reset_pose(self) -> None:
+        """The start of reset: the arm at the hover pose, the hand at the grasp keyframe, the hammer on the tool frame
+        and welded to the hand there, the hand's drives reset. `settle` then seats the grasp."""
         m, d = self.model, self.data
         mujoco.mj_resetData(m, d)
         if self.position_arm:
@@ -343,6 +387,7 @@ class World:
         if self.position_arm:
             self._hover_droop = self.gravity_torque(self.q_hover) / self.servo_kp
             self._held_droop = self.held_droop()
+        self.hand.reset_actuation()
         self.hand.init_pose()
         mujoco.mj_kinematics(m, d)
         pt, Rt = self.tcp_pose()
@@ -364,6 +409,11 @@ class World:
         eq[6:10] = rel_q
         eq[10] = 1.0
         d.eq_active[self.weld_id] = 1
+
+    def settle(self, settle_weld: float = 0.15, settle_free: float = 0.25) -> None:
+        """The rest of reset: the hand closes on the welded hammer (the grip ramping to its hold over the first half of
+        `settle_weld`), the weld lets go and the tool seats under gravity for `settle_free`; time restarts at 0."""
+        d = self.data
         hold = self.cfg.controller.grip_hold
         n_weld = int(round(settle_weld / self.dt))
         for i in range(n_weld):
@@ -381,5 +431,6 @@ class World:
             self.hand.tick(self.t)
             self._hold_arm()
             self.step()
+        self.hand.shift_time(-d.time)  # time restarts at 0: rebase the drives' clocks
         d.time = 0.0
         self.step_count = 0

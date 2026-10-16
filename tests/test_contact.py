@@ -77,5 +77,34 @@ def test_resistance_grows_with_depth():
 
 
 def test_too_weak_strike_does_not_move_nail():
-    cfg = fast_config(plant={"resistance_0": 1500.0})
+    # a 1.5 m/s blow peaks near 2 kN: a 3 kN resistance holds the nail (against 1.5 kN it yields right at 1.5 kN)
+    cfg = fast_config(plant={"resistance_0": 3000.0})
     assert free_strike(cfg, 1.5)["advance"] < 1e-4
+
+
+def test_noslip_does_not_change_how_far_a_blow_drives():
+    """The nail's resistance is a hard Coulomb constraint (NailPlantCfg.friction_solimp): the validator's noslip
+    post-pass and the GPU's lack of it drive a nail the same."""
+    cfg = fast_config()
+    a0 = free_strike(cfg.replace(physics={"noslip_iterations": 0}), 2.5)["advance"]
+    a5 = free_strike(cfg.replace(physics={"noslip_iterations": 5}), 2.5)["advance"]
+    assert a0 > 1e-4 and a5 == pytest.approx(a0, rel=0.15)
+
+
+def test_a_push_below_the_resistance_does_not_creep_the_nail():
+    from tactile_sim.sim.world import World
+
+    cfg = fast_config()
+    w = World(cfg)
+    m, d = w.model, w.data
+    w.plant.reset()
+    dof = w.plant.dadr
+    import mujoco
+
+    mujoco.mj_forward(m, d)
+    q0 = float(d.qpos[w.plant.qadr])
+    d.qfrc_applied[dof] = 0.5 * cfg.plant.resistance_0  # half the resistance, into the board, held 1 s
+    for _ in range(int(round(1.0 / m.opt.timestep))):
+        w.plant.pre_step()
+        mujoco.mj_step(m, d)
+    assert abs(float(d.qpos[w.plant.qadr]) - q0) < 5e-5  # under 0.05 mm (the soft constraint slid it ~mm)

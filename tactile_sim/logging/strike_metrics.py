@@ -69,6 +69,7 @@ class StrikeRecord:
     ringing_energy: float = float("nan")
     pre_energy: float = float("nan")
     limits: dict = field(default_factory=dict)
+    extra: dict = field(default_factory=dict)  # experiment metrics (episode.Episode._extra_metrics); not in the h5
 
     @property
     def limit_arm_torque_rate(self) -> float:

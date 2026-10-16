@@ -42,3 +42,12 @@ NAIL_BODY = "nail"
 NAIL_JOINT = "nail_slide"
 NAIL_HEAD_GEOM = "nail_head"
 NAIL_HEAD_SITE = "nail_head_top"
+
+# Vega head ego camera (the VLA's view), on the left imager of the head's ZED pair
+EGO_CAMERA = "ego_cam"
+EGO_CAMERA_BODY = "zed_left_camera"
+
+# Pistol driver's trigger (DrillCfg.trigger_mode = "finger")
+TRIGGER_BODY = "trigger"
+TRIGGER_JOINT = "trigger_slide"
+TRIGGER_GEOM = "trigger_face"

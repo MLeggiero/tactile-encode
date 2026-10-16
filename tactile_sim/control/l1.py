@@ -94,7 +94,7 @@ class L1Controller:
         self.cmd = cmd
 
     def hold_here(self, t: float, F_grip: float | None = None) -> L2Command:
-        p, R = self.world.tcp_pose()
+        p, R = self.world.ctrl_pose()
         c = self.cfg.controller
         cmd = L2Command(t, p, R, K=np.array(c.k_trans + c.k_rot, dtype=float),
                         F_grip=c.grip_hold if F_grip is None else F_grip)
@@ -123,13 +123,14 @@ class L1Controller:
         self.f_ext = external_wrench(s.J, r)
         if self.tau_ext_holder is not None:
             self.tau_ext_holder.value = r.copy()
-        ft = self._sensor("ft")
+        src = self.cfg.controller.impact_sources
+        ft = self._sensor("ft") if "ft" in src else None
         f_ft_world = None if ft is None else w.data.site_xmat[w.site["ft_site"]].reshape(3, 3) @ ft[:3]
         t_ft = self.sensors["ft"].latest().t_sample if ft is not None else None
         acc = None
-        if self.sensors is not None and self.acc_name in self.sensors:
+        if "accel" in src and self.sensors is not None and self.acc_name in self.sensors:
             acc = self.sensors[self.acc_name].window(self.n_acc)
-        ev = self.detector.update(t, self.f_ext, f_ft_world, acc, t_ft)
+        ev = self.detector.update(t, self.f_ext if "observer" in src else None, f_ft_world, acc, t_ft)
         if ev is not None:
             self.last_event = ev
             self.gate_until = t + self.cfg.controller.gate_duration

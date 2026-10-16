@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,12 +23,15 @@ import numpy as np
 
 from tactile_sim import names
 from tactile_sim.config import SimConfig
-from tactile_sim.control.hand import WrapSynergy
+from tactile_sim.control.hand import WrapSynergy, trigger_finger
 from tactile_sim.model.hands import wuji
-from tactile_sim.model.tool_hammer import add_hammer, handle_segment_geoms
 from tactile_sim.model.xmlutil import sub
 
 VERSION = 2
+# The skin friction "nominal" keyframes are synthesized at: the grip shapes were searched and validated at bare
+# skin's 1.0, and at the grippy coverings' 1.5 (config.WUJI_COVERED_FRICTION) the fingers catch the tool before it
+# seats in the palm, a different grip. The coverings act when the task runs (the reset settle seats the tool under them)
+GRASP_FRICTION = 1.0
 
 
 @dataclass
@@ -66,7 +70,7 @@ def hover_hand_rotation(cfg: SimConfig | None = None) -> np.ndarray:
     the grasp seats under gravity the way the task will load it."""
     from tactile_sim.model.builder import tcp_rotation
 
-    return tcp_rotation(cfg) @ wuji.R_HAND_TCP.T
+    return tcp_rotation(cfg) @ wuji.hand_tcp_rotation(cfg).T
 
 
 def _gravity_in_tool(cfg: SimConfig) -> list[float]:
@@ -77,18 +81,82 @@ def _gravity_in_tool(cfg: SimConfig) -> list[float]:
 
 def _cache_key(cfg: SimConfig, hand_path: Path) -> str:
     g, h = cfg.gripper, cfg.hammer
-    blob = json.dumps({"v": VERSION, "tcp": g.wrap_tcp, "thumb": g.thumb_close, "pre": g.thumb_preshape,
-                       "syn": g.finger_synergy,
-                       "sol": g.hand_solref,
-                       "mu": g.hand_friction, "tors": g.pad_torsion, "damp": g.hand_joint_damping,
-                       "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "hammer": h.model,
-                       "grip": h.grip_from_head, "mass": (h.head_mass, h.handle_mass), "g": _gravity_in_tool(cfg),
-                       "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}, sort_keys=True)
+    key = {"v": VERSION, "tcp": g.wrap_tcp, "thumb": g.thumb_close, "pre": g.thumb_preshape,
+           "syn": g.finger_synergy,
+           "sol": g.hand_solref,
+           "mu": g.hand_friction, "tors": g.pad_torsion, "damp": g.hand_joint_damping,
+           "fric": g.hand_joint_friction, "dt": cfg.physics.timestep, "g": _gravity_in_tool(cfg),
+           "hand": hashlib.sha256(hand_path.read_bytes()).hexdigest()}
+    if cfg.plant.kind != "drill":  # the hammer (its keys keep their old values)
+        key.update(hammer=h.model, grip=h.grip_from_head, mass=(h.head_mass, h.handle_mass))
+        if g.wrap_yaw:
+            key["yaw"] = g.wrap_yaw
+    else:  # the pistol driver: its whole geometry, nothing of the hammer (which randomization still varies)
+        dc = cfg.to_dict()["drill"]
+        key["tool"] = {k: v for k, v in dc.items() if k.startswith("pistol_")}
+        if dc["form"] == "pistol" and dc["pistol_body"] == "df333d":  # its measured shape (model.df333d)
+            from dataclasses import asdict
+
+            from tactile_sim.model.df333d import DF333D
+
+            key["body"] = asdict(DF333D)
+        if dc["trigger_mode"] == "finger":  # and its trigger (keys without one keep their old values)
+            key["trigger"] = {k: v for k, v in dc.items() if k.startswith("trigger_") and k not in
+                              ("trigger_contact", "trigger_delay", "trigger_level", "trigger_slew",
+                               "trigger_full", "trigger_pull_time")}
+            key["trigger"]["relaxed"] = 2  # keyframes with the index relaxed on the released trigger
+    if g.finger_dip is not None:  # fingertip joints held (keys without them keep their old values)
+        key["dip"] = g.finger_dip
+    if g.finger_self_contact:  # and the fingers colliding with each other (2: the thumb with the ring and pinky too)
+        key["fingers_collide"] = 2
+    blob = json.dumps(key, sort_keys=True)
     return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
+def grasp_config(cfg: SimConfig) -> SimConfig:
+    """The configuration a grasp keyframe is synthesized and cached for. GripperCfg.grasp_mass = "nominal" puts the
+    tool's nominal masses and the hand's nominal skin contact (friction, solref) in place of the configured ones,
+    so randomized tools and skins share one keyframe (the reset settle then seats the tool under the actual
+    values), the friction GRASP_FRICTION's; "actual" keys and synthesizes on the configured values."""
+    mode = cfg.gripper.grasp_mass
+    if mode == "actual":
+        return cfg
+    if mode != "nominal":
+        raise ValueError(f"unknown grasp_mass {mode!r} (expected 'actual' or 'nominal')")
+    from tactile_sim.config import LIGHT_HAMMER_OVERRIDES, DrillCfg, HammerCfg
+
+    if cfg.plant.kind == "drill":
+        dd = DrillCfg()
+        nom = {k: getattr(dd, k) for k in ("pistol_housing_mass", "pistol_gearbox_mass", "pistol_chuck_mass",
+                                           "pistol_grip_mass", "pistol_base_mass", "pistol_battery_mass")}
+        if cfg.drill.pistol_body == "primitive":  # the primitive body's own (DRILL_V2_PRESET)
+            from tactile_sim.config import PRIMITIVE_PISTOL
+
+            nom.update({k: v for k, v in PRIMITIVE_PISTOL.items() if k.endswith("_mass")})
+        from tactile_sim.config import GripperCfg
+
+        gd = GripperCfg()
+        return cfg.replace(drill=nom, gripper={"hand_friction": GRASP_FRICTION, "hand_solref": gd.hand_solref})
+    light = LIGHT_HAMMER_OVERRIDES["hammer"]
+    h = cfg.hammer
+    if h.model == light["model"] and h.head_radius == light["head_radius"] and h.handle_len == light["handle_len"]:
+        nom = {"head_mass": light["head_mass"], "handle_mass": light["handle_mass"]}
+    else:
+        d = HammerCfg()
+        nom = {"head_mass": d.head_mass, "handle_mass": d.handle_mass}
+    from tactile_sim.config import GripperCfg
+
+    g = GripperCfg()
+    return cfg.replace(hammer=nom, gripper={"hand_friction": GRASP_FRICTION, "hand_solref": g.hand_solref})
+
+
 def cache_path(cfg: SimConfig, hand_path: Path) -> Path:
-    return Path.home() / ".cache" / "tactile_sim" / "grasps" / f"wuji2_{_cache_key(cfg, hand_path)}.json"
+    """The keyframe's cache file: in $TACTILE_GRASP_CACHE when set (a pipeline's own keyframes, synthesized by its own
+    code), else ~/.cache/tactile_sim/grasps."""
+    key = _cache_key(grasp_config(cfg), hand_path)
+    env = os.environ.get("TACTILE_GRASP_CACHE")
+    root = Path(env) if env else Path.home() / ".cache" / "tactile_sim" / "grasps"
+    return root / f"wuji2_{key}.json"
 
 
 def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:
@@ -108,9 +176,14 @@ def build_scene(cfg: SimConfig, hand_path: Path) -> tuple[str, dict]:
     q_base = np.zeros(4)
     mujoco.mju_mulQuat(q_base, q_hand, q_mount_inv)
     base = sub(wb, "body", name="flange", pos=(0, 0, 0.5), quat=q_base)
-    info = wuji.add_wuji_hand(base, root, cfg.gripper, hand_path, (0, 0, 0))
-    add_hammer(wb, cfg.hammer, root)
-    wuji.contact_pairs(contact, info["col_geoms"], handle_segment_geoms(cfg.hammer), cfg.gripper)
+    info = wuji.add_wuji_hand(base, root, cfg.gripper, hand_path, (0, 0, 0),
+                              tcp_q=wuji.tcp_quat(wuji.hand_tcp_rotation(cfg)))
+    from tactile_sim.model.builder import add_tool, hand_friction_caps, tool_contact_geoms, trigger_contact_pairs
+
+    add_tool(wb, cfg, root)
+    wuji.contact_pairs(contact, info["col_geoms"], tool_contact_geoms(cfg), cfg.gripper,
+                       caps=hand_friction_caps(cfg))
+    trigger_contact_pairs(contact, info["col_geoms"], cfg)
     eq = sub(root, "equality")
     sub(eq, "weld", name=names.GRASP_WELD, body1=names.HAND_BODY, body2=names.HAMMER_BODY, active="false",
         solref=(0.005, 1))
@@ -138,7 +211,7 @@ def _rel(m, d, hand, hb):
 
 
 def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_time: float = 0.6,
-               hold_time: float = 0.5) -> WrapGrasp:
+               hold_time: float = 0.5, relax_time: float = 0.3) -> WrapGrasp:
     xml, info = build_scene(cfg, hand_path)
     m = mujoco.MjModel.from_xml_string(xml)
     d = mujoco.MjData(m)
@@ -147,7 +220,15 @@ def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_ti
     dadr = np.array([m.joint(j).dofadr[0] for j, _ in joints])
     act = np.array([m.actuator(f"m_{j}").id for j, _ in joints])
     syn = WrapSynergy.for_wuji(joints, cfg.gripper.thumb_close, cfg.gripper.thumb_preshape,
-                               cfg.gripper.finger_synergy)
+                               cfg.gripper.finger_synergy, cfg.gripper.finger_dip)
+    dc = cfg.drill
+    has_trigger = cfg.plant.kind == "drill" and dc.form == "pistol" and dc.trigger_mode == "finger"
+    if has_trigger:
+        # the hand closes on the trigger held at rest, the index finger with the grip, so the tool seats as on the
+        # plain grip; then the trigger is let go and the index relaxes to its resting level (below)
+        tj = m.joint(names.TRIGGER_JOINT).id
+        trigger_range = m.jnt_range[tj].copy()
+        m.jnt_range[tj] = (0.0, 1e-6)
     hand, hb = m.body(names.HAND_BODY).id, m.body(names.HAMMER_BODY).id
     tcp = m.site(names.TCP_SITE).id
     hq = m.joint("hammer_free").qposadr[0]
@@ -178,6 +259,18 @@ def synthesize(cfg: SimConfig, hand_path: Path, close_time: float = 0.4, seat_ti
     run(seat_time)
     pa, Ra = _rel(m, d, hand, hb)
     run(hold_time)
+    if has_trigger:
+        # the keyframe as a task starts from it: the index lets go (the trigger still held at rest), then rests on
+        # the freed trigger at its own level, and the tool re-seats under the lighter index. The resting finger has
+        # two equilibria, trigger out and trigger part-pulled; coming from the released side it finds the first
+        trigger_finger(syn, cfg)
+        syn.s_trigger = 0.0
+        run(0.5 * relax_time)
+        m.jnt_range[tj] = trigger_range
+        syn.s_trigger = dc.trigger_rest
+        run(relax_time)
+        pa, Ra = _rel(m, d, hand, hb)
+        run(hold_time)
     p1, R1 = _rel(m, d, hand, hb)
     q1 = np.zeros(4)
     mujoco.mju_mat2Quat(q1, R1.reshape(-1))
@@ -238,7 +331,7 @@ def wrap_grasp(cfg: SimConfig, hand_path: Path) -> WrapGrasp:
     path = cache_path(cfg, hand_path)
     if path.exists():
         return WrapGrasp.from_dict(json.loads(path.read_text()))
-    g = synthesize(cfg, hand_path)
+    g = synthesize(grasp_config(cfg), hand_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(g.to_dict(), indent=1))
     return g

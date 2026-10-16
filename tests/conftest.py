@@ -1,9 +1,13 @@
 import os
 
-import pytest
+# offscreen rendering (the VLA camera tests) through EGL: MuJoCo picks its GL backend when it is first imported, and
+# GLFW without a display aborts the whole process instead of raising
+os.environ.setdefault("MUJOCO_GL", "egl")
 
-from tactile_sim.assets import menagerie_available
-from tactile_sim.config import fast_config
+import pytest  # noqa: E402
+
+from tactile_sim.assets import menagerie_available  # noqa: E402
+from tactile_sim.config import fast_config  # noqa: E402
 
 HAS_MENAGERIE = menagerie_available()
 requires_menagerie = pytest.mark.skipif(not HAS_MENAGERIE, reason="Menagerie assets not cached")

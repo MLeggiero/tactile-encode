@@ -41,7 +41,8 @@ class NailPlant(Plant):
         nail = sub(worldbody, "body", name=names.NAIL_BODY, pos=surface, quat=quat)
         sub(nail, "joint", name=names.NAIL_JOINT, type="slide", axis=(0, 0, 1),
             range=(0, p.proud - 0.001), limited="true", frictionloss=p.resistance_0, damping=p.damping,
-            solreflimit=p.limit_solref, solreffriction=p.friction_solref, armature=1e-4)
+            solreflimit=p.limit_solref, solreffriction=p.friction_solref, solimpfriction=p.friction_solimp,
+            armature=1e-4)
         zc = -(p.proud + p.head_half_h)
         sub(nail, "geom", name=names.NAIL_HEAD_GEOM, type="cylinder", size=(p.head_radius, p.head_half_h),
             pos=(0, 0, zc), mass=p.nail_mass, rgba=(0.7, 0.7, 0.75, 1), contype=0, conaffinity=0)

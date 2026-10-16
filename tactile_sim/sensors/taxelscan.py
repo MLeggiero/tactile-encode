@@ -23,7 +23,10 @@ from tactile_sim.sensors.base import RateLimitedSensor, SensorSample, SensorSpec
 
 
 def taxel_time(s) -> float:
-    """Time one taxel takes on a TaxelScan board (s): mux settling plus its conversions."""
+    """Time one taxel takes on a TaxelScan board (s): ts_taxel_time if set (a measured fast-profile figure), else
+    mux settling plus its conversions."""
+    if getattr(s, "ts_taxel_time", None) is not None:
+        return s.ts_taxel_time
     return s.ts_settle + s.ts_oversample / s.ts_adc_rate
 
 
@@ -71,15 +74,21 @@ class TaxelScanSensor(RateLimitedSensor):
                 self.idx = hi
             if self.idx < n:
                 break
-            self.frames.append((self.frame_t - self.offset, self.frame_t + n * self.t_tax, self.buf.copy()))
+            t0 = self.frame_t - self.offset
+            self.frames.append((t0, self._avail_time(t0, self.frame_t + n * self.t_tax), self.buf.copy()))
             self.frame_t += self.period
             self.idx = 0
         self.prev = (t, self.xf)
         emitted = None
-        while self.frames and self.frames[0][1] + self.spec.latency_s <= t + 0.5 * self.dt:
-            t0, t_done, f = self.frames.pop(0)
-            emitted = self._emit_frame(t0, t_done, f)
+        while self.frames and self.frames[0][1] <= t + 0.5 * self.dt:
+            t0, t_avail, f = self.frames.pop(0)
+            s = self._emit_frame(t0, t_avail, f)
+            emitted = s if s is not None else emitted
         return emitted
+
+    def _avail_time(self, t0: float, t_done: float) -> float:
+        """When the host has the frame whose scan started at t0 (SYNC) and ended at t_done."""
+        return t_done + self.spec.latency_s
 
     def adc(self, f: np.ndarray) -> np.ndarray:
         """Counts the board reads for taxel forces `f` (N)."""
@@ -93,10 +102,10 @@ class TaxelScanSensor(RateLimitedSensor):
         x = np.minimum(counts / self.full, 0.999)
         return self.s.ts_f_half * x / (1.0 - x)
 
-    def _emit_frame(self, t0: float, t_done: float, f: np.ndarray) -> SensorSample:
+    def _emit_frame(self, t0: float, t_avail: float, f: np.ndarray) -> SensorSample | None:
         self.counts = self.adc(f)
         v = self.calibrate(self.counts)
-        s = SensorSample(t0, t_done + self.spec.latency_s, v, self.seq)
+        s = SensorSample(t0, t_avail, v, self.seq)
         self.seq += 1
         self._latest = s
         if self.keep_history:
@@ -106,11 +115,133 @@ class TaxelScanSensor(RateLimitedSensor):
         return s
 
 
+class TaxelScanRev3Sensor(TaxelScanSensor):
+    """One patch on a fast-profile board (ts_model "rev3", docs/taxelscan_fast_profile.md).
+
+    The patch is scanned `offset` after its board's SYNC edge, behind the board's earlier patches. Its frame is
+    polled in the next period, in its board's slot (`slot`: s after that SYNC edge), and reaches the host a uniform
+    ts_bridge_latency later, in order; with probability ts_drop_prob it never does. The board firmware converts its
+    counts to millinewtons and sends mu-law codes plus the patch's six features (sensors.taxel_codec). The value the
+    host sees is the codes decoded back to newtons; `features`, `codes` and `sync_id` hold the rest of the frame."""
+
+    def __init__(self, name: str, grid: tuple[int, int], physics_dt: float, read_fn, rng, s, offset: float,
+                 slot: float, board: int):
+        from tactile_sim.sensors.taxel_codec import CodecSpec
+
+        self.grid = (int(grid[0]), int(grid[1]))
+        self.slot = slot
+        self.board = board
+        self.codec = CodecSpec(bits=s.ts_code_bits, mu=s.ts_mu, f_max=s.ts_f_max, contact_mn=s.ts_contact_mn)
+        super().__init__(name, self.grid[0] * self.grid[1], physics_dt, read_fn, rng, s, offset=offset)
+
+    def reset(self, t0: float = 0.0) -> None:
+        super().reset(t0)
+        self.frame_k = 0  # SYNC pulses since reset
+        self.prev_sum = 0  # the board's force-sum feature of its previous frame (for the rate feature)
+        self.last_avail = -np.inf
+        self.features = np.zeros(6, dtype=np.int64)
+        self.codes = np.zeros(self.spec.dim, dtype=np.uint8)
+        self.sync_id = -1
+        self.feature_history: list[np.ndarray] = []
+        self.code_history: list[np.ndarray] = []
+
+    def _avail_time(self, t0: float, t_done: float) -> float:
+        lo, hi = self.s.ts_bridge_latency
+        bridge = self.rng.uniform(lo, hi) if hi > lo else lo
+        t = max(t0 + self.period + self.slot + bridge, self.last_avail)
+        self.last_avail = t
+        return t
+
+    def _emit_frame(self, t0: float, t_avail: float, f: np.ndarray) -> SensorSample | None:
+        from tactile_sim.sensors.taxel_codec import patch_features, to_mn
+
+        k = self.frame_k
+        self.frame_k += 1
+        self.counts = self.adc(f)
+        f_mn = to_mn(self.calibrate(self.counts))
+        codes = self.codec.encode(f_mn)
+        feats = patch_features(f_mn, self.grid, self.prev_sum, self.codec.contact_mn)
+        self.prev_sum = int(feats[0])  # the board computes the rate whether or not the host gets the frame
+        if self.s.ts_drop_prob > 0 and self.rng.uniform() < self.s.ts_drop_prob:
+            return None
+        v = self.codec.decode(codes)
+        smp = SensorSample(t0, t_avail, v, self.seq)
+        self.seq += 1
+        self._latest = smp
+        self.codes, self.features, self.sync_id = codes, feats, k & 0xFFFF
+        if self.keep_history:
+            self.t_sample.append(smp.t_sample)
+            self.t_avail.append(smp.t_avail)
+            self.values.append(v)
+            self.feature_history.append(feats)
+            self.code_history.append(codes)
+        return smp
+
+
+def board_layout(s, patch_names: list[str], grids: list[tuple[int, int]]) -> list[list[int]]:
+    """Patch indices per board for the fast profile: every patch on exactly one board, at most ts_max_per_board
+    taxels a board."""
+    index = {n: k for k, n in enumerate(patch_names)}
+    boards, seen = [], set()
+    for b, names in enumerate(s.ts_board_map):
+        ks = []
+        for n in names:
+            if n not in index:
+                raise ValueError(f"ts_board_map board {b}: unknown patch {n!r} (patches: {patch_names})")
+            if n in seen:
+                raise ValueError(f"ts_board_map: patch {n!r} is on two boards")
+            seen.add(n)
+            ks.append(index[n])
+        n_tax = sum(grids[k][0] * grids[k][1] for k in ks)
+        if n_tax > s.ts_max_per_board:
+            raise ValueError(f"ts_board_map board {b} has {n_tax} taxels, more than ts_max_per_board "
+                             f"{s.ts_max_per_board}")
+        boards.append(ks)
+    missing = set(patch_names) - seen
+    if missing:
+        raise ValueError(f"ts_board_map leaves patches unread: {sorted(missing)}")
+    return boards
+
+
+def poll_slots(s, boards: list[list[int]], grids: list[tuple[int, int]]) -> list[float]:
+    """When each board's frame has crossed the bus, after the SYNC edge of the period it is polled in: the polls
+    run in board order from ts_poll_lead, each costing a turnaround plus its frame's bytes at 10 bits per byte."""
+    from tactile_sim.sensors.taxel_codec import FEATURE_BYTES, HEADER_BYTES
+
+    t, out = s.ts_poll_lead, []
+    for ks in boards:
+        n = sum(grids[k][0] * grids[k][1] for k in ks)
+        map_bytes = n if s.ts_code_bits == 8 else (6 * n + 7) // 8
+        nbytes = HEADER_BYTES + map_bytes + FEATURE_BYTES * len(ks) + 2
+        t += s.ts_turnaround + nbytes * 10.0 / s.ts_bus_baud
+        out.append(t)
+    if out and out[-1] > 1.0 / s.ts_rate:
+        raise ValueError(f"the polls take {1e3 * out[-1]:.3f} ms, longer than the {1e3 / s.ts_rate:.3f} ms period")
+    return out
+
+
 def make_taxelscan(world, cfg, rng) -> list[TaxelScanSensor]:
-    """One sensor per conforming patch. `ts_boards="hand"`: one board scans the patches back to back, so each
-    patch's scan starts where the previous one's ended."""
+    """One sensor per conforming patch, in patch order. ts_model "rev2": `ts_boards="hand"` makes one board scan
+    the patches back to back, so each patch's scan starts where the previous one's ended. ts_model "rev3": the
+    fast-profile boards of ts_board_map."""
     s = cfg.sensors
     hand = world.hand
+    names = [p.name for p in hand.patches]
+    grids = [tuple(hand.grid(k)) for k in range(len(names))]
+    if s.ts_model == "rev3":
+        boards = board_layout(s, names, grids)
+        slots = poll_slots(s, boards, grids)
+        sensors: dict[int, TaxelScanSensor] = {}
+        for b, ks in enumerate(boards):
+            off = 0.0
+            for k in ks:
+                sensors[k] = TaxelScanRev3Sensor(hand.pressure_names[k], grids[k], world.dt,
+                                                 (lambda k=k: world.pad_taxels(k)), rng, s, offset=off,
+                                                 slot=slots[b], board=b)
+                off += grids[k][0] * grids[k][1] * taxel_time(s)
+        return [sensors[k] for k in range(len(names))]
+    if s.ts_model != "rev2":
+        raise ValueError(f"unknown ts_model {s.ts_model!r} (expected 'rev2' or 'rev3')")
     out, off = [], 0.0
     for k, name in enumerate(hand.pressure_names):
         n = int(np.prod(hand.grid(k)))

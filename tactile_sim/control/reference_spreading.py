@@ -1,7 +1,8 @@
 """Reference spreading for the strike (van Steen et al.): an ante-impact reference that continues
 through the expected contact, a post-impact reference that starts where the tool actually is when
 the impact is flagged, and an interim mode around the predicted contact. The switch to the post
-reference happens on the impact flag, never on the clock; a clock timeout only declares a miss."""
+reference happens on the impact flag, never on the clock; a clock timeout only declares a miss. A robot with no
+impact sensor switches on the clock instead (switch_on_time), a fixed delay after the predicted contact."""
 
 from __future__ import annotations
 
@@ -14,8 +15,11 @@ from tactile_sim.control.interface import Mode
 
 class ReferenceSpreader:
     def __init__(self, ante, make_post: Callable[[float, np.ndarray], object], t_c_pred: float,
-                 interim_lead: float = 0.010, timeout: float = 0.100):
+                 interim_lead: float = 0.010, timeout: float = 0.100, switch_on_time: bool = False):
+        """switch_on_time: the post reference starts `timeout` after the predicted contact by design (a robot with
+        no impact sensor), not as a miss."""
         self.ante = ante
+        self.switch_on_time = switch_on_time
         self.make_post = make_post
         self.t_c_pred = t_c_pred
         self.interim_lead = interim_lead
@@ -30,7 +34,7 @@ class ReferenceSpreader:
                 self.t_switch = t_flag
                 self.post = self.make_post(t_flag, x_now)
             elif t > self.t_c_pred + self.timeout:
-                self.missed = True
+                self.missed = not self.switch_on_time
                 self.t_switch = t
                 self.post = self.make_post(t, x_now)
         if self.post is not None:

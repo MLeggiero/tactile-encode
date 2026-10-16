@@ -83,7 +83,7 @@ def add_wrist(link7: ET.Element, arm: ArmCfg, attach_z: float = 0.107) -> tuple[
         sub(wf, "inertial", pos=(0, 0, 0), mass=0.02, diaginertia=(1e-6, 1e-6, 1e-6))
         for jn, ax in zip(names.WRIST_FLEX_JOINTS[:2], ((1, 0, 0), (0, 1, 0)), strict=True):
             sub(wf, "joint", name=jn, type="hinge", axis=ax, stiffness=arm.wrist_k_rot,
-                damping=arm.wrist_d_rot, range=(-0.1, 0.1), limited="true", armature=1e-5)
+                damping=arm.wrist_d_rot, range=(-arm.wrist_range, arm.wrist_range), limited="true", armature=1e-5)
         sub(wf, "joint", name=names.WRIST_FLEX_JOINTS[2], type="slide", axis=(0, 0, 1),
             stiffness=arm.wrist_k_lin, damping=arm.wrist_d_lin, range=(-0.005, 0.005), limited="true",
             armature=1e-4)
