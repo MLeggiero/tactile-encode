@@ -1,8 +1,8 @@
 """The friction study (residual_experiment's stage Efric): the hand's friction on the tool fixed per condition, the
 base at two hold levels, the zero residual and each student; outcomes and the residual's own activity.
 
-    python -m tactile_sim.experiments.friction_study --root runs/friction/e --out runs/friction/reports [--stage Efric] \
-        [--pair s250:s250v3 ...] [--exclude s250,s250v3a]
+    python -m tactile_sim.experiments.friction_study --root runs/friction/e --out runs/friction/reports \
+        [--stage Efric] [--pair s250:s250v3 ...] [--exclude s250,s250v3a]
 
 Writes report.md (the tables below) and four figures:
 - outcomes.png: per friction level and hold, lost strikes, net slip, slip path, nail advance and I2t per policy
