@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from tactile_sim.behaviors.strike_paths import is_straight
 from tactile_sim.behaviors.trajectories import (
     Segment,
     StrikePath,
@@ -100,7 +101,56 @@ class ScriptedSwing:
         self.grip_margin = 0.0
         self.m_tool = tb.l1.payload_mass
         self.v_cap, self.a_cap = self._arm_caps()
+        # a planned episode (behaviors.motion_plan, set by begin): the approach from a sampled start pose, each strike's
+        # windup apex on a CompositeStrikeGeometry, the windup and settle durations; None = the scripted swing as always
+        self.motion = None
+        self._strike_geom = None
+        self._probe = None
         self.reset()
+
+    @property
+    def approach_time(self) -> float:
+        return self.cfg.swing.approach_time if self.motion is None else self.motion.approach_time
+
+    @property
+    def windup_time(self) -> float:
+        return self.cfg.swing.windup_time if self.motion is None else self.motion.windup_time
+
+    @property
+    def settle_time(self) -> float:
+        return self.cfg.swing.settle_time if self.motion is None else self.motion.settle_time
+
+    def begin(self, t: float, motion) -> None:
+        """Start a planned episode at t, with the arm wherever behaviors.motion_plan.preroll left it: the approach to
+        the hover pose along the plan's TransitPath, then the strikes on the plan's windup curve."""
+        from tactile_sim.behaviors.feasibility import ArmProbe
+        from tactile_sim.behaviors.strike_paths import TransitPath
+
+        self.motion = motion
+        self._probe = ArmProbe(self.tb.world)
+        self._set_phase("approach", t)
+        self.line_origin = self.origin.copy()
+        x_now, R_now = self.tb.world.ctrl_pose()
+        # to the stroke's own hover pose (on an arc it is turned back from the contact orientation self.R), where the
+        # windup takes over along the stroke without a step in the reference
+        path = TransitPath(t, motion.approach_time, x_now, R_now, self.origin, self.tb.world.hover_R,
+                           motion.approach_via)
+        self.cmd.t = t
+        self.cmd.K = self.K_nom.copy()
+        self.cmd.R_K = np.eye(3)
+        self.cmd.ref = PlainRef(path)
+
+    def strike_geometry(self):
+        """This strike's path before the aim shift: the planned windup curve into the terminal stroke, or the configured
+        stroke itself."""
+        from tactile_sim.behaviors.strike_paths import CompositeStrikeGeometry
+
+        g = self.tb.world.geom
+        if self.motion is None:
+            return g
+        apex, R_apex = g.pose(-self.cfg.swing.windup_height)
+        return CompositeStrikeGeometry(g, apex + np.asarray(self.motion.apex_offset, float), R_apex,
+                                       -self.motion.junction)
 
     def _arm_caps(self) -> tuple[float, float]:
         """What the arm can do along the strike axis at the hover pose (orientation held):
@@ -192,10 +242,10 @@ class ScriptedSwing:
             self.done = True
             return
         if self.phase == "approach":
-            if t >= self.phase_t0 + sw.approach_time + 0.1:
+            if t >= self.phase_t0 + self.approach_time + 0.1:
                 self._start_windup(t)
         elif self.phase == "windup":
-            if t >= self.phase_t0 + sw.windup_time + 0.05:
+            if t >= self.phase_t0 + self.windup_time + 0.05:
                 self._start_swing(t)
         elif self.phase == "swing":
             p = self.plan
@@ -216,7 +266,7 @@ class ScriptedSwing:
                 cmd.ref = PlainRef(self._path([Segment(t, 0.001, min_jerk(0, 0, 0.001))]))
                 cmd.R_K = np.eye(3)
         elif self.phase == "settle":
-            if t >= self.phase_t0 + sw.settle_time:
+            if t >= self.phase_t0 + self.settle_time:
                 if self.on_strike_end is not None:
                     self.on_strike_end(self.plan)
                 self.k += 1
@@ -233,10 +283,12 @@ class ScriptedSwing:
         self.cmd.K = self.K_nom.copy()
         self.cmd.R_K = np.eye(3)
         self.line_origin = self.origin + self.aim_offset
+        self._strike_geom = self.strike_geometry()
+        s_apex = -sw.windup_height if self.motion is None else self._strike_geom.s_apex
         x_now = self.tb.world.ctrl_pose()[0]
         s0 = self._geom().s_of(x_now)
-        self.cmd.ref = PlainRef(self._path([Segment(t, sw.windup_time, min_jerk(s0, -sw.windup_height,
-                                                                                   sw.windup_time))]))
+        T = self.windup_time
+        self.cmd.ref = PlainRef(self._path([Segment(t, T, min_jerk(s0, s_apex, T))]))
 
     def _start_swing(self, t: float) -> None:
         sw = self.cfg.swing
@@ -244,7 +296,14 @@ class ScriptedSwing:
         # static aim at the windup pose: shift the line so the face, plus the drift the swing is expected
         # to add, lands on the nail. Tracking drift grows with the swing's acceleration, i.e. ~ v^2.
         v_next = sw.first_tap_speed if (self.k == 0 and sw.first_tap_speed > 0) else sw.v_strike
-        v_next = min(v_next, sw.v_margin * self.v_cap)  # the drift was learned at the speed actually swung
+        v_cap, a_cap = self.v_cap, self.a_cap
+        if self.motion is not None:
+            # the windup curve leaves the configured stroke: cap along it too (the stroke from the hover pose on is the
+            # configured one, capped at the hover pose as always)
+            g = self._strike_geom
+            vs, acs = self._probe.path_caps(g, np.linspace(g.s_apex, 0.0, 8), self.tb.l1.q_ref)
+            v_cap, a_cap = min(v_cap, float(vs.min())), min(a_cap, float(acs.min()))
+        v_next = min(v_next, sw.v_margin * v_cap)  # the drift was learned at the speed actually swung
         self._v_swing = v_next
         # where the face will be at the nominal contact if the tool moves rigidly along the path from here
         s_c0 = self.tb.world.geom.s_c0
@@ -258,8 +317,8 @@ class ScriptedSwing:
         s_now = self._geom().s_of(x_now)
         s_c = s_c0 + float((self.nail_estimate() - self._face_at(s_c0)) @ self.axis)
         dist = s_c - s_now
-        v_max = sw.v_margin * self.v_cap
-        a_max = min(sw.a_max, self.a_cap)
+        v_max = sw.v_margin * v_cap
+        a_max = min(sw.a_max, a_cap)
         v = min(self._v_swing, v_max)
         prof = None
         while sw.brake_decel > 0 and prof is None and v > 0.2:
@@ -317,7 +376,7 @@ class ScriptedSwing:
         current pose to the path pose at s (for a straight strike, a shift along the strike axis)."""
         g = self._geom()
         x_now, R_now = self.tb.world.ctrl_pose()
-        if g.L <= 0:
+        if is_straight(g):
             return self.face_estimate() + self.axis * (s - g.s_of(x_now))
         # arc: the hand goes from where it actually is to the path pose at s, carrying the tool with it
         p1, R1 = g.pose(s)
@@ -325,7 +384,8 @@ class ScriptedSwing:
 
     def _geom(self):
         """The strike path shifted by the current aim (line_origin - origin)."""
-        return self.tb.world.geom.shifted(self.line_origin - self.origin)
+        g = self.tb.world.geom if self._strike_geom is None else self._strike_geom
+        return g.shifted(self.line_origin - self.origin)
 
     def _path(self, segs) -> StrikePath:
         return StrikePath(self._geom(), segs)

@@ -15,3 +15,4 @@ paper/*.blg
 paper/*.out
 paper/*.pdf
 .claude/worktrees/
+.compound-engineering/

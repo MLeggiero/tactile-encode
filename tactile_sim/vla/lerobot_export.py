@@ -9,7 +9,9 @@
 
 State and action are absolute (vla.action): GR00T's modality config makes the arm relative itself
 (ActionRepresentation.RELATIVE), openpi's DeltaActions transform does the same. Only successful episodes are
-exported unless asked otherwise.
+exported unless asked otherwise; records of rejected planned episodes (vla.variation found no feasible motion) are
+always skipped, and so are demos that fail vla.quality's gates (unless asked for all). episodes.jsonl names each
+episode's generator ("scripted" or "planned") and whether it passed the gates.
 
     python -m tactile_sim.vla.lerobot_export runs/vla_demos/hammer --out runs/lerobot/vega_wuji_hammer
 """
@@ -98,7 +100,11 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
     for f in files:
         demo = load_demo(f)
         meta = demo["meta"]
-        if only_success and not meta["success"]:
+        if meta.get("status") == "rejected":  # the planned generator found no feasible motion: nothing was recorded
+            n_skipped += 1
+            continue
+        passed = meta.get("quality", {}).get("passed", True)  # demos recorded before vla.quality carry no record
+        if only_success and not (meta["success"] and passed):
             n_skipped += 1
             continue
         fps = fps or meta["fps"]
@@ -129,7 +135,8 @@ def export(raw: list[Path], out: Path, only_success: bool = True, chunk_size: in
         video.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(f.with_suffix(".mp4"), video)
         episodes.append({"episode_index": e, "tasks": [task], "length": T, "success": bool(meta["success"]),
-                         "source": f"{f.parent.name}/{f.stem}"})
+                         "source": f"{f.parent.name}/{f.stem}", "generator": meta.get("generator", "scripted"),
+                         "quality_passed": bool(passed)})
         st = {"observation.state": vector_stats(state), "action": vector_stats(action),
               VIDEO_KEY: ImageStats.summarize(demo["image_hist"])}
         st.update({k: vector_stats(cols[k][:, None].astype(np.float64)) for k in SCALARS})
@@ -192,7 +199,8 @@ def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("raw", nargs="+", help="directories of recorded demos (vla.demos --out)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--all", action="store_true", help="export failed episodes too (flagged in episodes.jsonl)")
+    ap.add_argument("--all", action="store_true",
+                    help="export failed episodes and those failing the quality gates too (flagged in episodes.jsonl)")
     ap.add_argument("--overwrite", action="store_true")
     a = ap.parse_args(argv)
     s = export([Path(r) for r in a.raw], Path(a.out), only_success=not a.all, overwrite=a.overwrite)

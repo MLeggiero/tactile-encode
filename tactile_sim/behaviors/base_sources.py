@@ -74,7 +74,7 @@ class SwingBase:
         if sw.phase == "windup":
             if self.windup_t0 is None:
                 self.windup_t0 = sw.phase_t0
-            t_c = self.windup_t0 + self.tb.cfg.swing.windup_time + 0.05 + self.t_swing_prev
+            t_c = self.windup_t0 + sw.windup_time + 0.05 + self.t_swing_prev
             v = self.tb.cfg.swing.v_strike
             return ForecastTruth(True, t_c, "impulse", 0.0, m_head * v / PULSE)
         self.windup_t0 = None

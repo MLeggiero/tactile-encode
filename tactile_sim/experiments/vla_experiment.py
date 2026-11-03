@@ -10,6 +10,11 @@ for residual bases from VLA runs).
     python -m tactile_sim.experiments.vla_experiment run --task hammer --server groot://localhost:5555 \\
         --seeds 100 --workers 6 [--policy NAME=PATH ...] --out runs/e2/groot_hammer
     python -m tactile_sim.experiments.vla_experiment report --task hammer --out runs/e2/groot_hammer
+
+--starts varied starts every episode away from the task instead of lined up over it: the start pose and a wider task
+shift come from the planned demo generator's sampler (vla.variation) on its own base seed (EVAL_SEED0, away from the
+demos'), pre-checked the same way, and the arm reaches the start in an unrecorded pre-roll before the VLA takes over.
+Varied runs live under <out>/varied/ and report separately.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ import numpy as np
 from tactile_sim.experiments.residual_experiment import paired_bootstrap
 
 MAX_TIME = {"hammer": 40.0, "drill": 12.0}  # s per episode
+EVAL_SEED0 = 900_000  # the varied starts' Sobol seed: away from the demos' (vla.demos --seed0, default 100 000)
 METRICS = {"hammer": ("done", "strikes", "advance_mm", "slip_rot_deg", "drops", "t_done"),
            "drill": ("done", "cam_outs", "slip_rot_deg", "slip_trans_mm", "drops", "t_done", "aim_mm", "trigger")}
 
@@ -75,10 +81,17 @@ class Job:
     smooth: int = 0
     hand_tables: str | None = None  # a LeRobot dataset (or its sidecar): the hand tables it was recorded under
     hammer: str = "ycb"  # the hammer task's hammer (config.HAMMERS); models trained on datasets v1-v3 need "light"
+    starts: str = "aligned"  # "varied": a sampled start pose away from the task (vla.variation)
 
     def path(self, root: Path) -> Path:
         safe = self.condition.name.replace(":", "_").replace("+", "__")
-        return root / safe / f"seed{self.seed}.json"
+        return start_root(root, self.starts) / safe / f"seed{self.seed}.json"
+
+
+def start_root(root: Path, starts: str) -> Path:
+    """Where a start condition's episodes live: aligned ones directly under the run's root (as before), varied ones
+    under root/varied, so neither run skips or reports the other's episodes."""
+    return root if starts == "aligned" else root / starts
 
 
 def run_job(job: Job, root: str) -> dict:
@@ -90,18 +103,24 @@ def run_job(job: Job, root: str) -> dict:
     if out.exists():
         return {"status": "skip", "path": str(out)}
     t0 = time.time()
-    cfg, draw = demo_config(job.task, job.seed, hammer=job.hammer)
+    shift = start = None
+    if job.starts == "varied":
+        from tactile_sim.vla.variation import task_shift
+
+        shift, start = task_shift(job.task, EVAL_SEED0, job.seed), (EVAL_SEED0, job.seed)
+    cfg, draw = demo_config(job.task, job.seed, hammer=job.hammer, shift=shift)
     if job.condition.overrides:
         cfg = cfg.replace(**job.condition.overrides)
     residual = make_policy(job.condition.policy)
     r = run_vla_episode(cfg, make_vla_policy(job.server), job.seed, latency=job.latency, exec_steps=job.exec_steps,
                         max_time=MAX_TIME[job.task], residual_policy=residual, blend=job.blend,
                         smooth=job.smooth, table=dataset_table(job.hand_tables, job.task),
-                        sensor_noise_scale=draw["dr"]["_runtime"]["sensor_noise_scale"])
+                        sensor_noise_scale=draw["dr"]["_runtime"]["sensor_noise_scale"], start=start)
     chunks = r.pop("chunks")
     payload = {"job": {"task": job.task, "condition": job.condition.name, "policy": job.condition.policy,
                        "seed": job.seed, "server": job.server, "latency": job.latency, "exec_steps": job.exec_steps,
-                       "blend": job.blend, "smooth": job.smooth, "hand_tables": job.hand_tables},
+                       "blend": job.blend, "smooth": job.smooth, "hand_tables": job.hand_tables,
+                       "starts": job.starts},
                **r, "draw": draw, "wall_s": time.time() - t0}
     out.parent.mkdir(parents=True, exist_ok=True)
     np.savez(out.with_suffix(".chunks.npz"), **chunks)
@@ -215,19 +234,22 @@ def main(argv: list[str] | None = None) -> int:
                     help="the hammer task's hammer: the real YCB claw hammer, or the light primitive one, which models "
                          "trained on datasets v1-v3 saw")
     ap.add_argument("--policy", action="append", default=[], help="NAME=PATH of an exported residual policy")
+    ap.add_argument("--starts", default="aligned", choices=("aligned", "varied"),
+                    help="aligned: lined up over the task, as the scripted demos start; varied: a sampled start pose "
+                         "away from it and a wider task shift (vla.variation), reported under <out>/varied")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     root = Path(a.out)
     conds = conditions(dict(p.split("=", 1) for p in a.policy))
     jobs = [Job(a.task, c, a.seed0 + s, a.server, a.latency, a.exec_steps, a.blend, a.smooth, a.hand_tables,
-                a.hammer) for c in conds for s in range(a.seeds)]
+                a.hammer, a.starts) for c in conds for s in range(a.seeds)]
     if a.cmd == "list":
         for j in jobs:
             print(j.condition.name, j.seed, "done" if j.path(root).exists() else "")
     elif a.cmd == "run":
         run_all(jobs, root, a.workers)
     else:
-        print(report(a.task, root))
+        print(report(a.task, start_root(root, a.starts)))
     return 0
 
 

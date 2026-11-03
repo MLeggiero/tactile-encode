@@ -21,6 +21,78 @@ The experiment's scripted base holds the tool with a constant, open-loop grip (`
 on the pads and no slip feedback from the simulator's truth, which a VLA without touch could not reproduce either.
 Everything that reacts to touch is the residual's.
 
+## Planned motion variation (2026-10-31)
+
+The scripted demos all start lined up over the task and swing the same way. So a model can score on them without
+looking at where the nail is. `--generator planned` varies the motion itself (plan:
+`docs/plans/2026-10-31-001-feat-vla-demo-motion-variation-plan.md`).
+
+**What is varied** (`vla/variation.py`, `HammerSpace` and `DrillSpace`, Sobol point *i* of the dataset's `--seed0` for
+episode *i*):
+- The start pose: up to ±8 cm across, 0–8 cm above the hover or pre-contact pose, tilted up to ±8° per axis.
+  - The arm reaches it in an unrecorded pre-roll (`behaviors/motion_plan.py`), and recording begins with the planned
+    approach.
+  - The approach has its own duration and a sideways bulge (`behaviors/strike_paths.TransitPath`).
+- The task's position on the table: ±6 cm, or ±5 cm for the drill (the scripted demos use ±3 cm).
+- The hammer's windup curve (`CompositeStrikeGeometry`):
+  - an apex up to 5–6 cm off the nominal one, back, along the handle or across;
+  - where the curve joins the terminal stroke (0–6 cm before the hover pose);
+  - the windup time (0.35–0.6 s) and the settle time (0.1–0.3 s).
+
+  The blow still meets the nail square, along the strike axis.
+
+**The pre-check** (`behaviors/feasibility.ArmProbe`) runs before anything is simulated, on a scratch copy of the
+episode's world:
+- **What it checks:** the start's IK, the pre-roll, the approach and the hammer's whole stroke up to 3 cm before
+  contact, for reach, joint margin, IK continuity, and clearance to the table, board, torso and other arm.
+- **How:** the robot's geoms have collisions disabled in the scene, so physics would not catch an arm through the
+  table. The probe runs MuJoCo's collision pipeline on a copy in which only arm/tool-vs-obstacle pairs collide, with a
+  1 cm margin. `mj_geomDistance` reports zero for some mesh pairs tens of cm apart on this scene (MuJoCo 3.11).
+- **Retries:** a rejected candidate is redrawn, up to 20 times. An episode with no feasible draw is written as a
+  metadata-only record (`status: "rejected"`), which the export skips.
+- **The strike's speed caps** are evaluated along the whole planned stroke, not only at the hover pose.
+
+The default (`--generator scripted`) is unchanged, bit for bit: `tests/test_motion_plan.py` checks the default bases
+against golden traces (`tests/data/golden_bases.json`).
+
+```bash
+python -m tactile_sim.vla.demos --task hammer --generator planned --episodes 500 --workers 8 --out runs/vla_demos/hammer_planned
+python -m tactile_sim.vla.demos --task drill --generator planned --episodes 500 --workers 8 --out runs/vla_demos/drill_planned
+python -m tactile_sim.vla.coverage runs/vla_demos/hammer_planned runs/vla_demos/drill_planned   # outcomes, rejections, success by region
+python -m tactile_sim.vla.lerobot_export runs/vla_demos/hammer_planned runs/vla_demos/drill_planned --out runs/lerobot/vega_wuji_tools_v6
+# the closed loop from misaligned starts (sampled on EVAL_SEED0, away from the demos'), reported under <out>/varied
+python -m tactile_sim.experiments.vla_experiment run --task hammer --server groot://localhost:5555 --starts varied --out runs/e2/groot_hammer
+python -m tactile_sim.experiments.vla_experiment report --task hammer --starts varied --out runs/e2/groot_hammer
+```
+
+Exported datasets tag each episode's generator in `episodes.jsonl`, so scripted and planned demos can be exported
+together or kept apart.
+
+**Timing.** The pre-check also times the pre-roll, the approach and the windup so that no joint's target moves faster
+than 70 % of its velocity limit. A sampled duration too short for its path is stretched to fit (up to 2.5×), and the
+plan records the duration it got.
+
+**Quality gates** (`vla/quality.py`, both generators). A demo that completes its task is exported only if it also
+passes:
+- **The arm's limits:** joint velocity, range and torque within their ratings over the episode. The WUJI's hard-stop
+  loads are recorded but not gated: the wrap's knuckles rest on their stops in every normal blow.
+- **The tool in the hand:** per hammer strike, no more than 7 mm or 5° (scripted and planned demos stay under 3°).
+  Over a drill episode, no more than 5 mm or 10°, and no cam-outs. The drill's clutch rolls it 4.7–6.5° in the fingers
+  in good demos.
+- **The blows:** no more than a quarter land off the nail head or miss.
+- **The labels:** the arm's recorded targets never move faster than a joint's limit between frames, and show no
+  sustained frame-to-frame oscillation. This is three or more consecutive sign flips of the second difference, the
+  signature of the closed-loop failure above. Real demos score 0.
+
+Each demo's metrics, pass or fail, and reasons are in its metadata (`quality`). `lerobot_export --all` includes failing
+demos, flagged `quality_passed: false` in `episodes.jsonl`.
+
+**Coverage** (`vla/coverage.py`). The report also gives each sampled parameter's coverage against the intended
+uniform range, in 5 bins, with a bin under half its share flagged. It does this twice: after the pre-check (the plans
+simulated) and among the exported demos, so a gap can be traced to infeasibility or to the simulation and the gates.
+A rejected candidate redraws only the parameter group that failed: the start, the start and approach, or the swing.
+The episode's other coordinates keep their Sobol values.
+
 ## Commands (desktop)
 
 ```bash
