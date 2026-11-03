@@ -24,8 +24,9 @@ Everything that reacts to touch is the residual's.
 ## Planned motion variation (2026-10-31)
 
 The scripted demos all start lined up over the task and swing the same way. So a model can score on them without
-looking at where the nail is. `--generator planned` varies the motion itself (plan:
-`docs/plans/2026-10-31-001-feat-vla-demo-motion-variation-plan.md`).
+looking at where the nail is. The planned generator, `vla.demos`' default, varies the motion itself (plan:
+`docs/plans/2026-10-29-001-feat-vla-demo-motion-variation-plan.md`); `--generator scripted` records the one scripted
+motion, as datasets v1-v5 were.
 
 **What is varied** (`vla/variation.py`, `HammerSpace` and `DrillSpace`, Sobol point *i* of the dataset's `--seed0` for
 episode *i*):
@@ -56,8 +57,8 @@ The default (`--generator scripted`) is unchanged, bit for bit: `tests/test_moti
 against golden traces (`tests/data/golden_bases.json`).
 
 ```bash
-python -m tactile_sim.vla.demos --task hammer --generator planned --episodes 500 --workers 8 --out runs/vla_demos/hammer_planned
-python -m tactile_sim.vla.demos --task drill --generator planned --episodes 500 --workers 8 --out runs/vla_demos/drill_planned
+python -m tactile_sim.vla.demos --task hammer --episodes 500 --workers 8 --out runs/vla_demos/hammer_planned
+python -m tactile_sim.vla.demos --task drill --episodes 500 --workers 8 --out runs/vla_demos/drill_planned
 python -m tactile_sim.vla.coverage runs/vla_demos/hammer_planned runs/vla_demos/drill_planned   # outcomes, rejections, success by region
 python -m tactile_sim.vla.lerobot_export runs/vla_demos/hammer_planned runs/vla_demos/drill_planned --out runs/lerobot/vega_wuji_tools_v6
 # the closed loop from misaligned starts (sampled on EVAL_SEED0, away from the demos'), reported under <out>/varied
@@ -97,7 +98,7 @@ The episode's other coordinates keep their Sobol values.
 
 ```bash
 # demos (CPU; ~3 min per episode per worker at the 8 kHz validator physics)
-python -m tactile_sim.vla.demos --task hammer --episodes 500 --workers 8 --out runs/vla_demos/hammer
+python -m tactile_sim.vla.demos --task hammer --generator scripted --episodes 500 --workers 8 --out runs/vla_demos/hammer
 python -m tactile_sim.vla.lerobot_export runs/vla_demos/hammer --out runs/lerobot/vega_wuji_hammer
 
 # GR00T N1.7 (Isaac-GR00T's conda env; torchcodec needs FFmpeg 4-7 and deepspeed an nvcc, both kept in

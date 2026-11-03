@@ -198,7 +198,7 @@ def test_a_demo_records_the_vla_view_state_and_action(tmp_path, monkeypatch):
     except RuntimeError:
         pytest.skip("no ffmpeg")
     monkeypatch.setattr(demos, "MAX_STRIKES", 1)
-    job = demos.DemoJob("hammer", 0, 7, str(tmp_path), fast=True)
+    job = demos.DemoJob("hammer", 0, 7, str(tmp_path), fast=True, generator="scripted")
     try:
         r = demos.run_demo(job)
     except Exception as e:  # noqa: BLE001
@@ -274,7 +274,7 @@ def test_a_replayed_demo_hammers_through_the_vla_client(tmp_path, monkeypatch):
     except RuntimeError:
         pytest.skip("no ffmpeg")
     monkeypatch.setattr(demos, "MAX_STRIKES", 1)
-    job = demos.DemoJob("hammer", 0, 11, str(tmp_path), fast=True)
+    job = demos.DemoJob("hammer", 0, 11, str(tmp_path), fast=True, generator="scripted")
     try:
         demos.run_demo(job)
     except Exception as e:  # noqa: BLE001
@@ -303,7 +303,7 @@ def test_a_drill_demo_pulls_the_trigger_through_the_index_targets(tmp_path):
         demos.ffmpeg_exe()
     except RuntimeError:
         pytest.skip("no ffmpeg")
-    job = demos.DemoJob("drill", 0, 3, str(tmp_path), fast=True)
+    job = demos.DemoJob("drill", 0, 3, str(tmp_path), fast=True, generator="scripted")
     try:
         r = demos.run_demo(job)
     except Exception as e:  # noqa: BLE001
@@ -393,6 +393,7 @@ def test_the_vla_demos_and_evaluations_default_to_the_real_hammer():
     assert demos.demo_config("hammer", 1, fast=True)[0].hammer.model == "ycb"
     assert demos.demo_config("hammer", 1, fast=True, hammer="light")[0].hammer.model == "primitive"
     assert demos.DemoJob("hammer", 0, 1, "out").hammer == "ycb"
+    assert demos.DemoJob("hammer", 0, 1, "out").generator == "planned"
     assert Job.__dataclass_fields__["hammer"].default == "ycb"
 
 
@@ -454,7 +455,7 @@ def test_a_replayed_drill_demo_seats_the_screw_through_the_vla_client(tmp_path):
         demos.ffmpeg_exe()
     except RuntimeError:
         pytest.skip("no ffmpeg")
-    job = demos.DemoJob("drill", 0, 3, str(tmp_path), fast=True)
+    job = demos.DemoJob("drill", 0, 3, str(tmp_path), fast=True, generator="scripted")
     try:
         demos.run_demo(job)
     except Exception as e:  # noqa: BLE001

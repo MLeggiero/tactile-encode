@@ -15,11 +15,12 @@ VlaCfg.fps (frame k at the first millisecond at or after k / fps):
 The vectors, timing, outcome and draws go to an .npz beside the mp4; vla.lerobot_export turns a directory of
 them into a LeRobot v2.1 dataset.
 
---generator planned varies the motion itself (vla.variation): each episode samples a start pose away from the task, an
-approach path, and for the hammer a windup curve and its timing, pre-checked for reach, joint margins and clearance; the
-task also moves farther on the table. The arm reaches the start pose in an unrecorded pre-roll
+The default generator, planned, varies the motion itself (vla.variation): each episode samples a start pose away from
+the task, an approach path, and for the hammer a windup curve and its timing, pre-checked for reach, joint margins and
+clearance; the task also moves farther on the table. The arm reaches the start pose in an unrecorded pre-roll
 (behaviors.motion_plan.preroll), and recording begins with the planned approach. An episode whose candidates all fail
-the pre-check is written as a metadata-only .npz (status "rejected"), which the export skips.
+the pre-check is written as a metadata-only .npz (status "rejected"), which the export skips. --generator scripted
+records the task's one scripted motion instead, starting over the task (datasets v1-v5).
 
 Every recorded demo is also assessed by vla.quality: arm limits, the tool's slip in the hand, off-centre blows, and the
 smoothness of the recorded arm targets. The result is in its metadata ("quality"), and the export skips demos that fail.
@@ -226,7 +227,7 @@ class DemoJob:
     fast: bool = False
     hammer: str = "ycb"  # config.HAMMERS: the real YCB hammer, or "light" (datasets v1-v3)
     perturb: float = 0.0  # DemoPerturbation's chance of a push per window (0: none, datasets up to v4)
-    generator: str = "scripted"  # "planned": vla.variation's varied motion
+    generator: str = "planned"  # vla.variation's varied motion; "scripted": the one scripted motion (v1-v5)
     seed0: int = 100_000  # the dataset's base seed (seed = seed0 + index), seeding the planned generator's Sobol points
 
     @property
@@ -445,9 +446,9 @@ def main(argv: list[str] | None = None) -> None:
                          "(datasets v1-v3)")
     ap.add_argument("--perturb", type=float, default=0.0,
                     help="DemoPerturbation: chance of a recovery push per window (0: none)")
-    ap.add_argument("--generator", default="scripted", choices=("scripted", "planned"),
-                    help="scripted: the task's one scripted motion; planned: vla.variation's varied start, approach "
-                         "and (hammer) windup curve, pre-checked")
+    ap.add_argument("--generator", default="planned", choices=("planned", "scripted"),
+                    help="planned (default): vla.variation's varied start, approach and (hammer) windup curve, "
+                         "pre-checked; scripted: the task's one scripted motion (datasets v1-v5)")
     ap.add_argument("--out", default=None)
     a = ap.parse_args(argv)
     out = a.out or f"runs/vla_demos/{a.task}"
