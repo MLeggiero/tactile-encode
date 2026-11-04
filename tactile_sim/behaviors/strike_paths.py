@@ -151,6 +151,44 @@ class CompositeStrikeGeometry:
         return float(s_t)
 
 
+class JointPathView:
+    """The controlled frame along a joint path (behaviors.joint_planner.JointPath) by forward kinematics on a scratch
+    MjData: the task-space view of a joint stream, for a base's targets and command while the stream drives the arm.
+    pose(t) leaves `R` alone (lookahead); evaluate(t) -> (x, xd, xdd) sets it, as StrikePath does."""
+
+    def __init__(self, world, path):
+        import mujoco
+
+        self.w, self.path = world, path
+        self._mj = mujoco
+        self._d = mujoco.MjData(world.model)
+        self._d.qpos[:] = world.data.qpos
+        self.R = self.pose(path.t0)[1]
+
+    @property
+    def t_end(self) -> float:
+        return self.path.t_end
+
+    def _fk(self, q: np.ndarray) -> None:
+        d = self._d
+        d.qpos[self.w.arm_qadr] = q
+        self._mj.mj_kinematics(self.w.model, d)
+        self._mj.mj_comPos(self.w.model, d)
+
+    def pose(self, t: float) -> tuple[np.ndarray, np.ndarray]:
+        self._fk(self.path(t)[0])
+        p, R = self.w.ctrl_pose(self._d)
+        return np.array(p, float), np.array(R, float)
+
+    def evaluate(self, t: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        q, qd = self.path(t)
+        self._fk(q)
+        p, R = self.w.ctrl_pose(self._d)
+        J = self.w.ctrl_jacobian(self.w.arm_dofs, self._d)
+        self.R = np.array(R, float)
+        return np.array(p, float), J @ np.asarray(qd, float), np.zeros(6)
+
+
 class TransitPath:
     """From pose (p0, R0) at t0 to pose (p1, R1) at t0 + T: a quadratic Bezier through the control point (midpoint +
     `via`), min-jerk in time, the orientation turned about one world axis. Holds the end pose after T. Exposes the

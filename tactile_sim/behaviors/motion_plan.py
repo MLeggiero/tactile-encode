@@ -7,9 +7,11 @@ them. With no plan the bases (behaviors.swing.ScriptedSwing, behaviors.tool_task
 before.
 
 The pre-roll: the testbed settles the grasp at the hover pose as always (World.reset); the base's L2 tick is taken
-off the scheduler, the arm follows a min-jerk joint stream to the plan's start configuration and holds it briefly, and
-then the base begins the planned approach (`begin`) on the same tick the stream is released, so no command tick sees
-a stale reference.
+off the scheduler, the arm follows a joint stream to the plan's start configuration (a straight min-jerk move, or the
+pre-check's planned path when a straight one would collide) and holds it briefly, and then the base begins the planned
+approach (`begin`) on the same tick the stream is released, so no command tick sees a stale reference. The approach is
+itself a joint stream (approach_path: the timed joint path the pre-check validated, behaviors.joint_planner), which the
+base releases at its end and hands to the windup (hammer) or the line-up and feed (drill).
 """
 
 from __future__ import annotations
@@ -52,6 +54,18 @@ class HammerPlan:
     windup_time: float
     settle_time: float
     preroll_time: float = 1.0  # s, the unrecorded move from the hover pose to the start pose
+    # the approach as a timed joint path (behaviors.joint_planner.JointPath.to_dict), executed as a joint stream so
+    # the motion run is the one the pre-check validated; None: the pre-roll-era task-space approach (plans saved before)
+    approach_path: dict | None = None
+    preroll_path: dict | None = None  # the pre-roll's planned joint path; None = a straight joint-space move
+    planner: str = "curve"  # what produced the approach: "curve" (the TransitPath, IK'd) or "rrt" (joint_planner)
+    speed_frac: float = 1.0  # the approach's speed as a fraction of the fastest the joint limits allow
+    # per strike k: {"apex_offset": [x, y, z] (world, m, from the nominal apex), "windup_time": s, "speed": x v};
+    # strikes past the list use the episode's values
+    strikes: tuple = ()
+    # per tenth of the approach: whether the arm and tool keep vla.variation.PUSH_REACH from every obstacle there (a
+    # DART push may start only where they do); empty = no record, pushes everywhere as before
+    room: tuple = ()
     kind: str = field(default="hammer", init=False)
 
 
@@ -64,6 +78,18 @@ class DrillPlan:
     approach_time: float
     approach_via: tuple[float, float, float]
     preroll_time: float = 1.0
+    approach_path: dict | None = None
+    preroll_path: dict | None = None
+    planner: str = "curve"
+    speed_frac: float = 1.0
+    # the angled entry: the approach ends short of the pre-contact pose, turned by align_rotvec (rad, about an axis
+    # across the bit), align_back (m) further back along the bit and align_across (m) off its axis; the feed lines the
+    # bit up over align_time before its own approach; zeros = arrive aimed
+    align_rotvec: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    align_back: float = 0.0
+    align_across: float = 0.0
+    align_time: float = 0.0
+    room: tuple = ()
     kind: str = field(default="drill", init=False)
 
 
@@ -92,12 +118,28 @@ def min_jerk_joint_stream(t0: float, T: float, q0: np.ndarray, q1: np.ndarray):
     return stream
 
 
-def preroll(tb, q_start, T: float, hold: float = PREROLL_HOLD, base=None, plan=None, step_cb=None) -> None:
-    """Move the arm to q_start in joint space (min-jerk over T, then `hold`) with the scripted L2 off, then release the
-    joint stream and, when given, start `base` on the plan (`base.begin(t, plan)`) before the next step."""
+def approach_path(plan, t0: float):
+    """The plan's approach as a joint stream starting at t0 (behaviors.joint_planner.JointPath)."""
+    from tactile_sim.behaviors.joint_planner import JointPath
+
+    return JointPath.from_dict(plan.approach_path, t0)
+
+
+def preroll(tb, q_start, T: float, hold: float = PREROLL_HOLD, base=None, plan=None, step_cb=None,
+            path: dict | None = None) -> None:
+    """Move the arm to q_start in joint space with the scripted L2 off: along `path` (a JointPath.to_dict, the
+    pre-check's planned pre-roll) when given, else a straight min-jerk move over T; hold for `hold`, release the joint
+    stream and, when given, start `base` on the plan (`base.begin(t, plan)`) before the next step."""
+    from tactile_sim.behaviors.joint_planner import JointPath
+
     l2 = list(tb.l2_callbacks)
     tb.l2_callbacks[:] = []
-    tb.l1.set_joint_stream(min_jerk_joint_stream(tb.t, T, tb.l1.q_ref.copy(), q_start))
+    if path is None:
+        stream = min_jerk_joint_stream(tb.t, T, tb.l1.q_ref.copy(), q_start)
+    else:
+        stream = JointPath.from_dict(path, tb.t)
+        T = stream.T
+    tb.l1.set_joint_stream(stream)
     for _ in range(int(round((T + hold) / tb.world.dt))):
         tb.step()
         if step_cb is not None:

@@ -24,22 +24,41 @@ def test_draws_are_deterministic_and_cover_the_space():
     assert pts.shape == (64, SPACES["drill"].dims)
     for axis in range(2, 5):  # the start position's three axes: every eighth of the range is visited
         assert len(set((pts[:, axis] * 8).astype(int))) == 8
-    dx, dy = task_shift("hammer", 7, 5)
-    h = SPACES["hammer"].task_shift
-    assert abs(dx) <= h and abs(dy) <= h and (dx, dy) == task_shift("hammer", 7, 5)
+    (xl, xh), (yl, yh) = SPACES["hammer"].task_shift
+    for i in range(16):
+        dx, dy = task_shift("hammer", 7, i)
+        assert xl <= dx <= xh and yl <= dy <= yh and (dx, dy) == task_shift("hammer", 7, i)
 
 
-def test_candidates_start_above_the_task_within_the_box_and_tilt():
+def test_candidates_start_on_the_shell_or_from_an_anchor_posture():
+    from tactile_sim.vla.variation import ANCHORS
+
     sp = SPACES["hammer"]
-    p, R = np.array([0.5, 0.0, 0.9]), np.eye(3)
-    for i in range(32):
-        c = candidate("hammer", unit_point("hammer", 1, i), p, R)
+    p, R, q_hover = np.array([0.5, 0.0, 0.9]), np.eye(3), np.zeros(7)
+    dists, anchors = [], 0
+    for i in range(64):
+        c = candidate("hammer", unit_point("hammer", 1, i), p, R, q_hover)
+        if c["family"] == "anchor":
+            anchors += 1
+            assert c["anchor"] in ANCHORS
+            assert np.all(np.abs(c["start_q"] - np.asarray(ANCHORS[c["anchor"]])) <= sp.anchor_jitter + 1e-12)
+            continue
         off = c["start_pos"] - p
-        assert np.all(np.abs(off[:2]) <= sp.start_box[:2]) and 0.0 <= off[2] <= sp.start_box[2]
+        r = float(np.linalg.norm(off))
+        dists.append(r)
+        assert sp.start_dist[0] - 1e-9 <= r <= sp.start_dist[1] + 1e-9
+        if r > 1e-6:
+            el = np.degrees(np.arcsin(off[2] / r))
+            assert sp.start_elev[0] - 1e-6 <= el <= sp.start_elev[1] + 1e-6
         assert np.degrees(np.arccos(np.clip((np.trace(c["start_R"]) - 1) / 2, -1, 1))) <= np.sqrt(3) * sp.start_tilt
+        assert sp.speed_frac[0] <= c["speed_frac"] <= sp.speed_frac[1]
         assert sp.junction[0] <= c["junction"] <= sp.junction[1]
         assert sp.apex_back[0] <= c["apex_offset"][0] <= sp.apex_back[1]
         assert sp.windup_time[0] <= c["windup_time"] <= sp.windup_time[1]
+    assert abs(anchors / 64 - sp.anchor_share) <= 0.1  # the anchor share, within ten points
+    assert min(dists) < 0.1 and max(dists) > 0.3  # the shell spans near and far starts
+    # without the hover posture every start is a shell start (the pre-check's tests pose their own)
+    assert all(candidate("hammer", unit_point("hammer", 1, i), p, R)["family"] == "shell" for i in range(16))
 
 
 @pytest.fixture(scope="module")
@@ -108,13 +127,17 @@ def test_a_planned_demo_starts_away_from_the_task_and_records_the_approach(tmp_p
     if not hasattr(np, "trapezoid"):
         monkeypatch.setattr(np, "trapezoid", np.trapz, raising=False)
     monkeypatch.setattr(demos, "MAX_STRIKES", 1)
-    job = demos.DemoJob("hammer", 3, 103, str(tmp_path), fast=True, perturb=1.0, generator="planned", seed0=100)
-    try:
-        r = demos.run_demo(job)
-    except Exception as e:  # noqa: BLE001
-        if "EGL" in str(e) or "GL" in type(e).__name__ or "gl" in str(e).lower():
-            pytest.skip(f"offscreen rendering unavailable: {e}")
-        raise
+    for index in range(3, 9):  # the first episode the pre-check accepts (a rejection is cheap: nothing is simulated)
+        job = demos.DemoJob("hammer", index, 100 + index, str(tmp_path), fast=True, perturb=1.0, generator="planned",
+                            seed0=100)
+        try:
+            r = demos.run_demo(job)
+        except Exception as e:  # noqa: BLE001
+            if "EGL" in str(e) or "GL" in type(e).__name__ or "gl" in str(e).lower():
+                pytest.skip(f"offscreen rendering unavailable: {e}")
+            raise
+        if r["status"] == "ok":
+            break
     assert r["status"] == "ok"
     d = demos.load_demo(job.stem.with_suffix(".npz"))
     m = d["meta"]
@@ -162,12 +185,12 @@ def test_the_export_skips_rejected_records_and_names_generators(tmp_path):
 def test_the_coverage_report_counts_outcomes_reasons_and_coverage():
     from tactile_sim.vla.coverage import report
 
-    u_low, u_high = [0.1] * 18, [0.9] * 18
+    u_low, u_high = [0.1] * 20, [0.9] * 20
     metas = [
         {"task": "hammer", "success": True, "status": "ok", "start_offset": [0.05, 0.0, 0.0],
          "attempts": [{"ok": False, "reason": "collision", "where": "preroll[3] a/b"},
                       {"ok": True, "reason": "ok", "where": "", "u": u_low}],
-         "plan": {"apex_offset": [0.01, 0.0, 0.0]}, "quality": {"passed": True, "reasons": []}},
+         "plan": {"apex_offset": [0.01, 0.0, 0.0], "planner": "rrt"}, "quality": {"passed": True, "reasons": []}},
         {"task": "hammer", "success": True, "status": "ok", "start_offset": [0.05, 0.02, 0.0],
          "attempts": [{"ok": True, "reason": "ok", "where": "", "u": u_high}], "plan": {"apex_offset": [0.04, 0, 0]},
          "quality": {"passed": False, "reasons": ["strike_turn: 6.2 deg", "arm_velocity: 1.05x"]}},
@@ -180,7 +203,8 @@ def test_the_coverage_report_counts_outcomes_reasons_and_coverage():
     assert "4 episodes: 1 exported, 1 failed the quality gates, 1 failed in simulation, 1 rejected" in text
     assert "1  strike_turn" in text and "1  arm_velocity" in text
     assert "20  unreachable (start)" in text and "1  collision (preroll)" in text
-    assert "4-8 cm: 1/2 (50 %)" in text  # a demo failing the gates does not count as a success
+    assert "0-10 cm: 1/3 (33 %)" in text  # a demo failing the gates does not count as a success
+    assert "rrt, shell: 1/1 (100 %)" in text and "curve, shell: 0/2 (0 %)" in text
     lines = text.splitlines()
     i = lines.index("  coverage after the pre-check (3 episodes; 5 bins per parameter, expected 0.6 each):")
     assert lines[i + 1].split(":")[1].split()[:5] == ["1", "0", "0", "0", "2"] and "UNDER-COVERED" in lines[i + 1]
@@ -230,14 +254,16 @@ def test_a_rejection_redraws_only_the_group_that_failed(hammer_world):
     from tactile_sim.vla.variation import APPROACH, START, SWING, redraw_groups, sample_plan
 
     assert redraw_groups("start") == [START] and redraw_groups("preroll[4] a/b") == [START]
-    assert redraw_groups("approach[2]") == [START, APPROACH]
+    assert redraw_groups("approach[2]") == [START] and redraw_groups("approach") == [START]
+    assert redraw_groups("align[3] driver_bit/board") == [SWING]  # the drill's angled entry shares the last group
+    assert APPROACH.stop == SWING.start
     assert redraw_groups("stroke 0.81 of 0.93 m/s") == [SWING] and redraw_groups("windup") == [SWING]
     tb, _ = hammer_world
     for i in range(12):
         plan, attempts = sample_plan("hammer", tb, 7, i)
         if plan is None or len(attempts) < 2:
             continue
-        touched = np.zeros(18, bool)
+        touched = np.zeros(SPACES["hammer"].dims, bool)
         for a in attempts[:-1]:
             for g in redraw_groups(a["where"]):
                 touched[g] = True
@@ -246,3 +272,124 @@ def test_a_rejection_redraws_only_the_group_that_failed(hammer_world):
         assert not np.array_equal(u[touched], sobol[touched])
         return
     pytest.skip("no episode needed a retry")
+
+
+def test_the_probe_sees_the_gap_to_a_primitive_not_only_overlap(hammer_world):
+    """A mesh against a box (the hammer head over the board): MuJoCo's collision pass reports only overlap there, so
+    the probe measures the gap itself; a pose 5 mm off the board fails CLEARANCE, as the pre-check means it to."""
+    from tactile_sim.behaviors.feasibility import CLEARANCE, ArmProbe
+
+    tb, _ = hammer_world
+    w = tb.world
+    probe = ArmProbe(w)
+    q_hover = w.data.qpos[w.arm_qadr].copy()
+    p, R = w.ctrl_pose()
+    q0, *_ = probe.ik(p + np.array([-0.251, -0.145, -0.078]), R, q_hover)
+    gaps = []
+    for k in np.linspace(0.0, 1.0, 81):
+        q = q0 + (q_hover - q0) * k
+        d, pair = probe.clearance(q)
+        if 0.0 < d < CLEARANCE:
+            gaps.append((d, pair, probe.valid(q)))
+    assert gaps, "no pose between 0 and CLEARANCE off an obstacle was seen"
+    assert all(not ok for _, _, ok in gaps)  # near is not clear
+    assert any("board" in pair for _, pair, _ in gaps)
+
+
+def test_the_anchor_postures_are_valid_starts(hammer_world):
+    from tactile_sim.behaviors.feasibility import ArmProbe
+    from tactile_sim.vla.variation import ANCHORS
+
+    tb, _ = hammer_world
+    w = tb.world
+    probe = ArmProbe(w)
+    q_hover = w.data.qpos[w.arm_qadr].copy()
+    for name, off in ANCHORS.items():
+        assert probe.valid(q_hover + np.asarray(off)), name
+
+
+def test_strikes_vary_around_the_episode_and_fall_back_when_infeasible(hammer_world, monkeypatch):
+    import tactile_sim.vla.variation as var
+    from tactile_sim.behaviors.feasibility import Verdict
+
+    tb, _ = hammer_world
+    plan, attempts = var.sample_plan("hammer", tb, 7, 1)
+    assert plan is not None and len(plan.strikes) == var.N_STRIKE_DRAWS
+    again, _ = var.sample_plan("hammer", tb, 7, 1)
+    assert again.strikes == plan.strikes  # reproducible per episode
+    apexes = np.array([s["apex_offset"] for s in plan.strikes])
+    assert len({tuple(a) for a in apexes.round(6)}) > 1  # the strikes differ
+    assert np.all(np.abs(apexes - np.asarray(plan.apex_offset)) <= var.STRIKE_JITTER["apex"] * np.sqrt(3) + 1e-9)
+    assert all(abs(s["speed"] - 1.0) <= var.STRIKE_JITTER["speed"] + 1e-12 for s in plan.strikes)
+    # with every jittered swing infeasible, the strikes keep the episode's checked values and the plan stands
+    real = var.check_swing
+    calls = {"n": 0}
+
+    def fail_jitter(*a, **k):
+        calls["n"] += 1
+        return (Verdict(False, "slow_strike", "stroke"), {}) if calls["n"] > 1 else real(*a, **k)
+
+    monkeypatch.setattr(var, "check_swing", fail_jitter)
+    plan2, att2 = var.sample_plan("hammer", tb, 7, 1)
+    assert plan2 is not None and att2[-1]["strike_fallbacks"] == var.N_STRIKE_DRAWS
+    assert all(s["apex_offset"] == list(plan2.apex_offset) and s["speed"] == 1.0 for s in plan2.strikes)
+
+
+@pytest.fixture(scope="module")
+def drill_world():
+    if not (hand_available("wuji2") and hand_available("vega_1u")):
+        pytest.skip("WUJI Hand 2 or the Vega U not cached")
+    from tactile_sim.vla.demos import EPISODES, demo_config
+
+    cfg, _ = demo_config("drill", 100_003, fast=True)
+    tb, base, _ = EPISODES["drill"](cfg, 100_003)
+    return tb, base
+
+
+def test_the_drill_comes_in_at_an_angle_and_its_near_pairs_only_must_not_overlap(drill_world):
+    from tactile_sim.behaviors.feasibility import CLEARANCE, ArmProbe
+    from tactile_sim.vla.variation import sample_plan
+
+    tb, base = drill_world
+    w = tb.world
+    q_hover = w.data.qpos[w.arm_qadr].copy()
+    probe = ArmProbe(w)
+    d, _ = probe.clearance(q_hover)
+    assert d < CLEARANCE and probe.valid(q_hover)  # the bit 1 cm short of the screw by design is still valid
+    target = (base.feed.x0.copy(), base.feed.R.copy())
+    for i in range(3):
+        plan, attempts = sample_plan("drill", tb, 7, i, target=target)
+        assert plan is not None, attempts
+        assert 0.0 <= np.degrees(np.linalg.norm(plan.align_rotvec)) <= 15.0 + 1e-9
+        assert 0.03 <= plan.align_back <= 0.06 and 0.0 <= plan.align_across <= 0.02
+        assert plan.align_time > 0 and plan.approach_path is not None and len(plan.room) == 10
+
+
+def test_pushes_in_a_planned_approach_start_only_where_the_plan_recorded_room():
+    from types import SimpleNamespace
+
+    from tactile_sim.vla.demos import DemoPerturbation
+
+    feed = SimpleNamespace(phase="transit", t_phase=0.0, motion=SimpleNamespace(approach_time=2.0, room=(False,) * 10))
+    base = SimpleNamespace(feed=feed, tb=None)
+    pert = DemoPerturbation("drill", base, 1.0, np.random.default_rng(0))
+    pert(0.0)
+    assert pert.bumps == [] and pert.skipped == 1  # drawn, but no room anywhere
+    feed.motion.room = (True,) * 10
+    feed.t_phase = 5.0  # a new window
+    pert(5.0)
+    assert len(pert.bumps) == 1 and 5.0 <= pert.bumps[0][0] <= 7.0  # anywhere in the approach, where there is room
+
+
+def test_the_clearance_gate_and_the_planned_push_default():
+    from tactile_sim.vla import demos
+    from tactile_sim.vla.quality import gate
+
+    ok = {"limit_arm_velocity": 0.9, "max_strike_slip_mm": 2.0, "max_strike_rot_deg": 2.0, "n_blows": 8,
+          "off_centre": 0, "missed": 0, "target_rate": 0.8, "alternation": 0.0, "free_clearance_ok": True,
+          "free_clearance_mm": 7.0}
+    assert gate("hammer", ok) == []
+    bad = dict(ok, free_clearance_ok=False, free_clearance_mm=-2.0, free_clearance_pair="hammer_head/board_geom")
+    assert gate("hammer", bad) == ["clearance: -2.0 mm hammer_head/board_geom"]
+    assert demos.DemoJob("hammer", 0, 1, "out").perturb is None  # resolved per generator in run_demo
+    assert demos.PLANNED_PERTURB > 0

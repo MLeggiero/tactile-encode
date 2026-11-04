@@ -12,6 +12,9 @@ ones, and vla.coverage counts the reasons.
 - The tool in the hand: no strike (hammer) or episode (drill) slips or turns the tool more than the thresholds.
 - Blows (hammer): the share of blows that land off the nail head (the face centre farther from the nail's axis than the
   face radius less the head's) or miss it.
+- Clearance: during free motion (the approach, windups, the drill's transit and line-up) the arm and tool keep
+  free_clearance from the table, board and robot body. The scene simulates no robot collisions, so this is the only
+  check on what was executed (the pre-check covers what was planned).
 - Labels: the arm's recorded targets never ask a joint to move faster than its velocity limit between frames, and
   rarely oscillate: frames where a joint's second difference (above `alt_min`) flips sign `alt_run` times in a row.
   A clean strike flips once at each change of phase (windup, swing, brake, recover); the closed-loop failure flips on
@@ -40,6 +43,9 @@ class QualityCfg:
     alt_min: float = 0.005  # rad: a second difference this large counts toward alternation
     alt_run: int = 3  # consecutive sign flips that make an oscillation
     alternation: float = 0.05  # share of frames inside an oscillation
+    # m: the arm and tool's closest approach to the table, board or robot body during free motion (vla.demos'
+    # FreeMotionLog); half the pre-check's CLEARANCE, leaving the servos' tracking error room
+    free_clearance: float = 0.005
 
 
 DEFAULT = QualityCfg()
@@ -117,6 +123,8 @@ def gate(task: str, m: dict, q: QualityCfg | None = None) -> list[str]:
             out.append(f"turn: {m['max_rot_deg']:.1f} deg")
         if m.get("cam_outs", 0) > 0:
             out.append(f"cam_outs: {m['cam_outs']}")
+    if not m.get("free_clearance_ok", True):
+        out.append(f"clearance: {m['free_clearance_mm']:.1f} mm {m.get('free_clearance_pair', '')}".rstrip())
     if m.get("target_rate", 0.0) > q.target_rate:
         out.append(f"target_rate: {m['target_rate']:.2f}x")
     if m.get("alternation", 0.0) > q.alternation:

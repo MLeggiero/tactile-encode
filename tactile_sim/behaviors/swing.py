@@ -106,6 +106,7 @@ class ScriptedSwing:
         self.motion = None
         self._strike_geom = None
         self._probe = None
+        self._transit = None  # the planned approach's JointPath while it streams
         self.reset()
 
     @property
@@ -114,7 +115,15 @@ class ScriptedSwing:
 
     @property
     def windup_time(self) -> float:
-        return self.cfg.swing.windup_time if self.motion is None else self.motion.windup_time
+        if self.motion is None:
+            return self.cfg.swing.windup_time
+        st = self._strike_draw()
+        return self.motion.windup_time if st is None else float(st["windup_time"])
+
+    def _strike_draw(self) -> dict | None:
+        """This strike's own variation in a planned episode (behaviors.motion_plan.HammerPlan.strikes), if drawn."""
+        strikes = getattr(self.motion, "strikes", ()) if self.motion is not None else ()
+        return strikes[self.k] if self.k < len(strikes) else None
 
     @property
     def settle_time(self) -> float:
@@ -122,23 +131,34 @@ class ScriptedSwing:
 
     def begin(self, t: float, motion) -> None:
         """Start a planned episode at t, with the arm wherever behaviors.motion_plan.preroll left it: the approach to
-        the hover pose along the plan's TransitPath, then the strikes on the plan's windup curve."""
+        the stroke's hover pose as a joint stream along the plan's checked joint path (its task-space view is the
+        command meanwhile), released when it ends; then the strikes on the plan's windup curves."""
         from tactile_sim.behaviors.feasibility import ArmProbe
-        from tactile_sim.behaviors.strike_paths import TransitPath
+        from tactile_sim.behaviors.motion_plan import approach_path
+        from tactile_sim.behaviors.strike_paths import JointPathView, TransitPath
 
         self.motion = motion
         self._probe = ArmProbe(self.tb.world)
         self._set_phase("approach", t)
         self.line_origin = self.origin.copy()
-        x_now, R_now = self.tb.world.ctrl_pose()
-        # to the stroke's own hover pose (on an arc it is turned back from the contact orientation self.R), where the
-        # windup takes over along the stroke without a step in the reference
-        path = TransitPath(t, motion.approach_time, x_now, R_now, self.origin, self.tb.world.hover_R,
-                           motion.approach_via)
         self.cmd.t = t
         self.cmd.K = self.K_nom.copy()
         self.cmd.R_K = np.eye(3)
-        self.cmd.ref = PlainRef(path)
+        if motion.approach_path is None:  # a plan saved before joint paths: the task-space approach
+            x_now, R_now = self.tb.world.ctrl_pose()
+            self.cmd.ref = PlainRef(TransitPath(t, motion.approach_time, x_now, R_now, self.origin,
+                                                self.tb.world.hover_R, motion.approach_via))
+            return
+        self._transit = approach_path(motion, t)
+        self.tb.l1.set_joint_stream(self._transit)
+        self.cmd.ref = PlainRef(JointPathView(self.tb.world, self._transit))
+
+    def _end_transit(self) -> None:
+        """Hand the arm back from the planned approach's joint stream to the Cartesian command (PositionL1's IK
+        continues from the stream's last target, q_ref)."""
+        if self._transit is not None:
+            self.tb.l1.set_joint_stream(None)
+            self._transit = None
 
     def strike_geometry(self):
         """This strike's path before the aim shift: the planned windup curve into the terminal stroke, or the configured
@@ -149,8 +169,9 @@ class ScriptedSwing:
         if self.motion is None:
             return g
         apex, R_apex = g.pose(-self.cfg.swing.windup_height)
-        return CompositeStrikeGeometry(g, apex + np.asarray(self.motion.apex_offset, float), R_apex,
-                                       -self.motion.junction)
+        st = self._strike_draw()
+        offset = self.motion.apex_offset if st is None else st["apex_offset"]
+        return CompositeStrikeGeometry(g, apex + np.asarray(offset, float), R_apex, -self.motion.junction)
 
     def _arm_caps(self) -> tuple[float, float]:
         """What the arm can do along the strike axis at the hover pose (orientation held):
@@ -239,6 +260,7 @@ class ScriptedSwing:
         if self.done:
             return
         if self.tb.grip.dropped:
+            self._end_transit()
             self.done = True
             return
         if self.phase == "approach":
@@ -279,6 +301,7 @@ class ScriptedSwing:
     # ------------------------------------------------------------------
     def _start_windup(self, t: float) -> None:
         sw = self.cfg.swing
+        self._end_transit()
         self._set_phase("windup", t)
         self.cmd.K = self.K_nom.copy()
         self.cmd.R_K = np.eye(3)
@@ -296,6 +319,9 @@ class ScriptedSwing:
         # static aim at the windup pose: shift the line so the face, plus the drift the swing is expected
         # to add, lands on the nail. Tracking drift grows with the swing's acceleration, i.e. ~ v^2.
         v_next = sw.first_tap_speed if (self.k == 0 and sw.first_tap_speed > 0) else sw.v_strike
+        st = self._strike_draw()
+        if st is not None:  # a planned episode's per-strike speed variation
+            v_next *= float(st["speed"])
         v_cap, a_cap = self.v_cap, self.a_cap
         if self.motion is not None:
             # the windup curve leaves the configured stroke: cap along it too (the stroke from the hover pose on is the

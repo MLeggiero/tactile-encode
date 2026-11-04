@@ -387,12 +387,12 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
         from tactile_sim.behaviors.motion_plan import plan_to_dict, preroll
         from tactile_sim.vla.variation import sample_plan
 
-        plan, attempts = sample_plan(task, tb, *start)
+        plan, attempts = sample_plan(task, tb, *start, strikes=False)  # only the start is used here
         if plan is None:
             cam.close()
             return {"seed": seed, "task": task, "status": "start_rejected", "attempts": attempts, "done": False,
                     "dropped": False, "chunks": {}}
-        preroll(tb, np.asarray(plan.start.q, float), plan.preroll_time)
+        preroll(tb, np.asarray(plan.start.q, float), plan.preroll_time, path=plan.preroll_path)
         start_pose = plan_to_dict(plan)["start"]
     vla = VlaBase(tb, policy, table, INSTRUCTIONS[task], cam, latency, exec_steps, blend=blend, smooth=smooth)
     vla.attach()

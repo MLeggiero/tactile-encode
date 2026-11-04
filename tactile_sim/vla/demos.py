@@ -22,10 +22,15 @@ clearance; the task also moves farther on the table. The arm reaches the start p
 the pre-check is written as a metadata-only .npz (status "rejected"), which the export skips. --generator scripted
 records the task's one scripted motion instead, starting over the task (datasets v1-v5).
 
-Every recorded demo is also assessed by vla.quality: arm limits, the tool's slip in the hand, off-centre blows, and the
-smoothness of the recorded arm targets. The result is in its metadata ("quality"), and the export skips demos that fail.
+Planned demos get DART recovery pushes by default (--perturb, PLANNED_PERTURB; none for scripted ones); in a planned
+approach a push starts at a random time and only where the plan recorded room for it.
 
-    python -m tactile_sim.vla.demos --task hammer --episodes 500 --workers 14 --out runs/vla_demos/hammer
+Every recorded demo is also assessed by vla.quality: arm limits, the tool's slip in the hand, off-centre blows, the
+arm and tool's clearance during free motion (FreeMotionLog), and the smoothness of the recorded arm targets. The result
+is in its metadata ("quality"), and the export skips demos that fail.
+
+    python -m tactile_sim.vla.demos --task hammer --episodes 500 --workers 14 --out runs/vla_demos/hammer_planned
+    python -m tactile_sim.vla.demos --task hammer --generator scripted --episodes 500 --out runs/vla_demos/hammer
 """
 
 from __future__ import annotations
@@ -53,6 +58,7 @@ START = 0.02  # s: recording starts after the grip loop and the arm's first comm
 # DemoPerturbation: per joint scale of a push (rad; shoulders and elbow, then the wrist) and its duration (s)
 PUSH_SCALE = np.array([0.06, 0.06, 0.06, 0.06, 0.10, 0.10, 0.10])
 PUSH_TIME = (0.30, 0.55)
+PLANNED_PERTURB = 0.3  # the planned generator's default chance of a recovery push per window
 
 
 def ffmpeg_exe() -> str:
@@ -163,6 +169,40 @@ class DemoRecorder:
         self.k += 1
 
 
+class FreeMotionLog:
+    """The arm's joint angles at RATE while the base moves freely (the planned approach and the windups; the drill's
+    transit and line-up): the motions nothing but the pre-check keeps out of the table, board and robot body, since the
+    scene simulates no robot collisions. metrics(probe) checks them afterwards (vla.quality's clearance gate). Blows
+    and the feed are left out: there the tool meets the work by design."""
+
+    RATE = 10.0  # Hz
+    PHASES = {"hammer": ("approach", "windup"), "drill": ("transit", "align")}
+
+    def __init__(self, tb, behavior, task: str):
+        self.tb, self.behavior = tb, behavior
+        self.phases = self.PHASES[task]
+        self.q: list[np.ndarray] = []
+
+    def __call__(self, t: float) -> None:
+        if getattr(self.behavior, "phase", None) in self.phases:
+            w = self.tb.world
+            self.q.append(w.data.qpos[w.arm_qadr].copy())
+
+    def metrics(self, probe, threshold: float) -> dict:
+        """free_clearance_ok: every logged configuration keeps `threshold` from the obstacles (ArmProbe.clear: pairs
+        nearer than CLEARANCE at the start by design only must not overlap); free_clearance_mm and _pair: the worst
+        pair's distance (capped at the probe's margin, beyond which it is not resolved) and names."""
+        ok, best, where = True, np.inf, ""
+        for q in self.q:
+            probe.set_q(q)
+            q_ok, d, pair = probe.clear(threshold)
+            ok &= q_ok
+            if d < best:
+                best, where = d, pair
+        return {"free_clearance_ok": bool(ok), "free_clearance_mm": 1e3 * float(min(best, probe.margin_m)),
+                "free_clearance_pair": where, "free_samples": len(self.q)}
+
+
 class DemoPerturbation:
     """DART-style recoveries for the demos: now and then the arm's servos get a smooth push (a raised-cosine bump in
     joint space, PUSH_SCALE x U(0.4, 1) along a random direction, PUSH_TIME long) that the scripted base does not
@@ -177,6 +217,7 @@ class DemoPerturbation:
         self.task, self.base, self.p, self.rng = task, base, p, rng
         self.bumps: list[tuple[float, float, np.ndarray]] = []
         self._window: object = None  # the window the last decision was made in
+        self.skipped = 0  # pushes drawn in a planned approach but dropped for want of room
 
     def _window_now(self, t: float) -> tuple[object, float] | None:
         """(an id for the current window, the time left in it) if pushes may start now. A planned episode also pushes in
@@ -200,6 +241,17 @@ class DemoPerturbation:
             return ("approach", feed.t_phase), left - 0.05
         return None
 
+    def _planned_transit(self) -> tuple[float, float, tuple] | None:
+        """(start, duration, room) of a planned approach that records its room for pushes (vla.variation), while the
+        base is in it; None otherwise."""
+        if self.task == "hammer":
+            sw = self.base.swing
+            ok = sw.motion is not None and sw.phase == "approach"
+            return (sw.phase_t0, sw.approach_time, getattr(sw.motion, "room", ())) if ok else None
+        feed = self.base.feed
+        ok = feed.motion is not None and feed.phase == "transit"
+        return (feed.t_phase, feed.motion.approach_time, getattr(feed.motion, "room", ())) if ok else None
+
     def __call__(self, t: float) -> np.ndarray:
         w = self._window_now(t)
         if w is not None and w[0] != self._window:
@@ -207,7 +259,22 @@ class DemoPerturbation:
             if self.rng.uniform() < self.p and w[1] >= PUSH_TIME[0]:
                 d = self.rng.normal(size=len(PUSH_SCALE))
                 dq = PUSH_SCALE * self.rng.uniform(0.4, 1.0) * d / np.linalg.norm(d)
-                self.bumps.append((t, float(min(self.rng.uniform(*PUSH_TIME), w[1])), dq))
+                dur = float(min(self.rng.uniform(*PUSH_TIME), w[1]))
+                tr = self._planned_transit()
+                if tr is not None and tr[2]:
+                    # a planned approach: the push starts anywhere in it, and only where the plan recorded room for it
+                    # around the arm and tool for its whole length
+                    t0, T, room = tr
+                    t_s = t + self.rng.uniform(0.0, max(w[1] - dur, 0.0))
+                    n = len(room)
+                    k0 = int(np.clip((t_s - t0) / T * n, 0, n - 1))
+                    k1 = int(np.clip((t_s + dur - t0) / T * n, 0, n - 1))
+                    if all(room[k0:k1 + 1]):
+                        self.bumps.append((t_s, dur, dq))
+                    else:
+                        self.skipped += 1
+                else:
+                    self.bumps.append((t, dur, dq))
         off = np.zeros(len(PUSH_SCALE))
         for t0, dur, dq in self.bumps:
             if t0 <= t <= t0 + dur:
@@ -226,7 +293,9 @@ class DemoJob:
     out: str
     fast: bool = False
     hammer: str = "ycb"  # config.HAMMERS: the real YCB hammer, or "light" (datasets v1-v3)
-    perturb: float = 0.0  # DemoPerturbation's chance of a push per window (0: none, datasets up to v4)
+    # DemoPerturbation's chance of a push per window (0: none, datasets up to v4); None: PLANNED_PERTURB for the planned
+    # generator, 0 for the scripted one
+    perturb: float | None = None
     generator: str = "planned"  # vla.variation's varied motion; "scripted": the one scripted motion (v1-v5)
     seed0: int = 100_000  # the dataset's base seed (seed = seed0 + index), seeding the planned generator's Sobol points
 
@@ -315,7 +384,25 @@ def run_demo(job: DemoJob) -> dict:
 
         shift = task_shift(job.task, job.seed0, job.index)
     cfg, draw = demo_config(job.task, job.seed, job.fast, job.hammer, shift=shift)
-    tb, base, run = EPISODES[job.task](cfg, job.seed)
+
+    def reject(attempts: list) -> dict:
+        """Keep a metadata-only record (status "rejected", which the export skips) and simulate nothing."""
+        meta = {"task": job.task, "instruction": INSTRUCTIONS[job.task], "seed": job.seed, "status": "rejected",
+                "success": False, "generator": job.generator, "seed0": job.seed0, "index": job.index,
+                "attempts": attempts, "task_shift": None if shift is None else list(shift), "draw": draw,
+                "wall_s": time.time() - t_wall}
+        tmp = npz.with_suffix(".part.npz")
+        npz.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(tmp, meta=json.dumps(meta, default=_jsonable))
+        tmp.rename(npz)
+        return {"status": "rejected", "path": str(npz), "success": False, "frames": 0, "wall_s": meta["wall_s"]}
+
+    try:
+        tb, base, run = EPISODES[job.task](cfg, job.seed)
+    except RuntimeError as e:  # the arm cannot reach the hover pose where the task was placed
+        if "IK for the hover pose failed" not in str(e):
+            raise
+        return reject([{"attempt": 0, "ok": False, "reason": "unreachable", "where": "hover", "family": ""}])
     tb.sensors.set_noise_scale(draw["dr"]["_runtime"]["sensor_noise_scale"])
     tb.residual.base_fn = base
     plan, attempts = None, []
@@ -323,19 +410,21 @@ def run_demo(job: DemoJob) -> dict:
         from tactile_sim.behaviors.motion_plan import plan_to_dict
         from tactile_sim.vla.variation import sample_plan
 
-        plan, attempts = sample_plan(job.task, tb, job.seed0, job.index)
-        if plan is None:  # every candidate failed the pre-check: keep the record, simulate nothing
-            meta = {"task": job.task, "instruction": INSTRUCTIONS[job.task], "seed": job.seed, "status": "rejected",
-                    "success": False, "generator": job.generator, "seed0": job.seed0, "index": job.index,
-                    "attempts": attempts, "task_shift": list(shift), "draw": draw, "wall_s": time.time() - t_wall}
-            tmp = npz.with_suffix(".part.npz")
-            npz.parent.mkdir(parents=True, exist_ok=True)
-            np.savez(tmp, meta=json.dumps(meta, default=_jsonable))
-            tmp.rename(npz)
-            return {"status": "rejected", "path": str(npz), "success": False, "frames": 0, "wall_s": meta["wall_s"]}
+        # the drill's approach ends at the feed's own aimed pre-contact pose (aim_from_tool may have moved it)
+        target = (base.feed.x0.copy(), base.feed.R.copy()) if job.task == "drill" else None
+        plan, attempts = sample_plan(job.task, tb, job.seed0, job.index, target=target)
+        if plan is None:  # every candidate failed the pre-check (or the hover pose leaves no blow)
+            return reject(attempts)
+    perturb = job.perturb if job.perturb is not None else (PLANNED_PERTURB if planned else 0.0)
     pert = None
-    if job.perturb > 0:
-        pert = DemoPerturbation(job.task, base, job.perturb, np.random.default_rng(30_000 + job.seed))
+    if perturb > 0:
+        pert = DemoPerturbation(job.task, base, perturb, np.random.default_rng(30_000 + job.seed))
+    from tactile_sim.behaviors.feasibility import ArmProbe
+
+    # at the settled hover pose: the post-run clearance check carries the tool from here, and ignores only the pairs in
+    # contact now (the collision copy is built on first use, so use it now, before anything moves)
+    probe = ArmProbe(tb.world)
+    probe.clearance(tb.world.data.qpos[tb.world.arm_qadr].copy())
     cam = EgoCamera(tb.world.model, cfg)
     visual = cam.randomize(np.random.default_rng(20_000 + job.seed)) if cfg.vla.visual_dr else None
     table = HandTable.for_hand(tb.world.hand, cfg)
@@ -343,9 +432,12 @@ def run_demo(job: DemoJob) -> dict:
         from tactile_sim.behaviors.motion_plan import preroll
         behavior = base.swing if job.task == "hammer" else base.feed
         start_offset = np.asarray(plan.start.pos) - tb.world.ctrl_pose()[0]
-        preroll(tb, np.asarray(plan.start.q, float), plan.preroll_time, base=behavior, plan=plan)
+        preroll(tb, np.asarray(plan.start.q, float), plan.preroll_time, base=behavior, plan=plan,
+                path=plan.preroll_path)
     if pert is not None:
         tb.l1.exec_offset = pert
+    free = FreeMotionLog(tb, base.swing if job.task == "hammer" else base.feed, job.task)
+    tb.sched.register("free_motion", FreeMotionLog.RATE, free)
     v = cfg.vla
     mp4 = job.stem.with_suffix(".mp4")
     mp4.parent.mkdir(parents=True, exist_ok=True)
@@ -357,15 +449,16 @@ def run_demo(job: DemoJob) -> dict:
     finally:
         video.close()
         cam.close()
+    from tactile_sim.vla.quality import DEFAULT as QUALITY
     from tactile_sim.vla.quality import assess
 
-    quality = assess(job.task, outcome.pop("metrics"), np.asarray(rec.action, float), v.fps,
-                     tb.world.arm_spec.velocity)
+    metrics = dict(outcome.pop("metrics"), **free.metrics(probe, QUALITY.free_clearance))
+    quality = assess(job.task, metrics, np.asarray(rec.action, float), v.fps, tb.world.arm_spec.velocity)
     meta = {"task": job.task, "instruction": INSTRUCTIONS[job.task], "seed": job.seed, "fps": v.fps, **outcome,
             "depth": float(tb.world.plant.depth), "draw": draw, "visual": visual, "hand_table": table.to_dict(),
             "hand_joints": list(tb.world.hand.joint_names),
             "head_pose": list(cfg.arm.head_pose), "config": cfg.to_dict(), "wall_s": time.time() - t_wall,
-            "perturb": job.perturb, "pushes": pert.to_list() if pert is not None else [],
+            "perturb": perturb, "pushes": pert.to_list() if pert is not None else [],
             "generator": job.generator, "quality": quality}
     if planned:
         meta.update(status="ok", seed0=job.seed0, index=job.index, plan=plan_to_dict(plan), attempts=attempts,
@@ -444,8 +537,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--hammer", default="ycb", choices=("ycb", "light"),
                     help="the hammer task's hammer: the real YCB claw hammer, or the light primitive one "
                          "(datasets v1-v3)")
-    ap.add_argument("--perturb", type=float, default=0.0,
-                    help="DemoPerturbation: chance of a recovery push per window (0: none)")
+    ap.add_argument("--perturb", type=float, default=None,
+                    help="DemoPerturbation: chance of a recovery push per window (0: none; default "
+                         f"{PLANNED_PERTURB} for the planned generator, 0 for the scripted one)")
     ap.add_argument("--generator", default="planned", choices=("planned", "scripted"),
                     help="planned (default): vla.variation's varied start, approach and (hammer) windup curve, "
                          "pre-checked; scripted: the task's one scripted motion (datasets v1-v5)")

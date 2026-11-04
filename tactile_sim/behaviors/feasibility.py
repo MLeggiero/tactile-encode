@@ -7,9 +7,11 @@ and measures the clearance between the moving side (the striking arm's links, it
 (everything welded to the world: table, board, floor; and the robot's own torso, head and other arm). The robot's
 geoms have collisions disabled in the scene (model/robots.py), so physics would never catch an elbow through the table.
 The probe runs MuJoCo's collision pipeline on its own copy of the model in which only moving-vs-obstacle pairs collide,
-with a CLEARANCE margin on the moving geoms; a contact means the pair is closer than CLEARANCE. (mj_geomDistance
-reports zero for some mesh pairs tens of cm apart on this scene, MuJoCo 3.11.) Pairs in contact at the start
-(adjacent links, the hand on the tool) are not checked.
+with a margin on the moving geoms (CLEARANCE by default). For a mesh against a primitive (the hammer head or an arm
+link against the table or board) that pass ignores the margin and reports only overlap (MuJoCo 3.11), so those pairs'
+gaps come from mj_geomDistance instead, after a bounding-sphere cull. Mesh-against-mesh pairs (an arm link against the
+torso) keep the collision pass: mj_geomDistance reports zero for some of them tens of cm apart on this scene, so for
+them only overlap is caught. Pairs touching at the start (the shoulder at the torso) are not checked.
 
 path_caps generalises ScriptedSwing._arm_caps from the hover pose to samples along a path: the joint rates per unit
 path speed from the Jacobian's pseudo-inverse, the joint torques per unit path acceleration from the arm's inertia plus
@@ -31,6 +33,7 @@ JOINT_MARGIN = 0.05  # rad from either end of a joint's range
 MAX_STEP = 0.1  # rad per IK iteration
 MAX_JUMP = 0.35  # rad, any joint, between neighbouring path samples (a jump means an IK branch flip)
 CLEARANCE = 0.01  # m between the moving side and an obstacle
+TOUCHING = 1e-3  # m: pairs this close at the start touch by design and are not checked
 
 
 def strike_speed(dist: float, v_target: float, v_cap: float, a_cap: float, sw) -> float:
@@ -59,8 +62,11 @@ class Verdict:
 
 
 class ArmProbe:
-    def __init__(self, world):
+    def __init__(self, world, margin: float = CLEARANCE):
+        """`margin`: how far apart a moving geom and an obstacle may be and still be reported (min_clearance gives inf
+        beyond it); CLEARANCE for the validity checks, wider to measure room for a push (vla.variation)."""
         self.w = w = world
+        self.margin_m = float(margin)
         self.m = m = world.model
         self.d = mujoco.MjData(m)
         self.d.qpos[:] = world.data.qpos
@@ -87,25 +93,51 @@ class ArmProbe:
             mc.geom_conaffinity[self.obstacles] = 1
             mc.geom_margin[:] = 0.0
             mc.geom_gap[:] = 0.0
-            mc.geom_margin[self.moving] = CLEARANCE
+            mc.geom_margin[self.moving] = self.margin_m
             self._mc, self._dc = mc, mujoco.MjData(mc)
             self._moving_set, self._obstacle_set = set(self.moving), set(self.obstacles)
+            # the pairs whose gap the collision pass cannot see (see the module docstring): one side a primitive
+            mesh = mujoco.mjtGeom.mjGEOM_MESH
+            pairs = [(a, b) for a in self.moving for b in self.obstacles
+                     if mc.geom_type[a] != mesh or mc.geom_type[b] != mesh]
+            self._gap_a = np.array([p[0] for p in pairs], int)
+            self._gap_b = np.array([p[1] for p in pairs], int)
+            self._fromto = np.zeros(6)
             self._dc.qpos[:] = self.w.data.qpos
-            self._ignore = {pair for pair, _ in self._contacts()}  # in contact by design at the start
+            # touching by design at the start (the shoulder at the torso and the like), whatever the probe's margin;
+            # pairs nearer than CLEARANCE at the start by design (the drill's bit 1 cm short of the screw) are held only
+            # to not overlapping
+            start = self._contacts()
+            self._ignore = {pair for pair, dist in start if dist <= TOUCHING}
+            self._near_start = {pair for pair, dist in start if TOUCHING < dist < CLEARANCE}
         return self._mc, self._dc
 
     def _contacts(self) -> list[tuple[tuple[int, int], float]]:
+        """Moving-to-obstacle pairs closer than the probe's margin, with their distance (negative: penetrating). The
+        collision pass finds penetrations of any pair, but for a mesh against a primitive it ignores the margin and
+        reports only overlap; those pairs' gaps come from mj_geomDistance, after a bounding-sphere cull."""
         mc, dc = self._mc, self._dc
         mujoco.mj_kinematics(mc, dc)
         mujoco.mj_collision(mc, dc)
-        out = []
+        best: dict[tuple[int, int], float] = {}
         for c in dc.contact[:dc.ncon]:
             a, b = int(c.geom1), int(c.geom2)
             if a in self._obstacle_set:
                 a, b = b, a
             if a in self._moving_set and b in self._obstacle_set:
-                out.append(((a, b), float(c.dist)))
-        return out
+                best[(a, b)] = min(best.get((a, b), np.inf), float(c.dist))
+        if len(self._gap_a):
+            A, B = self._gap_a, self._gap_b
+            near = (np.linalg.norm(dc.geom_xpos[A] - dc.geom_xpos[B], axis=1) - mc.geom_rbound[A] - mc.geom_rbound[B]
+                    < self.margin_m)
+            for a, b in zip(A[near], B[near], strict=True):
+                pair = (int(a), int(b))
+                if pair in best:
+                    continue
+                dist = mujoco.mj_geomDistance(mc, dc, int(a), int(b), self.margin_m, self._fromto)
+                if dist < self.margin_m:
+                    best[pair] = float(dist)
+        return list(best.items())
 
     # ---------------------------------------------------------------- geometry sets
     def _geom_sets(self) -> tuple[list[int], list[int]]:
@@ -177,8 +209,8 @@ class ArmProbe:
         return q, float(np.linalg.norm(e[:3])), float(np.linalg.norm(e[3:]))
 
     def min_clearance(self) -> tuple[float, str]:
-        """The smallest distance below CLEARANCE between a moving geom and an obstacle at the probe's configuration
-        (inf when every pair is clear), and the pair's names."""
+        """The smallest distance below the probe's margin (CLEARANCE by default) between a moving geom and an obstacle
+        at the probe's configuration (inf when every pair is farther), and the pair's names."""
         _, dc = self._collision_model()
         dc.qpos[:] = self.d.qpos
         best, where = np.inf, ""
@@ -189,6 +221,34 @@ class ArmProbe:
 
     def margin(self, q: np.ndarray) -> float:
         return float(np.min(np.minimum(q - self.lo, self.hi - q)))
+
+    def clearance(self, q: np.ndarray) -> tuple[float, str]:
+        """The arm at q (tool in hand): the smallest moving-to-obstacle distance below the probe's margin (inf when
+        clear) and the pair's names."""
+        self.set_q(np.asarray(q, float))
+        return self.min_clearance()
+
+    def clear(self, threshold: float = CLEARANCE) -> tuple[bool, float, str]:
+        """At the probe's configuration: whether every pair keeps `threshold` of clearance (a pair nearer than CLEARANCE
+        at the start by design only must not overlap), and the worst pair's distance and names."""
+        _, dc = self._collision_model()
+        dc.qpos[:] = self.d.qpos
+        worst, dist, where = np.inf, np.inf, ""
+        for (a, b), d in self._contacts():
+            if (a, b) in self._ignore:
+                continue
+            excess = d - (0.0 if (a, b) in self._near_start else threshold)
+            if excess < worst:
+                worst, dist, where = excess, d, f"{self.m.geom(a).name or a}/{self.m.geom(b).name or b}"
+        return worst >= 0.0, dist, where
+
+    def valid(self, q: np.ndarray) -> bool:
+        """One configuration on its own: joint margin and clearance (no continuity). The planner's validity check."""
+        q = np.asarray(q, float)
+        if self.margin(q) < JOINT_MARGIN:
+            return False
+        self.set_q(q)
+        return self.clear()[0]
 
     # ---------------------------------------------------------------- checks
     def check_poses(self, poses, q_seed: np.ndarray, label: str = "") -> tuple[Verdict, list[np.ndarray]]:
@@ -229,9 +289,9 @@ class ArmProbe:
             if jump > MAX_JUMP:
                 return Verdict(False, "discontinuous", where, worst)
         self.set_q(q)
-        clr, pair = self.min_clearance()
+        ok, clr, pair = self.clear()
         worst["clearance"] = min(worst["clearance"], clr)
-        if clr < CLEARANCE:
+        if not ok:
             return Verdict(False, "collision", f"{where} {pair}", worst)
         return None
 

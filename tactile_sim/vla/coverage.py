@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 
-START_BINS = (0.0, 0.04, 0.08, 0.12, np.inf)  # m, start offset from the hover / pre-contact pose
+START_BINS = (0.0, 0.1, 0.2, 0.3, 0.4, np.inf)  # m, start offset from the hover / pre-contact pose
 APEX_BINS = (0.0, 0.03, 0.06, np.inf)  # m, windup apex offset from the nominal apex
 COVERAGE_BINS = 5
 
@@ -46,6 +46,7 @@ def summarize(metas: list[dict]) -> dict:
     for m in metas:
         t = tasks.setdefault(m["task"], {"n": 0, "status": Counter(), "reasons": Counter(), "quality": Counter(),
                                          "attempts": [], "u_accepted": [], "u_exported": [],
+                                         "by_planner": defaultdict(lambda: [0, 0]), "fallbacks": [],
                                          "by_start": defaultdict(lambda: [0, 0]),
                                          "by_apex": defaultdict(lambda: [0, 0])})
         t["n"] += 1
@@ -74,6 +75,11 @@ def summarize(metas: list[dict]) -> dict:
             b[0] += ok
             b[1] += 1
         plan = m.get("plan") or {}
+        b = t["by_planner"][f"{plan.get('planner', 'curve')}, {att[-1].get('family', 'shell') if att else 'shell'}"]
+        b[0] += ok
+        b[1] += 1
+        if att and "strike_fallbacks" in att[-1]:
+            t["fallbacks"].append(att[-1]["strike_fallbacks"])
         if "apex_offset" in plan:
             b = t["by_apex"][_bin(float(np.linalg.norm(plan["apex_offset"])), APEX_BINS)]
             b[0] += ok
@@ -93,16 +99,20 @@ def report(metas: list[dict]) -> str:
             lines.append(f"  candidates per episode: mean {np.mean(t['attempts']):.1f}, max {max(t['attempts'])}")
         for reason, n in t["reasons"].most_common():
             lines.append(f"  rejected candidates: {n:4d}  {reason}")
-        for name, key in (("start offset", "by_start"), ("windup apex offset", "by_apex")):
+        if t["fallbacks"]:
+            lines.append(f"  per-strike variations falling back to the episode's: mean {np.mean(t['fallbacks']):.1f} "
+                         "per episode")
+        for name, key in (("approach (planner, start family)", "by_planner"), ("start offset", "by_start"),
+                          ("windup apex offset", "by_apex")):
             for b in sorted(t[key]):
                 k, n = t[key][b]
                 lines.append(f"  success by {name} {b:>10}: {k}/{n} ({100 * k / n:.0f} %)")
-        lines += coverage_lines(t["u_accepted"], "after the pre-check")
-        lines += coverage_lines(t["u_exported"], "exported")
+        lines += coverage_lines(t["u_accepted"], "after the pre-check", task)
+        lines += coverage_lines(t["u_exported"], "exported", task)
     return "\n".join(lines)
 
 
-def coverage_lines(us: list, label: str) -> list[str]:
+def coverage_lines(us: list, label: str, task: str = "hammer") -> list[str]:
     """Per sampled parameter: the episodes in each of COVERAGE_BINS equal bins of its unit range, flagged when a bin
     holds under half its share."""
     from tactile_sim.vla.variation import PARAM_NAMES
@@ -116,7 +126,9 @@ def coverage_lines(us: list, label: str) -> list[str]:
         counts = np.bincount(np.minimum((u[:, d] * COVERAGE_BINS).astype(int), COVERAGE_BINS - 1),
                              minlength=COVERAGE_BINS)
         flag = "  UNDER-COVERED" if counts.min() < 0.5 * expect else ""
-        out.append(f"    {PARAM_NAMES[d]:>13}: {' '.join(f'{c:3d}' for c in counts)}{flag}")
+        names = PARAM_NAMES[task]
+        name = names[d] if d < len(names) else f"u{d}"  # draws recorded before a space changed shape
+        out.append(f"    {name:>16}: {' '.join(f'{c:3d}' for c in counts)}{flag}")
     return out
 
 
