@@ -21,11 +21,111 @@ The experiment's scripted base holds the tool with a constant, open-loop grip (`
 on the pads and no slip feedback from the simulator's truth, which a VLA without touch could not reproduce either.
 Everything that reacts to touch is the residual's.
 
+## Planned motion variation (2026-10-31)
+
+The scripted demos all start lined up over the task and swing the same way. So a model can score on them without
+looking at where the nail is. The planned generator, `vla.demos`' default, varies the motion itself (plan:
+`docs/plans/2026-10-29-001-feat-vla-demo-motion-variation-plan.md`); `--generator scripted` records the one scripted
+motion, as datasets v1-v5 were.
+
+**What is varied** (`vla/variation.py`, `HammerSpace` and `DrillSpace`, Sobol point *i* of the dataset's `--seed0` for
+episode *i*; widened 2026-11-03, plan: `docs/plans/2026-11-03-001-feat-far-starts-joint-planner-strike-variation-plan.md`):
+- The start: a point 0–40 cm from the hover or pre-contact pose, at any azimuth, from 15° below its height to 70°
+  above, tilted up to ±20° per axis. About a fifth of the episodes instead start from one of the arm's anchor postures
+  (tucked, lowered, raised), jittered.
+  - The arm reaches it in an unrecorded pre-roll (`behaviors/motion_plan.py`), and recording begins with the planned
+    approach.
+- The approach: its speed (45–100 % of the fastest the joint limits allow) and, for the simple curve, its sideways bulge.
+  - It is executed as a joint stream along the joint path the pre-check validated, so the motion run is the motion
+    checked.
+- The task's position on the table: ±6 cm, or ±5 cm for the drill (the scripted demos use ±3 cm).
+- The hammer's windup curve (`CompositeStrikeGeometry`):
+  - an apex up to 5–6 cm off the nominal one, back, along the handle or across;
+  - where the curve joins the terminal stroke (0–6 cm before the hover pose);
+  - the windup time (0.35–0.6 s) and the settle time (0.1–0.3 s).
+  - Then every strike varies around those: apex ±2 cm, windup time ±15 %, strike speed ±5 %. A strike whose variation
+    fails the pre-check after three draws keeps the episode's values.
+
+  The blow still meets the nail square, along the strike axis.
+- The drill's entry: the transit ends turned up to 15°, 3–6 cm back along the bit and up to 2 cm off its axis. The feed
+  then lines the bit up with the screw (its `align` phase) before its own approach.
+- Not varied, on purpose: the contact pose, idle pauses (a hold looks the same in every frame, so a policy cannot tell
+  when it ends), path wobble (it would be in the labels). Recovery comes from DART pushes, on by default for planned
+  demos (`--perturb`, default 0.3; 0 for scripted).
+
+**The pre-check** (`behaviors/feasibility.ArmProbe`) runs before anything is simulated, on a scratch copy of the
+episode's world:
+- **What it checks:** the start's IK, the approach, the pre-roll, the hammer's whole stroke up to 3 cm before contact
+  and the drill's line-up, for reach, joint margin, IK continuity, and 1 cm of clearance to the table, board, torso and
+  other arm.
+- **How:** the robot's geoms have collisions disabled in the scene, so physics would not catch an arm through the
+  table. The probe runs MuJoCo's collision pipeline on a copy in which only arm/tool-vs-obstacle pairs collide. For a
+  mesh against a primitive (an arm link or the hammer head against the table or board), that pass reports only
+  overlap, whatever the margin (MuJoCo 3.11), so those gaps come from `mj_geomDistance`. Mesh-against-mesh pairs keep
+  the collision pass: `mj_geomDistance` reports zero for some of them tens of cm apart on this scene. Pairs nearer than
+  1 cm at the start by design (the drill's bit 1 cm short of the screw) must only not overlap.
+- **Planning:** the approach is tried first as the simple curve (`TransitPath`), solved into joint waypoints that end
+  at the hover posture's own IK solution. When that fails, a straight joint-space move is tried, then RRT-Connect in
+  joint space (`behaviors/joint_planner.py`) around the obstacles. The path is shortcut, splined and re-checked, then
+  timed so no joint exceeds 70 % of its velocity limit. The pre-roll is straight in joint space when that is clear,
+  planned otherwise. Plans record which produced the approach (`planner`).
+- **Retries:** a rejected candidate is redrawn, up to 20 times. An episode with no feasible draw is written as a
+  metadata-only record (`status: "rejected"`), which the export skips.
+- **The strike's speed caps** are evaluated along the whole planned stroke, not only at the hover pose.
+- **Room for pushes:** the plan records which tenths of the approach keep 5 cm between the arm and tool and every
+  obstacle. A DART push in the approach starts at a random time, and only where it has that room.
+
+The scripted generator is unchanged, bit for bit: `tests/test_motion_plan.py` checks the default bases against golden
+traces (`tests/data/golden_bases.json`).
+
+```bash
+python -m tactile_sim.vla.demos --task hammer --episodes 500 --workers 8 --out runs/vla_demos/hammer_planned
+python -m tactile_sim.vla.demos --task drill --episodes 500 --workers 8 --out runs/vla_demos/drill_planned
+python -m tactile_sim.vla.coverage runs/vla_demos/hammer_planned runs/vla_demos/drill_planned   # outcomes, rejections, success by region
+python -m tactile_sim.vla.lerobot_export runs/vla_demos/hammer_planned runs/vla_demos/drill_planned --out runs/lerobot/vega_wuji_tools_v6
+# the closed loop from misaligned starts (sampled on EVAL_SEED0, away from the demos'), reported under <out>/varied
+python -m tactile_sim.experiments.vla_experiment run --task hammer --server groot://localhost:5555 --starts varied --out runs/e2/groot_hammer
+python -m tactile_sim.experiments.vla_experiment report --task hammer --starts varied --out runs/e2/groot_hammer
+```
+
+Exported datasets tag each episode's generator in `episodes.jsonl`, so scripted and planned demos can be exported
+together or kept apart.
+
+**Timing.** The pre-check also times the pre-roll, the approach and the windup so that no joint's target moves faster
+than 70 % of its velocity limit. A windup too short for its path is stretched to fit (up to 2.5×), and the plan records
+the durations it got.
+
+**Quality gates** (`vla/quality.py`, both generators). A demo that completes its task is exported only if it also
+passes:
+- **The arm's limits:** joint velocity, range and torque within their ratings over the episode. The WUJI's hard-stop
+  loads are recorded but not gated: the wrap's knuckles rest on their stops in every normal blow.
+- **The tool in the hand:** per hammer strike, no more than 7 mm or 5° (scripted and planned demos stay under 3°).
+  Over a drill episode, no more than 5 mm or 10°, and no cam-outs. The drill's clutch rolls it 4.7–6.5° in the fingers
+  in good demos.
+- **The blows:** no more than a quarter land off the nail head or miss.
+- **Clearance in free motion:** over the approach and windups (the drill's transit and line-up), sampled at 10 Hz,
+  the arm and tool keep 5 mm from the table, board and robot body. Nothing else checks what was executed, since the
+  scene simulates no robot collisions.
+- **The labels:** the arm's recorded targets never move faster than a joint's limit between frames, and show no
+  sustained frame-to-frame oscillation. This is three or more consecutive sign flips of the second difference, the
+  signature of the closed-loop failure above. Real demos score 0.
+
+Each demo's metrics, pass or fail, and reasons are in its metadata (`quality`). `lerobot_export --all` includes failing
+demos, flagged `quality_passed: false` in `episodes.jsonl`.
+
+**Coverage** (`vla/coverage.py`). The report also gives each sampled parameter's coverage against the intended
+uniform range, in 5 bins, with a bin under half its share flagged. It does this twice: after the pre-check (the plans
+simulated) and among the exported demos, so a gap can be traced to infeasibility or to the simulation and the gates.
+It also gives success by start distance (to 40 cm and beyond) and by what produced the approach (curve, joint move or
+planner) and the start family. A rejected candidate redraws only the parameter group that failed: the start (for the
+start, the pre-roll or an approach no path was found for), or the swing (hammer) or entry (drill). The episode's other
+coordinates keep their Sobol values.
+
 ## Commands (desktop)
 
 ```bash
 # demos (CPU; ~3 min per episode per worker at the 8 kHz validator physics)
-python -m tactile_sim.vla.demos --task hammer --episodes 500 --workers 8 --out runs/vla_demos/hammer
+python -m tactile_sim.vla.demos --task hammer --generator scripted --episodes 500 --workers 8 --out runs/vla_demos/hammer
 python -m tactile_sim.vla.lerobot_export runs/vla_demos/hammer --out runs/lerobot/vega_wuji_hammer
 
 # GR00T N1.7 (Isaac-GR00T's conda env; torchcodec needs FFmpeg 4-7 and deepspeed an nvcc, both kept in

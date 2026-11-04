@@ -140,8 +140,8 @@ class World:
     def sensor(self, name: str) -> np.ndarray:
         return self.data.sensordata[self.sensor_slices[name]]
 
-    def tcp_pose(self) -> tuple[np.ndarray, np.ndarray]:
-        return site_pose(self.data, self.tcp_site)
+    def tcp_pose(self, data: mujoco.MjData | None = None) -> tuple[np.ndarray, np.ndarray]:
+        return site_pose(self.data if data is None else data, self.tcp_site)
 
     def ctrl_pose(self, data: mujoco.MjData | None = None) -> tuple[np.ndarray, np.ndarray]:
         """Pose of the frame the arm controller servoes (the TCP unless wrist_control = "flange")."""
@@ -317,10 +317,12 @@ class World:
         mujoco.mj_jac(m, d, jp, None, point, self.hand_body)
         return jp[:, self.arm_dofs].T @ (-mass * m.opt.gravity)
 
-    def payload_mass_matrix(self, mass: float, com_tcp: np.ndarray, inertia_tcp: np.ndarray) -> np.ndarray:
-        """Joint-space inertia the payload adds to the arm (rigidly attached at the TCP)."""
-        m, d = self.model, self.data
-        p, R = self.tcp_pose()
+    def payload_mass_matrix(self, mass: float, com_tcp: np.ndarray, inertia_tcp: np.ndarray,
+                            data: mujoco.MjData | None = None) -> np.ndarray:
+        """Joint-space inertia the payload adds to the arm (rigidly attached at the TCP), at `data`'s configuration
+        (default: the live one)."""
+        m, d = self.model, self.data if data is None else data
+        p, R = self.tcp_pose(d)
         jp = np.zeros((3, m.nv))
         jr = np.zeros((3, m.nv))
         mujoco.mj_jac(m, d, jp, jr, p + R @ com_tcp, self.hand_body)

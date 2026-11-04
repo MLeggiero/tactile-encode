@@ -198,6 +198,10 @@ class PositionDrillFeed(_ToolBehavior):
         self._t_pull: float | None = None
         self._pulled = False
         self._t_release: float | None = None
+        self.motion = None  # a planned episode's DrillPlan (begin): the transit from a sampled start pose to x0
+        self.transit = None
+        self.align = None  # the angled entry's line-up move (a TransitPath) after the transit
+        self._stream = None
         self.aim_correction = (0.0, np.zeros(3))  # (rad turned, m shifted) at the start
         if dc.aim_from_tool:
             R_fix, shift = self.aim_from_tool()
@@ -227,9 +231,46 @@ class PositionDrillFeed(_ToolBehavior):
         e = tip - plant.head0
         return R_fix, e - (e @ plant.a) * plant.a
 
+    def begin(self, t: float, motion) -> None:
+        """Start a planned episode at t, with the arm wherever behaviors.motion_plan.preroll left it: a transit as a
+        joint stream along the plan's checked joint path (its task-space view is the target meanwhile) to the
+        pre-contact pose x0 (aimed as reset aimed it), or to the plan's angled-entry pose short of it, from which an
+        align phase lines the bit up with x0 and R; then the feed as always."""
+        from tactile_sim.behaviors.motion_plan import approach_path
+        from tactile_sim.behaviors.strike_paths import JointPathView, TransitPath
+
+        self.motion = motion
+        self.t0 = t
+        self.cmd.t = t
+        if motion.approach_path is None:  # a plan saved before joint paths: the task-space transit
+            x_now, R_now = self.w.ctrl_pose()
+            self.transit = TransitPath(t, motion.approach_time, x_now, R_now, self.x0, self.R, motion.approach_via)
+        else:
+            self._stream = approach_path(motion, t)
+            self.tb.l1.set_joint_stream(self._stream)
+            self.transit = JointPathView(self.w, self._stream)
+        self._set_phase("transit", t)
+
+    def _end_stream(self) -> None:
+        if getattr(self, "_stream", None) is not None:
+            self.tb.l1.set_joint_stream(None)
+            self._stream = None
+
+    def target_R(self, t: float) -> np.ndarray:
+        """The orientation the base wants at t: the transit's or the alignment's while they run, else R."""
+        if self.phase == "transit":
+            return self.transit.pose(t)[1]
+        if self.phase == "align":
+            return self.align.pose(t)[1]
+        return self.R
+
     def target(self, t: float) -> np.ndarray:
         """Where the base wants the grasp frame at time t (the residual's lookahead evaluates this ahead)."""
         dc = self.cfg.drill
+        if self.phase == "transit":
+            return self.transit.pose(t)[0]
+        if self.phase == "align":
+            return self.align.pose(t)[0]
         if self.phase in ("start", "approach"):
             s = _min_jerk((t - self.t_phase) / dc.approach_time) if self.phase == "approach" else 0.0
             return self.x0 + self.a * (dc.clearance - 0.002) * s
@@ -250,6 +291,25 @@ class PositionDrillFeed(_ToolBehavior):
         x_now = self.w.ctrl_pose()[0]
         if self.phase == "start":
             self._set_phase("approach", t)
+        if self.phase == "transit":
+            self.cmd.R_eq = self.transit.pose(t)[1]
+            if t - self.t_phase >= self.motion.approach_time + 0.1:
+                self._end_stream()
+                if self.motion.align_time > 0:
+                    from tactile_sim.behaviors.strike_paths import TransitPath
+
+                    # from where the transit's targets ended (q_ref's pose, so the target does not step) to x0, R
+                    x_a, R_a = self.transit.pose(t)
+                    self.align = TransitPath(t, self.motion.align_time, x_a, R_a, self.x0, self.R)
+                    self._set_phase("align", t)
+                else:
+                    self.cmd.R_eq = self.R.copy()
+                    self._set_phase("approach", t)
+        if self.phase == "align":
+            self.cmd.R_eq = self.align.pose(t)[1]
+            if t - self.t_phase >= self.motion.align_time + 0.1:
+                self.cmd.R_eq = self.R.copy()
+                self._set_phase("approach", t)
         if self.phase == "approach" and t - self.t_phase >= dc.approach_time:
             self.lat0 = self.x0 + self.a * (dc.clearance - 0.002)
             self.along = 0.0

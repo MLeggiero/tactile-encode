@@ -25,6 +25,17 @@ from tactile_sim.control.obs_spec import LOOKAHEAD, N_ARM, N_JOINTS
 PULSE = 0.003  # s, the blow's duration used for the amplitude estimate (m v / pulse)
 
 
+def _stream_lookahead(l1, t: float, out: np.ndarray) -> bool:
+    """While a joint stream drives the arm (a planned approach or the pre-roll, behaviors.motion_plan), the lookahead is
+    the stream's own targets ahead, exactly; returns False (out untouched) when no stream is set."""
+    stream = getattr(l1, "stream", None)
+    if stream is None:
+        return False
+    for k, dt in enumerate(LOOKAHEAD):
+        out[k] = np.asarray(stream(t + dt)[0], float) - l1.q_ref
+    return True
+
+
 def _ahead_path(ref):
     """The pure path a reference follows from now on, safe to evaluate at future times."""
     if ref is None:
@@ -54,6 +65,8 @@ class SwingBase:
     def _update_arm_lookahead(self, t: float) -> None:
         if not self.has_ik:
             return
+        if _stream_lookahead(self.l1, t, self.arm_look):
+            return
         cmd = self.swing.cmd
         path = _ahead_path(cmd.ref)
         if path is None:
@@ -74,7 +87,7 @@ class SwingBase:
         if sw.phase == "windup":
             if self.windup_t0 is None:
                 self.windup_t0 = sw.phase_t0
-            t_c = self.windup_t0 + self.tb.cfg.swing.windup_time + 0.05 + self.t_swing_prev
+            t_c = self.windup_t0 + sw.windup_time + 0.05 + self.t_swing_prev
             v = self.tb.cfg.swing.v_strike
             return ForecastTruth(True, t_c, "impulse", 0.0, m_head * v / PULSE)
         self.windup_t0 = None
@@ -123,8 +136,11 @@ class DrillBase:
         if not self.has_ik or self.feed.phase in ("start", "done"):
             self.arm_look[:] = 0.0
             return
-        R = self.feed.R
+        if _stream_lookahead(self.l1, t, self.arm_look):
+            return
+        target_R = getattr(self.feed, "target_R", None)
         for k, dt in enumerate(LOOKAHEAD):
+            R = self.feed.R if target_R is None else target_R(t + dt)
             q, _ = self.l1._ik(np.asarray(self.feed.target(t + dt), float), R, np.zeros(6))
             self.arm_look[k] = q - self.l1.q_ref
 

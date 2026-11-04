@@ -349,10 +349,12 @@ def strike_metrics(truth: dict, pre: float = 0.02, post: float = 0.1) -> list[di
 def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: int = 8, max_time: float = 30.0,
                     residual_policy=None, visual_seed: int | None = None, after_done: float = 1.0,
                     blend: float = 0.0, smooth: int = 0, table: HandTable | None = None,
-                    sensor_noise_scale: float | None = None) -> dict:
+                    sensor_noise_scale: float | None = None, start: tuple[int, int] | None = None) -> dict:
     """One episode with the VLA in charge, on the configured task (ResidualCfg.task): until the nail is home or the
     screw seated (then `after_done` more seconds, for the VLA to let go and back out), the tool drops, or max_time.
-    The residual runs `residual_policy` (default: the configured one, zero unless set)."""
+    The residual runs `residual_policy` (default: the configured one, zero unless set). `start` = (seed0, index): the
+    episode starts at vla.variation's sampled start pose for that point, reached in an unrecorded pre-roll before the
+    VLA is attached (it then holds the start pose until its first chunk); None starts lined up over the task."""
     from tactile_sim.logging.strike_metrics import rotvec_diff
     from tactile_sim.vla.camera import EgoCamera
     from tactile_sim.vla.demos import INSTRUCTIONS
@@ -380,6 +382,18 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
     # the hand table the VLA's actions were recorded under: the given one (a dataset's, LeRobot sidecar
     # meta/vega_wuji.json "hand_tables"), else the task's own (as the demos build it)
     table = table or HandTable.for_hand(tb.world.hand, cfg)
+    start_pose = None
+    if start is not None:
+        from tactile_sim.behaviors.motion_plan import plan_to_dict, preroll
+        from tactile_sim.vla.variation import sample_plan
+
+        plan, attempts = sample_plan(task, tb, *start, strikes=False)  # only the start is used here
+        if plan is None:
+            cam.close()
+            return {"seed": seed, "task": task, "status": "start_rejected", "attempts": attempts, "done": False,
+                    "dropped": False, "chunks": {}}
+        preroll(tb, np.asarray(plan.start.q, float), plan.preroll_time, path=plan.preroll_path)
+        start_pose = plan_to_dict(plan)["start"]
     vla = VlaBase(tb, policy, table, INSTRUCTIONS[task], cam, latency, exec_steps, blend=blend, smooth=smooth)
     vla.attach()
     w, plant = tb.world, tb.world.plant
@@ -409,7 +423,7 @@ def run_vla_episode(cfg, policy, seed: int, latency: float = 0.1, exec_steps: in
            "dropped": bool(tb.grip.dropped), "depth": float(plant.depth), "n_chunks": len(vla.chunks),
            "residual": {"ticks": tb.residual.n_ticks, "stale": tb.residual.n_stale,
                         "nonfinite": tb.residual.n_nonfinite},
-           "chunks": vla.log.arrays()}
+           "chunks": vla.log.arrays(), "start": start_pose}
     if task == "drill":
         out.update(cam_outs=int(plant.cam_outs), state=plant.state, max_slip_trans_mm=1e3 * slip_t,
                    max_slip_rot_deg=float(np.degrees(slip_r)), closest_aim_mm=1e3 * aim, max_trigger=trig)

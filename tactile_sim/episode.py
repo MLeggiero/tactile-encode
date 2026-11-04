@@ -287,8 +287,9 @@ class Episode:
         sw = self.swing
         if n_strikes is not None:
             sw.n_strikes = n_strikes
-        per_strike = self.cfg.swing.windup_time + 0.6 + self.cfg.swing.recover_time + self.cfg.swing.settle_time + 0.3
-        max_time = max_time or (self.cfg.swing.approach_time + 0.5 + sw.n_strikes * per_strike)
+        # the swing's own durations: a planned episode's (behaviors.motion_plan), else the configuration's
+        per_strike = sw.windup_time + 0.6 + self.cfg.swing.recover_time + sw.settle_time + 0.3
+        max_time = max_time or (sw.approach_time + 0.5 + sw.n_strikes * per_strike)
         tb = self.tb
         n_max = int(round(max_time / tb.world.dt))
         for _ in range(n_max):
